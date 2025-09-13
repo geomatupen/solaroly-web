@@ -1,87 +1,47 @@
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>PVRT — Training & Map Viewer</title>
+  <title>PVRT Console</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Leaflet (no SRI to avoid integrity mismatch) -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Leaflet -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
-
-  <link href="./styles.css" rel="stylesheet" />
 </head>
 <body>
-  <header class="header">
-    <div class="brand">
-      <h1>PVRT</h1>
-      <span class="sub">RGB + Thermal Pipeline</span>
-    </div>
-    <div class="health">
-      <button id="btnHealth" class="btn secondary">Check API</button>
-      <span id="healthStatus" class="status">Unknown</span>
+  <header class="topbar">
+    <h1>PVRT</h1>
+    <div class="tabs">
+      <button class="active" data-tab="tab-test">Test</button>
+      <button data-tab="tab-train">Train</button>
+      <button data-tab="tab-results">Results</button>
+      <button data-tab="tab-map">Map</button>
+      <button data-tab="tab-logs">Logs</button>
     </div>
   </header>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="train">Train</button>
-    <button class="tab" data-tab="test">Test</button>
-    <button class="tab" data-tab="layers">Layers / Map</button>
-  </nav>
-
-  <main>
-    <!-- TRAIN TAB -->
-    <section id="tab-train" class="tabPanel active">
-      <div class="card">
-        <h2>Training</h2>
-        <p class="muted">Uses dataset folders: <code>data/train</code> and <code>data/valid</code>. Validation runs during training.</p>
-
-        <div class="formGrid">
-          <label class="switchRow">
-            <input type="checkbox" id="chkUseThermalTrain" />
-            <span>Use thermal band</span>
-          </label>
-
-          <label>
-            <span>Iterations</span>
-            <input id="inpMaxIter" type="number" min="100" step="100" value="500" />
-          </label>
-
-          <label>
-            <span>Learning rate</span>
-            <input id="inpBaseLR" type="number" step="0.0001" value="0.002" />
-          </label>
-
-          <label>
-            <span>Images per batch</span>
-            <input id="inpBatch" type="number" min="1" step="1" value="4" />
-          </label>
-        </div>
-
-        <div class="actions">
-          <button id="btnTrain" class="btn primary">
-            <span class="spinner hidden" id="spinTrain"></span>
-            Start Training
-          </button>
-        </div>
-
-        <div class="alert warn" id="trainWarn" hidden></div>
-        <div class="alert err" id="trainErr" hidden></div>
-        <div class="alert ok" id="trainOk" hidden></div>
-      </div>
-    </section>
+  <main class="container">
 
     <!-- TEST TAB -->
-    <section id="tab-test" class="tabPanel">
+    <section id="tab-test" class="tabPanel active">
       <div class="card">
         <h2>Test / Inference</h2>
-        <p class="muted">Upload one or more images (<code>.jpg</code>, <code>.png</code>, <code>.tif</code>).</p>
+        <p class="muted">
+          Choose a dataset folder to test. Use <b>Upload data</b> to add a new folder (zip or images).
+          Folders are created inside <code>data/test/</code> and named from the zip or first image.
+        </p>
 
         <div class="formGrid">
           <label class="switchRow">
@@ -89,59 +49,235 @@
             <span>Use thermal band</span>
           </label>
 
-          <label class="fileDrop">
-            <input id="filesTest" type="file" multiple accept=".jpg,.jpeg,.png,.tif,.tiff,.JPG,.JPEG,.PNG,.TIF,.TIFF" />
-            <span>Choose images… (or drag & drop)</span>
-          </label>
+          <div class="row">
+            <label for="selModelFolder">Model run</label>
+            <select id="selModelFolder"></select>
+            <button id="btnRefreshModels" class="secondary">Refresh</button>
+          </div>
+
+          <div class="row">
+            <label for="selTestFolder">Dataset folder</label>
+            <select id="selTestFolder"></select>
+            <button id="btnRefreshFolders" class="secondary">Refresh</button>
+          </div>
+
+          <div class="row">
+            <button id="btnOpenUploadModal">Upload data…</button>
+          </div>
+
+          <div id="testUploadProgress" class="progressWrap" hidden>
+            <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
+            <div class="progressText" id="testUploadText">Uploading… 0%</div>
+          </div>
         </div>
 
         <div class="actions">
-          <button id="btnTest" class="btn primary">
-            <span class="spinner hidden" id="spinTest"></span>
-            Run Test
-          </button>
+          <button id="btnTest">Run Test</button>
+          <button id="btnCancelTest" class="secondary">Cancel</button>
+          <span class="spinner" id="spinTest" hidden></span>
         </div>
 
+        <div class="divider"></div>
+
+        <div class="statusLine" id="testStatus"></div>
+        <pre id="testMiniLog" class="logPane small"></pre>
+
         <div class="alert warn" id="testWarn" hidden></div>
-        <div class="alert err" id="testErr" hidden></div>
-        <div class="alert ok" id="testOk" hidden></div>
+        <div class="alert err"  id="testErr"  hidden></div>
+        <div class="alert ok"   id="testOk"   hidden></div>
+
+        <p class="muted tiny">
+          <a href="#" id="lnkToLogsFromTest">See full logs</a>
+        </p>
       </div>
     </section>
 
-    <!-- LAYERS / MAP TAB -->
-    <section id="tab-layers" class="tabPanel">
-      <div class="mapWrap">
-        <div id="map"></div>
-        <div class="mapPanel">
-          <h3>Layers</h3>
-          <div class="layerList" id="layerList"></div>
-          <div class="divider"></div>
-          <h4>Add overlay</h4>
-          <label class="fileDrop small">
-            <input id="fileGeoJson" type="file" accept=".geojson,.json" />
-            <span>Add GeoJSON…</span>
-          </label>
-          <div class="legend">
-            <p><span class="sym sym-point"></span> Image location</p>
-            <p><span class="sym sym-poly"></span> Anomaly point (from detections)</p>
+    <!-- TRAIN TAB -->
+    <section id="tab-train" class="tabPanel">
+      <div class="card">
+        <h2>Train</h2>
+        <p class="muted">Kicks off training using your configured dataset. Thermal channel support is preserved. Each run saves to <code>outputs/mrcnn/&lt;timestamp&gt;/</code>.</p>
+
+        <label class="switchRow">
+          <input type="checkbox" id="chkUseThermalTrain" checked />
+          <span>Use thermal band</span>
+        </label>
+
+        <!-- Keep advanced hyperparams -->
+        <div class="formGrid">
+          <div class="row">
+            <label for="inpIters">Iterations</label>
+            <input id="inpIters" type="number" value="500" min="1" />
+          </div>
+          <div class="row">
+            <label for="inpLR">Learning rate</label>
+            <input id="inpLR" type="number" value="0.002" step="0.0001" />
+          </div>
+          <div class="row">
+            <label for="inpBatch">Batch size</label>
+            <input id="inpBatch" type="number" value="4" min="1" />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btnTrain">Start Training</button>
+          <button id="btnCancelTrain" class="secondary">Cancel</button>
+          <span class="spinner" id="spinTrain" hidden></span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="statusLine" id="trainStatus"></div>
+        <pre id="trainMiniLog" class="logPane small"></pre>
+
+        <div class="alert err" id="trainErr" hidden></div>
+        <div class="alert ok"  id="trainOk"  hidden></div>
+
+        <p class="muted tiny">
+          <a href="#" id="lnkToLogsFromTrain">See full logs</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- RESULTS TAB -->
+    <section id="tab-results" class="tabPanel">
+      <div class="card">
+        <div class="row between">
+          <h2>Results</h2>
+          <div class="row">
+            <label for="selResults">Session</label>
+            <select id="selResults"></select>
+            <button id="btnRefreshSessions" class="secondary">Refresh</button>
+          </div>
+        </div>
+        <div id="resultsGrid" class="grid"></div>
+      </div>
+    </section>
+
+    <!-- MAP TAB -->
+    <section id="tab-map" class="tabPanel">
+      <div class="card mapCard">
+        <div class="row between">
+          <h2>Preview Map</h2>
+          <div class="row">
+            <label for="selMapSession">Session</label>
+            <select id="selMapSession"></select>
+            <button id="btnRefreshMapSessions" class="secondary">Refresh</button>
+          </div>
+        </div>
+
+        <div class="mapWrap">
+          <div id="map"></div>
+
+          <!-- Right layers panel -->
+          <aside id="layersPanel">
+            <div class="panelHeader">
+              <span>Layers</span>
+              <label class="fileDrop tiny">
+                <input id="fileGeoJSON" type="file" accept=".geojson,.json" />
+                <span>+ GeoJSON</span>
+              </label>
+            </div>
+            <ul id="layersList" class="layersList"></ul>
+            <div id="legend" class="legend"></div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- LOGS TAB -->
+    <section id="tab-logs" class="tabPanel">
+      <div class="card">
+        <div class="row between">
+          <h2>Logs</h2>
+          <div class="muted">SSE: <span id="logConn">disconnected</span></div>
+        </div>
+        <div class="actions">
+          <button id="btnLogsConnect">Connect</button>
+          <button id="btnLogsClear" class="secondary">Clear</button>
+        </div>
+        <pre id="logStream" class="logPane"></pre>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Upload Modal -->
+  <div id="uploadModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>Upload test data</h3>
+        <button class="iconBtn" id="btnCloseUploadModal" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p>
+          Select a .zip or multiple images. A unique folder will be created under <code>data/test/</code>
+          using the zip name or the first image name.
+        </p>
+        <label class="fileDrop">
+          <input id="filesTest" type="file" multiple
+                 accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.JPG,.JPEG,.PNG,.TIF,.TIFF" />
+          <span>Choose files… (or drag &amp; drop)</span>
+        </label>
+      </div>
+      <div class="modalFooter">
+        <button id="btnStartUpload">Start upload</button>
+        <button id="btnCancelUpload" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Style Modal -->
+  <div id="styleModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>Layer style</h3>
+        <button class="iconBtn" id="btnCloseStyle">&times;</button>
+      </div>
+      <div class="modalBody">
+        <div class="formGrid">
+          <div class="row">
+            <label>Stroke</label>
+            <input type="color" id="stColor" value="#ff5722" />
+            <label>Width</label>
+            <input type="number" id="stWidth" value="1" min="0" max="10"/>
+            <label>Opacity</label>
+            <input type="number" id="stOpacity" value="1" min="0" max="1" step="0.05"/>
+          </div>
+          <div class="row">
+            <label>Fill</label>
+            <input type="color" id="fiColor" value="#ff5722" />
+            <label>Opacity</label>
+            <input type="number" id="fiOpacity" value="0.25" min="0" max="1" step="0.05"/>
           </div>
         </div>
       </div>
-    </section>
-
-    <!-- LOGS -->
-    <section class="panel">
-      <div class="logsHeader">
-        <h2>Live Logs</h2>
-        <div class="logControls">
-          <span id="logConn" class="status">Disconnected</span>
-          <button id="btnClearLogs" class="btn secondary">Clear</button>
-        </div>
+      <div class="modalFooter">
+        <button id="btnApplyStyle">Apply</button>
+        <button class="secondary" id="btnCancelStyle">Cancel</button>
       </div>
-      <pre id="logStream" class="logStream" aria-live="polite"></pre>
-    </section>
-  </main>
+    </div>
+  </div>
 
-  <script src="./app.js"></script>
+  <!-- Layer action menu (⋮) -->
+  <div id="layerMenu" class="menu hidden">
+    <button data-act="zoom">Zoom to layer</button>
+    <button data-act="style">Style…</button>
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="modal hidden">
+    <div class="modalContent wide">
+      <div class="modalHeader">
+        <h3 id="lightboxTitle">Overlay</h3>
+        <button class="iconBtn" id="btnCloseLightbox">&times;</button>
+      </div>
+      <div class="modalBody">
+        <img id="lightboxImg" alt="overlay" />
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>

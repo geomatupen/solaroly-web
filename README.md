@@ -17,8 +17,8 @@ It provides a web interface with FastAPI for training, inference, and visualizat
 
 ```bash
 cd /path/to/project
-python3.10 -m venv .venv       # or python3.11
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python3 -m venv venv       # or python3.11
+source venv/bin/activate      # Windows: .venv\Scripts\activate
 python -m pip install -U pip setuptools wheel
 ```
 
@@ -51,6 +51,12 @@ pip install 'git+https://github.com/facebookresearch/detectron2.git'
 
 # 5. Install Other Python Dependencies
 
+Install from requirements.txt:
+```bash
+pip install -r requirements.txt
+```
+OR
+
 Create `requirements.txt` (excluding torch + detectron2):
 
 ```text
@@ -63,41 +69,36 @@ tifffile==2024.*
 piexif==1.1.*
 numpy==1.26.*
 pycocotools==2.0.*
+python-multipart==0.0.20
 ```
 
-Install them:
-```bash
-pip install -r requirements.txt
-```
 
 ---
 
 # 6. DJI Thermal SDK Setup
 
 ### A. Native Library
-After downloading the official DJI Thermal SDK, the native library is located at:
+The third_party folder already contains the DJI thermal SDK, skip this step if you dont want to upgrade the version of this sdk.
+
+OR if you want to upgrade,
+Download DJI thermal SDK from official DJI website and extract the zip in the folder third_party
+
+After downloading the official DJI Thermal SDK, the native library should located at:
 
 ```bash
 third_party/tsdk-core/lib/linux/release_x64/libdirp.so
 ```
 
 ### B. Configure venv Activation
-Append the following lines to `.venv/bin/activate` so the paths are set automatically:
+Add the following lines at the end of the file: `venv/bin/activate` so the paths are set automatically:
 
 ```bash
 # --- DJI Thermal SDK config ---
-export DIRP_SDK_PATH="$PWD/third_party/tsdk-core/lib/linux/release_x64/libdirp.so"
+export DIRP_SDK_PATH="$PWD/third_party/utility/bin/linux/release_x64/libdirp.so"
 export LD_LIBRARY_PATH="$(dirname "$DIRP_SDK_PATH"):${LD_LIBRARY_PATH:-}"
 # --- end DJI Thermal SDK config ---
-```
-
-Reactivate your virtual environment:
-```bash
-source .venv/bin/activate
-```
 
 ### C. Install Python Wrapper
-Before activating your venv, run:
 ```bash
 python -m pip install --upgrade pip wheel
 python -m pip install --upgrade dji-thermal-sdk
@@ -115,6 +116,15 @@ Version: 0.0.2
 Location: /path/to/project/venv/lib/python3.12/site-packages
 ```
 
+
+### D. Reactivate Environment
+```
+
+Reactivate your virtual environment:
+```bash
+source venv/bin/activate
+```
+
 ---
 
 # 7. Verify Installation
@@ -122,39 +132,16 @@ Location: /path/to/project/venv/lib/python3.12/site-packages
 Run Python and check imports:
 
 ```python
+python3
 from dji_thermal_sdk.dji_sdk import dji_init
 from dji_thermal_sdk.utility import rjpeg_to_heatmap
 ```
 
-If no errors, the SDK is ready.
+If no errors, the SDK is ready. you can type exit() to exit python cell.
 
 ---
 
-# 8. Test Thermal Image Processing
-
-Example test script:
-
-```python
-from dji_thermal_sdk.dji_sdk import dji_init
-from dji_thermal_sdk.utility import rjpeg_to_heatmap
-from pathlib import Path
-
-# Initialize the SDK (no path needed if DIRP_SDK_PATH is set)
-dji_init()
-
-# Pick a sample R-JPEG image
-img = Path("~/Pictures/DJI_0001.JPG").expanduser()
-
-# Convert to temperature array
-temps = rjpeg_to_heatmap(str(img), dtype="float32")
-
-# Print min and max temperatures
-print("min/max =", temps.min(), temps.max(), "°C")
-```
-
----
-
-# 9. Run Backend + Frontend
+# 8. Run Backend + Frontend
 
 From the project root:
 
