@@ -1,0 +1,5 @@
+venv/
+data/test/
+data/train/
+data/test_orig/
+outputs/
