@@ -120,7 +120,7 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   background: rgba(0,0,0,0.45);
   color: #fff;
   font-size: 28px;
-  line-height: 44px;
+  line-height: 0px;
   text-align: center;
   cursor: pointer;
   user-select: none;

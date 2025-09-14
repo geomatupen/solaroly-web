@@ -313,7 +313,7 @@ function renderResultsGrid(manifest){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
     return;
   }
-  manifest.forEach(item=>{
+  manifest.forEach((item, idx)=>{
     const div = document.createElement("div");
     div.className = "thumb";
     div.innerHTML = `
@@ -321,12 +321,11 @@ function renderResultsGrid(manifest){
       <div class="meta" title="${item.file}">${item.file}</div>
     `;
     div.addEventListener("click", ()=>{
-      $("#lightboxImg").src = item.overlay;
-      $("#lightboxTitle").textContent = item.file;
-      $("#lightbox").classList.remove("hidden");
+      _openLightboxWithGallery(manifest, idx);
     });
     grid.appendChild(div);
   });
+
 }
 
 // ---------- map ----------
@@ -594,6 +593,45 @@ async function refreshMapSessionSelected(){
   await applySessionToMap(session);
 }
 
+
+// --- lightbox gallery state ---
+let _gallery = [];     // array of {src, file}
+let _gIdx = 0;
+let _lightboxOpen = false;
+
+function _setLightbox(idx){
+  _gIdx = Math.max(0, Math.min(idx, _gallery.length - 1));
+  const it = _gallery[_gIdx];
+  const img = document.getElementById("lightboxImg");
+  const ttl = document.getElementById("lightboxTitle");
+  const ctr = document.getElementById("imgCounter");
+  if (img) img.src = it.src;
+  if (ttl) ttl.textContent = it.file || "";
+  if (ctr) ctr.textContent = `${_gIdx + 1} / ${_gallery.length}`;
+
+  const prev = document.getElementById("imgPrev");
+  const next = document.getElementById("imgNext");
+  if (prev) prev.disabled = (_gIdx === 0);
+  if (next) next.disabled = (_gIdx === _gallery.length - 1);
+}
+
+function _openLightboxWithGallery(items, startIdx){
+  _gallery = items.map(it => ({ src: it.overlay, file: it.file }));
+  _gIdx = Math.max(0, Math.min(startIdx || 0, _gallery.length - 1));
+  document.getElementById("lightbox").classList.remove("hidden");
+  _lightboxOpen = true;
+  _setLightbox(_gIdx);
+}
+
+function _closeLightbox(){
+  document.getElementById("lightbox").classList.add("hidden");
+  _lightboxOpen = false;
+}
+
+function _nextImg(){ if (_gIdx < _gallery.length - 1) _setLightbox(_gIdx + 1); }
+function _prevImg(){ if (_gIdx > 0) _setLightbox(_gIdx - 1); }
+
+
 // ---------- UI wiring ----------
 function setupUI(){
   setupTabs();
@@ -636,7 +674,19 @@ function setupUI(){
   wireAlertClose();
 
   // lightbox
-  $("#btnCloseLightbox").addEventListener("click", ()=> $("#lightbox").classList.add("hidden"));
+  $("#btnCloseLightbox").addEventListener("click", _closeLightbox);
+  document.getElementById("imgNext")?.addEventListener("click", _nextImg);
+  document.getElementById("imgPrev")?.addEventListener("click", _prevImg);
+
+  // keyboard: ← → Esc (also allow A/D)
+  document.addEventListener("keydown", (e)=>{
+    if (!_lightboxOpen) return;
+    const k = e.key;
+    if (k === "ArrowRight" || k === "d" || k === "D") { _nextImg(); e.preventDefault(); }
+    else if (k === "ArrowLeft" || k === "a" || k === "A") { _prevImg(); e.preventDefault(); }
+    else if (k === "Escape") { _closeLightbox(); e.preventDefault(); }
+  });
+
 }
 
 document.addEventListener("DOMContentLoaded", async ()=>{
