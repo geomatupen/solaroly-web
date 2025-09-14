@@ -44,6 +44,16 @@
         </p>
 
         <div class="formGrid">
+          <div class="row">
+            <button id="btnOpenUploadModal" class="push-right">Upload data…</button>
+          </div>
+
+          <div id="testUploadProgress" class="progressWrap" hidden>
+            <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
+            <div class="progressText" id="testUploadText">Uploading… 0%</div>
+          </div>
+        </div>
+
           <label class="switchRow">
             <input type="checkbox" id="chkUseThermalTest" />
             <span>Use thermal band</span>
@@ -65,16 +75,6 @@
             <label for="inpResultName">Result Name</label>
             <input id="inpResultName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
           </div>
-
-          <div class="row">
-            <button id="btnOpenUploadModal">Upload data…</button>
-          </div>
-
-          <div id="testUploadProgress" class="progressWrap" hidden>
-            <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
-            <div class="progressText" id="testUploadText">Uploading… 0%</div>
-          </div>
-        </div>
 
         <div class="actions">
           <button id="btnTest">Run Test</button>
