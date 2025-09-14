@@ -62,6 +62,11 @@
           </div>
 
           <div class="row">
+            <label for="inpResultName">Result Name</label>
+            <input id="inpResultName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
+          </div>
+
+          <div class="row">
             <button id="btnOpenUploadModal">Upload data…</button>
           </div>
 
@@ -99,7 +104,7 @@
         <p class="muted">Kicks off training using your configured dataset. Thermal channel support is preserved. Each run saves to <code>outputs/mrcnn/&lt;timestamp&gt;/</code>.</p>
 
         <label class="switchRow">
-          <input type="checkbox" id="chkUseThermalTrain" checked />
+          <input type="checkbox" id="chkUseThermalTrain" />
           <span>Use thermal band</span>
         </label>
 
@@ -116,6 +121,10 @@
           <div class="row">
             <label for="inpBatch">Batch size</label>
             <input id="inpBatch" type="number" value="4" min="1" />
+          </div>
+          <div class="row">
+            <label for="inpModelName">Model Name</label>
+            <input id="inpModelName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
           </div>
         </div>
 
@@ -219,6 +228,11 @@
                  accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.JPG,.JPEG,.PNG,.TIF,.TIFF" />
           <span>Choose files… (or drag &amp; drop)</span>
         </label>
+        <div class="row">
+          <label for="inpUploadName">Name</label>
+          <input id="inpUploadName" type="text" value="" placeholder="test_YYYYMMDD_HHMMSS" />
+        </div>
+
       </div>
       <div class="modalFooter">
         <button id="btnStartUpload">Start upload</button>

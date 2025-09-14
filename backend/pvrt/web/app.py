@@ -171,6 +171,20 @@ def _force_axis_aligned(cfg):
     cfg.MODEL.ANCHOR_GENERATOR.ANGLES = [[0]]
     logging.getLogger("pvrt").info("[train] Forcing axis-aligned anchors: MODEL.ANCHOR_GENERATOR.ANGLES=[[0]]")
 
+def _safe_solver_steps(max_iter: int):
+    # make milestones strictly inside (0, MAX_ITER)
+    s1 = int(max_iter * 0.66)
+    s2 = int(max_iter * 0.88)
+    steps = sorted({s for s in (s1, s2) if 0 < s < int(max_iter)})
+    return tuple(steps)
+
+_SAFE_NAME_RE = re.compile(r'[^A-Za-z0-9._-]+')
+def _safe_name(name: str | None) -> str:
+    if not name:
+        return ""
+    name = name.strip()[:128]
+    return _SAFE_NAME_RE.sub("_", name)
+
 def _train_rgb_only_with_params(run_dir: Path, max_iter: int, base_lr: float, ims_per_batch: int) -> Path:
     from detectron2.config import get_cfg
     from detectron2 import model_zoo
@@ -201,9 +215,9 @@ def _train_rgb_only_with_params(run_dir: Path, max_iter: int, base_lr: float, im
     cfg.SOLVER.IMS_PER_BATCH = int(ims_per_batch)
     cfg.SOLVER.BASE_LR = float(base_lr)
     cfg.SOLVER.MAX_ITER = int(max_iter)
-    s1 = int(max_iter * 0.66); s2 = int(max_iter * 0.88)
-    cfg.SOLVER.STEPS = (s1, s2)
-    cfg.SOLVER.CHECKPOINT_PERIOD = max(1000, int(max_iter/4))
+    cfg.SOLVER.STEPS = _safe_solver_steps(cfg.SOLVER.MAX_ITER)  # <— safe milestones
+    cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(max_iter/6))
+    cfg.TEST.EVAL_PERIOD = 0  # we do a single eval after training
 
     cfg.INPUT.FORMAT = "RGB"
     cfg.MODEL.PIXEL_MEAN = [0.485, 0.456, 0.406]
@@ -221,17 +235,29 @@ def _train_rgb_only_with_params(run_dir: Path, max_iter: int, base_lr: float, im
         trainer = RGBOnlyTrainer(cfg)
         trainer.resume_or_load(resume=False)
         logging.getLogger("pvrt").info(
-            f"[train] Using IMS_PER_BATCH={cfg.SOLVER.IMS_PER_BATCH}, BASE_LR={cfg.SOLVER.BASE_LR}, MAX_ITER={cfg.SOLVER.MAX_ITER}"
+            f"[train] Using IMS_PER_BATCH={cfg.SOLVER.IMS_PER_BATCH}, BASE_LR={cfg.SOLVER.BASE_LR}, MAX_ITER={cfg.SOLVER.MAX_ITER}, STEPS={cfg.SOLVER.STEPS}"
         )
         trainer.train()
 
-    val_loader = RGBOnlyTrainer.build_test_loader(cfg, "pv_val")
-    evaluator = COCOEvaluator("pv_val", cfg, False, output_dir=cfg.OUTPUT_DIR)
-    _ = inference_on_dataset(trainer.model, val_loader, evaluator)
+    # Ensure final weights are written even if eval crashes:
+    try:
+        if hasattr(trainer, "checkpointer"):
+            trainer.checkpointer.save("model_final")
+    except Exception as e:
+        logging.getLogger("pvrt").warning(f"[train] Could not save final checkpoint explicitly: {e}")
+
+    # Post-train eval (non-fatal)
+    try:
+        val_loader = RGBOnlyTrainer.build_test_loader(cfg, "pv_val")
+        evaluator = COCOEvaluator("pv_val", cfg, False, output_dir=cfg.OUTPUT_DIR)
+        _ = inference_on_dataset(trainer.model, val_loader, evaluator)
+    except Exception as e:
+        logging.getLogger("pvrt").warning(f"UI:INFO:train: Final evaluation skipped due to error: {e}")
 
     with (out_dir/"model_meta.json").open("w", encoding="utf-8") as f:
         json.dump({"input_mode": "rgb"}, f, indent=2)
     return out_dir / "model_final.pth"
+
 
 def _train_rgb_thermal_with_params(run_dir: Path, max_iter: int, base_lr: float, ims_per_batch: int) -> Path:
     from detectron2.config import get_cfg
@@ -263,9 +289,9 @@ def _train_rgb_thermal_with_params(run_dir: Path, max_iter: int, base_lr: float,
     cfg.SOLVER.IMS_PER_BATCH = int(ims_per_batch)
     cfg.SOLVER.BASE_LR = float(base_lr)
     cfg.SOLVER.MAX_ITER = int(max_iter)
-    s1 = int(max_iter * 0.66); s2 = int(max_iter * 0.88)
-    cfg.SOLVER.STEPS = (s1, s2)
-    cfg.SOLVER.CHECKPOINT_PERIOD = max(1000, int(max_iter/4))
+    cfg.SOLVER.STEPS = _safe_solver_steps(cfg.SOLVER.MAX_ITER)  # <— safe milestones
+    cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(max_iter/6))
+    cfg.TEST.EVAL_PERIOD = 0
 
     cfg.INPUT.FORMAT = "RGB"
     cfg.MODEL.PIXEL_MEAN = [0.5, 0.5, 0.5, 0.5]
@@ -283,20 +309,38 @@ def _train_rgb_thermal_with_params(run_dir: Path, max_iter: int, base_lr: float,
         trainer = RTolerantTrainer(cfg)
         trainer.resume_or_load(resume=False)
         logging.getLogger("pvrt").info(
-            f"[train] Using IMS_PER_BATCH={cfg.SOLVER.IMS_PER_BATCH}, BASE_LR={cfg.SOLVER.BASE_LR}, MAX_ITER={cfg.SOLVER.MAX_ITER}"
+            f"[train] Using IMS_PER_BATCH={cfg.SOLVER.IMS_PER_BATCH}, BASE_LR={cfg.SOLVER.BASE_LR}, MAX_ITER={cfg.SOLVER.MAX_ITER}, STEPS={cfg.SOLVER.STEPS}"
         )
         trainer.train()
 
-    val_loader = RTolerantTrainer.build_test_loader(cfg, "pv_val")
-    evaluator = COCOEvaluator("pv_val", cfg, False, output_dir=cfg.OUTPUT_DIR)
-    _ = inference_on_dataset(trainer.model, val_loader, evaluator)
+    # Ensure final weights are written even if eval crashes:
+    try:
+        if hasattr(trainer, "checkpointer"):
+            trainer.checkpointer.save("model_final")
+    except Exception as e:
+        logging.getLogger("pvrt").warning(f"[train] Could not save final checkpoint explicitly: {e}")
+
+    # Post-train eval (non-fatal)
+    try:
+        val_loader = RTolerantTrainer.build_test_loader(cfg, "pv_val")
+        evaluator = COCOEvaluator("pv_val", cfg, False, output_dir=cfg.OUTPUT_DIR)
+        _ = inference_on_dataset(trainer.model, val_loader, evaluator)
+    except Exception as e:
+        logging.getLogger("pvrt").warning(f"UI:INFO:train: Final evaluation skipped due to error: {e}")
 
     with (out_dir/"model_meta.json").open("w", encoding="utf-8") as f:
         json.dump({"input_mode": "rgbtherm"}, f, indent=2)
     return out_dir / "model_final.pth"
 
-def _train_job(use_thermal: bool, max_iter: int, base_lr: float, ims_per_batch: int) -> None:
-    run_dir = OUTPUTS / _now_stamp()
+def _train_job(
+    use_thermal: bool,
+    max_iter: int,
+    base_lr: float,
+    ims_per_batch: int,
+    model_name: str = "",
+) -> None:
+    name = model_name or _now_stamp()
+    run_dir = OUTPUTS / name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(run_dir / "train.log", encoding="utf-8")
@@ -365,9 +409,11 @@ async def api_train(
     max_iter: int = Form(default=500),
     base_lr: float = Form(default=0.002),
     ims_per_batch: int = Form(default=4),
+    model_name: str = Form(default=""),
 ):
+    safe_model_name = _safe_name(model_name)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, _train_job, use_thermal, max_iter, base_lr, ims_per_batch)
+    loop.run_in_executor(None, _train_job, use_thermal, max_iter, base_lr, ims_per_batch, safe_model_name)
     return {
         "ok": True,
         "use_thermal": use_thermal,
@@ -414,8 +460,8 @@ def _unique_dataset_dir(base_name: str) -> Path:
             return cand
         i += 1
 
-def _save_zip_as_dataset(up: UploadFile) -> Path:
-    base = _slugify(up.filename or "dataset")
+def _save_zip_as_dataset(up: UploadFile, preferred_base: str | None = None) -> Path:
+    base = _slugify(preferred_base) if preferred_base else _slugify(up.filename or "dataset")
     dest = _unique_dataset_dir(base)
     dest.mkdir(parents=True, exist_ok=True)
     data = up.file.read()
@@ -436,8 +482,8 @@ def _save_zip_as_dataset(up: UploadFile) -> Path:
     logger.info(f"[test] Created dataset '{dest.name}' with {len([*dest.glob('*')])} files.")
     return dest
 
-def _save_images_as_dataset(files: List[UploadFile]) -> Path:
-    base = _slugify(files[0].filename or "dataset")
+def _save_images_as_dataset(files: List[UploadFile], preferred_base: str | None = None) -> Path:
+    base = _slugify(preferred_base) if preferred_base else _slugify(files[0].filename or "dataset")
     dest = _unique_dataset_dir(base)
     dest.mkdir(parents=True, exist_ok=True)
     for f in files:
@@ -652,24 +698,38 @@ async def api_test_datasets():
 
 # -------------- Upload dataset(s) --------------
 @app.post("/api/test_upload")
-async def api_test_upload(files: List[UploadFile] = File(...)):
+async def api_test_upload(
+    files: List[UploadFile] = File(...),
+    result_name: str = Form(default=""),
+):
     buffered: List[UploadFile] = []
     for f in files:
         content = await f.read()
         buffered.append(UploadFile(filename=f.filename, file=io.BytesIO(content), headers=f.headers))
+
+        raw = (result_name or "").strip()
+    safe_result = _safe_name(raw)
+    if not safe_result:
+        safe_result = f"data_{_now_stamp()}"   # default with data_ prefix
+
 
     created = []
     with redirect_std_to_logger():
         zips = [f for f in buffered if (f.filename or "").lower().endswith(".zip")]
         imgs = [f for f in buffered if not (f.filename or "").lower().endswith(".zip")]
 
-        for z in zips:
-            ds = _save_zip_as_dataset(z)
+        if zips:
+            # use user's preferred name for the dataset folder
+            ds = _save_zip_as_dataset(zips[0], preferred_base=safe_result)
+            created.append(ds.name)
+            # if multiple zips were sent, you can optionally import others too with unique suffixes
+            for z in zips[1:]:
+                dsz = _save_zip_as_dataset(z)  # fallback to derived name
+                created.append(dsz.name)
+        elif imgs:
+            ds = _save_images_as_dataset(imgs, preferred_base=safe_result)
             created.append(ds.name)
 
-        if imgs:
-            ds = _save_images_as_dataset(imgs)
-            created.append(ds.name)
 
         if not created:
             logger.info("UI:WARN:test: No valid files (images/zip) detected.")
@@ -684,6 +744,7 @@ async def api_test_run(
     dataset: str = Form(...),
     model: Optional[str] = Form(default=None),
     use_thermal: bool = Form(default=False),
+    result_name: str = Form(default=""),
 ):
     ds_dir = TEST_DIR / dataset
     if not ds_dir.exists() or not ds_dir.is_dir():
@@ -699,8 +760,10 @@ async def api_test_run(
     if not model_dir.exists():
         raise HTTPException(status_code=404, detail=f"Model '{model_dir.name}' not found.")
 
-    stamp = _now_stamp()
+    safe_result = _safe_name(result_name)
+    stamp = safe_result or _now_stamp()
     sess = MEDIA_DIR / f"sessions/{stamp}"
+
     sess.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(sess / "test.log", encoding="utf-8")
     file_handler.setLevel(logging.INFO)

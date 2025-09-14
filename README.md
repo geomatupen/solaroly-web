@@ -146,6 +146,8 @@ If no errors, the SDK is ready. you can type exit() to exit python cell.
 From the project root:
 
 ```bash
+uvicorn backend.pvrt.web.app:app --workers 1 --port 8001  #change workers number based on the hardware you have.
+OR
 uvicorn backend.pvrt.web.app:app --reload --port 8001
 ```
 

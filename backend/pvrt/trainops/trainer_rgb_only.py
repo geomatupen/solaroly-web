@@ -40,7 +40,7 @@ def train_rgb_only(train_dir: str | Path, val_dir: str | Path, out_dir: str | Pa
     cfg.SOLVER.BASE_LR = 0.002
     cfg.SOLVER.MAX_ITER = 500
     cfg.SOLVER.STEPS = (6000, 8000)
-    cfg.SOLVER.CHECKPOINT_PERIOD = 2000
+    cfg.SOLVER.CHECKPOINT_PERIOD = 1001
 
     cfg.INPUT.FORMAT = "RGB"
     cfg.MODEL.PIXEL_MEAN = [0.485, 0.456, 0.406]

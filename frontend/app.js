@@ -154,6 +154,9 @@ async function startUpload(){
 
   const fd = new FormData();
   for(const f of input.files){ fd.append("files", f); }
+  const uploadNameEl = document.getElementById("inpUploadName");
+  const uploadName = (uploadNameEl?.value || "").trim();
+  if (uploadName) fd.append("result_name", uploadName);  // optional name
 
   await new Promise((resolve, reject)=>{
     const xhr = new XMLHttpRequest();
@@ -198,6 +201,7 @@ async function startTraining(){
   const iters = parseInt($("#inpIters").value || "500", 10);
   const lr = parseFloat($("#inpLR").value || "0.002");
   const batch = parseInt($("#inpBatch").value || "4", 10);
+  const modelName = (document.getElementById("inpModelName")?.value || "").trim() || makeStamp();
 
   setHidden($("#spinTrain"), false);
   setText("#trainStatus","Submitting training job…");
@@ -207,6 +211,8 @@ async function startTraining(){
   fd.append("max_iter", String(iters));
   fd.append("base_lr", String(lr));
   fd.append("ims_per_batch", String(batch));
+  fd.append("model_name", String(modelName));
+
 
   const res = await fetch(api.train, { method:"POST", body:fd });
   const js = await res.json();
@@ -240,6 +246,7 @@ async function runTest(){
   }
   const model = getSelectedModel();
   const useThermal = $("#chkUseThermalTest").checked;
+  const resultName = (document.getElementById("inpResultName")?.value || "").trim() || makeStamp();
 
   setHidden($("#spinTest"), false);
   setText("#testStatus","Running inference…");
@@ -248,6 +255,7 @@ async function runTest(){
   fd.append("dataset", ds);
   if(model) fd.append("model", model);
   fd.append("use_thermal", useThermal ? "true":"false");
+  fd.append("result_name", resultName);
 
   try{
     testAbort = new AbortController();
@@ -521,9 +529,15 @@ let evtSource = null;
 function connectLogs(){
   if(evtSource){ evtSource.close(); evtSource = null; }
   evtSource = new EventSource(api.logs);
-  setText("#logConn", "connecting…");
-  evtSource.onopen = ()=> setText("#logConn", "connected");
-  evtSource.onerror = ()=> setText("#logConn", "error");
+  setText("#logConn","connecting…");
+  evtSource.onopen  = ()=> setText("#logConn","connected");
+  evtSource.onerror = ()=>{
+    setText("#logConn","reconnecting…");
+    try{ evtSource.close(); }catch(_){}
+    setTimeout(()=> {
+      evtSource = new EventSource(api.logs);
+    }, 3000);
+  };
   evtSource.onmessage = (e)=>{
     const line = e.data;
     appendLog(line);
@@ -633,3 +647,39 @@ document.addEventListener("DOMContentLoaded", async ()=>{
   if($("#selResults").value){ await showResultsForSelected(); }
   if($("#selMapSession").value){ await refreshMapSessionSelected(); }
 });
+
+// ensure these helpers exist (from earlier step)
+function makeStamp(prefix = "") {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const ts = d.getFullYear().toString() + pad(d.getMonth()+1) + pad(d.getDate())
+            + "_" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+  return `${prefix}${ts}`;
+}
+function prefillAutofill(el, prefix = "") {
+  if (!el) return;
+  el.dataset.prefix = prefix;
+  if (!el.value) { el.value = makeStamp(prefix); el.dataset.autofill = "1"; }
+  el.addEventListener("input", () => { el.dataset.autofill = ""; }, { once: true });
+}
+function startAutoStamping() {
+  const trainEl  = document.getElementById("inpModelName");    // train_
+  const testEl   = document.getElementById("inpResultName");   // test_
+  const uploadEl = document.getElementById("inpUploadName");   // test_ (upload modal)
+
+  prefillAutofill(trainEl,  "train_");
+  prefillAutofill(testEl,   "test_");
+  prefillAutofill(uploadEl, "data_");
+
+  const msToNextMinute = 60000 - (Date.now() % 60000);
+  setTimeout(() => {
+    const updateIfAuto = (el) => {
+      if (el && el.dataset.autofill === "1") {
+        el.value = makeStamp(el.dataset.prefix || "");
+      }
+    };
+    updateIfAuto(trainEl);  updateIfAuto(testEl);  updateIfAuto(uploadEl);
+    setInterval(() => { updateIfAuto(trainEl); updateIfAuto(testEl); updateIfAuto(uploadEl); }, 60000);
+  }, msToNextMinute);
+}
+document.addEventListener("DOMContentLoaded", startAutoStamping);

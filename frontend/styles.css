@@ -106,3 +106,41 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 #testWarn,#testErr,#testOk,#trainErr,#trainOk{ display:none; }
 #testWarn[hidden],#testErr[hidden],#testOk[hidden],#trainErr[hidden],#trainOk[hidden]{ display:none; }
 #testWarn:not([hidden]),#testErr:not([hidden]),#testOk:not([hidden]),#trainErr:not([hidden]),#trainOk:not([hidden]){ display:block; }
+/* Lightbox gallery controls */
+.modalContent { position: relative; } /* allow absolute-positioned controls */
+
+.img-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  font-size: 28px;
+  line-height: 44px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  z-index: 2;
+}
+.img-nav:hover { background: rgba(0,0,0,0.6); }
+.img-nav[disabled]{ opacity: .35; cursor: default; }
+
+.img-nav-prev { left: 12px; }
+.img-nav-next { right: 12px; }
+
+.img-counter{
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  z-index: 2;
+}

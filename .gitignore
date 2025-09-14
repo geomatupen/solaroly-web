@@ -1,6 +1,8 @@
 venv/
 data/test/
 data/train/
+data/valid/
 data/test_orig/
 outputs/
 media/
+**/__pycache__/
