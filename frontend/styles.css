@@ -23,7 +23,7 @@ html,body{ height:100%; margin:0; background:var(--bg); color:#e6edf3; font:14px
 .card h2{ margin-top:0; }
 .mapCard{ padding:16px; }
 
-.formGrid{ display:grid; grid-template-columns:1fr; gap:10px; }
+.formGrid{ display:grid; grid-template-columns:1fr; gap:5px; }
 .row{ display:flex; align-items:center; gap:10px; }
 .row.between{ justify-content:space-between; }
 .switchRow{ display:flex; align-items:center; gap:8px; }
@@ -159,3 +159,38 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   z-index: 2;
 }
 .push-right { margin-left: auto; }
+
+/* Make the new name inputs match dark theme */
+#inpModelName,
+#inpResultName,
+#inpUploadName {
+  background-color: #0b1117;   /* use background-color, not just background */
+  color: #e2e8f0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  outline: none;
+  appearance: none;
+}
+
+#inpModelName::placeholder,
+#inpResultName::placeholder,
+#inpUploadName::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+/* Defuse Chrome autofill forcing white background */
+#inpModelName:-webkit-autofill,
+#inpResultName:-webkit-autofill,
+#inpUploadName:-webkit-autofill,
+#inpModelName:-webkit-autofill:hover,
+#inpResultName:-webkit-autofill:hover,
+#inpUploadName:-webkit-autofill:hover,
+#inpModelName:-webkit-autofill:focus,
+#inpResultName:-webkit-autofill:focus,
+#inpUploadName:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #0b1117 inset;
+  -webkit-text-fill-color: #e2e8f0;
+  caret-color: #e2e8f0;
+}

@@ -52,7 +52,6 @@
             <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
             <div class="progressText" id="testUploadText">Uploading… 0%</div>
           </div>
-        </div>
 
           <label class="switchRow">
             <input type="checkbox" id="chkUseThermalTest" />
@@ -75,6 +74,7 @@
             <label for="inpResultName">Result Name</label>
             <input id="inpResultName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
           </div>
+        </div>
 
         <div class="actions">
           <button id="btnTest">Run Test</button>
@@ -103,13 +103,12 @@
         <h2>Train</h2>
         <p class="muted">Kicks off training using your configured dataset. Thermal channel support is preserved. Each run saves to <code>outputs/mrcnn/&lt;timestamp&gt;/</code>.</p>
 
-        <label class="switchRow">
-          <input type="checkbox" id="chkUseThermalTrain" />
-          <span>Use thermal band</span>
-        </label>
-
         <!-- Keep advanced hyperparams -->
         <div class="formGrid">
+          <label class="switchRow">
+            <input type="checkbox" id="chkUseThermalTrain" />
+            <span>Use thermal band</span>
+          </label>
           <div class="row">
             <label for="inpIters">Iterations</label>
             <input id="inpIters" type="number" value="500" min="1" />
