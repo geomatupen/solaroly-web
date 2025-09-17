@@ -261,11 +261,15 @@ async function runTest(){
     testAbort = new AbortController();
     const res = await fetch(api.testRun, { method:"POST", body: fd, signal: testAbort.signal });
     const js = await res.json();
+    const totalPreds = Array.isArray(js.manifest)
+      ? js.manifest.reduce((sum, it) => sum + (it.n || 0), 0)
+      : 0;
+
     if(!js.ok) throw new Error("test failed");
 
     currentSession = js.session;
     ok("test", "Testing completed.");
-    setText("#testStatus","Inference complete.");
+    setText("#testStatus", `Inference complete. ${totalPreds} predictions.`);
 
     // load into map & results
     await applySessionToMap(currentSession);

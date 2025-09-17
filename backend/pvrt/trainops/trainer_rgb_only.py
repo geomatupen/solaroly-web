@@ -6,6 +6,7 @@ from detectron2 import model_zoo
 from detectron2.engine import DefaultTrainer, default_setup
 from detectron2.data import build_detection_train_loader, build_detection_test_loader
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
+from detectron2.data import MetadataCatalog
 from .datasets import register_split_coco
 from .mapper_rgb_only import build_rgb_only_mapper
 from .helpers import get_num_classes
@@ -61,8 +62,21 @@ def train_rgb_only(train_dir: str | Path, val_dir: str | Path, out_dir: str | Pa
     val_loader = RGBOnlyTrainer.build_test_loader(cfg, "pv_val")
     _ = inference_on_dataset(trainer.model, val_loader, evaluator)
 
-    with (out_dir/"model_meta.json").open("w", encoding="utf-8") as f:
-        json.dump({"input_mode": "rgb"}, f, indent=2)
+    train_name = cfg.DATASETS.TRAIN[0] if len(cfg.DATASETS.TRAIN) else None
+    try:
+        meta_train = MetadataCatalog.get(train_name) if train_name else None
+        class_names = list(getattr(meta_train, "thing_classes", [])) if meta_train else []
+    except Exception:
+        class_names = []
+
+    with (out_dir / "model_meta.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "input_mode": "rgbtherm",
+            "num_classes": int(cfg.MODEL.ROI_HEADS.NUM_CLASSES),
+            "score_thresh_test": float(getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", 0.6)),
+            "class_names": class_names  # <-- add this
+        }, f, indent=2)
+
 
     final = out_dir / "model_final.pth"
     return final if final.exists() else out_dir

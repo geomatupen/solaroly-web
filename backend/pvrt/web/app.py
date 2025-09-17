@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from starlette.requests import Request
+from detectron2.data import MetadataCatalog
 
 from . import sse as sse_mod
 from .sse import LogBroker, SSELogHandler, sse_response
@@ -24,7 +25,11 @@ from .sse import LogBroker, SSELogHandler, sse_response
 from ..dataops.scan_decode_split import scan_and_decode_split
 from ..trainops.trainer_rgb_only import RGBOnlyTrainer
 from ..trainops.trainer_rgb_thermal_tolerant import RTolerantTrainer
-from ..infer.predict_rgb_thermal import predict_folder
+# from ..infer.predict_rgb_thermal import predict_folder
+# app.py (top)
+from ..infer.predict_rgb_only import predict_folder as predict_folder_rgb
+from ..infer.predict_rgb_thermal import predict_folder as predict_folder_rgbtherm
+
 
 import piexif
 import warnings
@@ -254,8 +259,21 @@ def _train_rgb_only_with_params(run_dir: Path, max_iter: int, base_lr: float, im
     except Exception as e:
         logging.getLogger("pvrt").warning(f"UI:INFO:train: Final evaluation skipped due to error: {e}")
 
-    with (out_dir/"model_meta.json").open("w", encoding="utf-8") as f:
-        json.dump({"input_mode": "rgb"}, f, indent=2)
+    train_name = cfg.DATASETS.TRAIN[0] if len(cfg.DATASETS.TRAIN) else None
+    try:
+        meta_train = MetadataCatalog.get(train_name) if train_name else None
+        class_names = list(getattr(meta_train, "thing_classes", [])) if meta_train else []
+    except Exception:
+        class_names = []
+
+    with (out_dir / "model_meta.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "input_mode": "rgb",
+            "num_classes": int(cfg.MODEL.ROI_HEADS.NUM_CLASSES),
+            "score_thresh_test": float(getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", 0.6)),
+            "class_names": class_names  # <-- add this
+        }, f, indent=2)
+
     return out_dir / "model_final.pth"
 
 
@@ -328,8 +346,22 @@ def _train_rgb_thermal_with_params(run_dir: Path, max_iter: int, base_lr: float,
     except Exception as e:
         logging.getLogger("pvrt").warning(f"UI:INFO:train: Final evaluation skipped due to error: {e}")
 
-    with (out_dir/"model_meta.json").open("w", encoding="utf-8") as f:
-        json.dump({"input_mode": "rgbtherm"}, f, indent=2)
+    # collect class names (best-effort via registered metadata)
+    try:
+        train_name = "pv_train"
+        meta_train = MetadataCatalog.get(train_name)
+        class_names = list(getattr(meta_train, "thing_classes", [])) if meta_train else []
+    except Exception:
+        class_names = []
+
+    with (out_dir / "model_meta.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "input_mode": "rgbtherm",
+            "num_classes": int(cfg.MODEL.ROI_HEADS.NUM_CLASSES),
+            "score_thresh_test": float(getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", 0.6)),
+            "class_names": class_names
+        }, f, indent=2)
+
     return out_dir / "model_final.pth"
 
 def _train_job(
@@ -545,12 +577,57 @@ def _to_square_polygon(lat, lon, size_deg=1e-5):
         ]]
     }
 
-def _preds_to_geojson(images_dir: Path, preds_dir: Path, media_session_dir: Path, score_thresh: float = 0.5) -> Tuple[Path, list]:
+def _coerce_pred_json(data, fallback_name: str):
+    """
+    Accepts either:
+      dict: {"file","boxes","scores","classes"} (preferred)
+      list: [ { "bbox":[x1,y1,x2,y2], "score":..., "class":... }, ... ]
+            or [ [x1,y1,x2,y2], ... ]
+    Returns (name, boxes, scores, classes). Unknown shapes -> empty.
+    """
+    name = fallback_name
+    boxes, scores, classes = [], [], []
+
+    # dict-shaped (your current writer)
+    if isinstance(data, dict):
+        name = data.get("file") or fallback_name
+        boxes  = data.get("boxes")  or data.get("bboxes") or []
+        scores = data.get("scores") or []
+        classes= data.get("classes")or []
+        return name, boxes, scores, classes
+
+    # list-shaped (older/alternate exporters)
+    if isinstance(data, list):
+        for det in data:
+            if isinstance(det, dict):
+                b = det.get("bbox") or det.get("box") or det.get("b")
+                if b and len(b) >= 4:
+                    boxes.append([float(b[0]), float(b[1]), float(b[2]), float(b[3])])
+                    scores.append(float(det.get("score", 0.0)))
+                    classes.append(int(det.get("class", det.get("cls", 0))))
+            elif isinstance(det, (list, tuple)) and len(det) >= 4:
+                boxes.append([float(det[0]), float(det[1]), float(det[2]), float(det[3])])
+        # pad to align lengths
+        if len(scores)  < len(boxes):  scores  += [0.0] * (len(boxes) - len(scores))
+        if len(classes) < len(boxes):  classes += [0]   * (len(boxes) - len(classes))
+        return name, boxes, scores, classes
+
+    return name, boxes, scores, classes
+
+
+
+def _preds_to_geojson(images_dir: Path, preds_dir: Path, media_session_dir: Path, score_thresh: float = 0.6 , class_names: list[str] | None = None) -> Tuple[Path, list]:
+    class_names = class_names or []
     features = []
     image_points = []
-    for json_file in sorted((preds_dir).glob("*.json")):
+    pred_base = preds_dir / "preds" if (preds_dir / "preds").exists() else preds_dir
+    for json_file in sorted(pred_base.glob("*.json")):
         data = json.loads(json_file.read_text())
-        name = data.get("file") or json_file.stem
+        # tolerate list/dict shapes; skip unknown JSONs silently
+        name, boxes, scores, classes = _coerce_pred_json(data, json_file.stem)
+        if not boxes and not scores and not classes:
+            continue  # not a prediction JSON we recognize
+
         src_img = images_dir / name
         latlon = _read_exif_latlon(src_img) if src_img.exists() else None
         img_url = f"/media/{media_session_dir.relative_to(MEDIA_DIR)}/images/{src_img.name}" if src_img.exists() else None
@@ -560,15 +637,24 @@ def _preds_to_geojson(images_dir: Path, preds_dir: Path, media_session_dir: Path
             features.append(_to_feature_point(lat, lon, {"type":"image","name":name,"url":img_url}))
             image_points.append({"name": name, "lat": lat, "lon": lon, "url": img_url})
 
-            boxes = data.get("boxes") or []
-            scores = data.get("scores") or []
-            classes = data.get("classes") or []
             for b, s, c in zip(boxes, scores, classes):
-                if s < score_thresh:
-                    continue
-                props = {"type":"anomaly","image":name,"score":float(s),"class":int(c),"bbox_pixel":b, "polygon_note":"approx_square"}
+                try:
+                    if float(s) < score_thresh:
+                        continue
+                except Exception:
+                    pass
+                cid = int(c) if isinstance(c, (int, float, str)) and str(c).isdigit() else 0
+                cname = class_names[cid] if class_names and 0 <= cid < len(class_names) else str(cid)
+                props = {
+                    "type":"anomaly","image":name,
+                    "score": float(s) if isinstance(s,(int,float,str)) else 0.0,
+                    "class": int(c) if isinstance(c,(int,float,str)) else 0,
+                    "classname": cname,
+                    "bbox_pixel": b, "polygon_note":"approx_square"
+                }
                 poly = _to_square_polygon(lat, lon, 1e-5)
                 features.append({"type":"Feature","properties":props,"geometry":poly})
+
     gj = {"type":"FeatureCollection","features":features, "name":"pvrt_anomalies"}
     out = media_session_dir / "anomalies.geojson"
     out.write_text(json.dumps(gj, indent=2))
@@ -602,73 +688,74 @@ def _ensure_max_filesize_jpg(bgr: "cv2.Mat", max_bytes: int = 40 * 1024 * 1024) 
         else:
             scale *= 0.9
 
-def _draw_overlays(images_dir: Path, preds_dir: Path, session_dir: Path) -> Tuple[Path, Path, list]:
+def _draw_overlays(images_dir: Path, preds_dir: Path, session_dir: Path, class_names: list[str] | None = None) -> Tuple[Path, Path, list]:
+    class_names = class_names or []
     overlays = session_dir / "overlays"
     thumbs   = session_dir / "thumbs"
     overlays.mkdir(exist_ok=True, parents=True)
     thumbs.mkdir(exist_ok=True, parents=True)
     manifest = []
 
-    json_files = sorted(preds_dir.glob("*.json"))
+    # Look in preds/ subfolder if it exists
+    pred_base = preds_dir / "preds" if (preds_dir / "preds").exists() else preds_dir
+    json_files = sorted(pred_base.glob("*.json"))
     total = len(json_files)
-    done = 0
 
+    done = 0
     for jf in json_files:
         data = json.loads(jf.read_text())
-        name = data.get("file") or jf.stem
+        name, boxes, scores, classes = _coerce_pred_json(data, jf.stem)  # tolerant
+        if not name:
+            name = jf.stem
+
         src = images_dir / name
         if not src.exists():
-            done += 1
-            logger.info(f"UI:INFO:test: overlay {done}/{total}: {name} (missing image, skipped)")
+            continue
+        img = cv2.imread(str(src), cv2.IMREAD_COLOR)
+        if img is None:
             continue
 
-        img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
-        if img is None:
-            try:
-                pil = Image.open(src).convert("RGB")
-                img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-            except Exception:
-                done += 1
-                logger.info(f"UI:INFO:test: overlay {done}/{total}: {name} (cannot read, skipped)")
-                continue
-
-        if img.ndim == 2:
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        if img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-        boxes  = data.get("boxes") or []
-        scores = data.get("scores") or []
-        classes= data.get("classes") or []
-
+        # draw rectangles
         for b, s, c in zip(boxes, scores, classes):
             x1, y1, x2, y2 = map(int, b[:4])
             cv2.rectangle(img, (x1, y1), (x2, y2), (30, 220, 30), 2)
-            label = f"{int(c)}:{s:.2f}"
-            cv2.putText(img, label, (x1, max(0, y1-6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30, 220, 30), 2, cv2.LINE_AA)
+            cls_id = int(c) if isinstance(c, (int, float, str)) and str(c).isdigit() else 0
+            cls_name = class_names[cls_id] if class_names and 0 <= cls_id < len(class_names) else str(cls_id)
+            label = f"{cls_name}:{float(s):.2f}"
 
-        out_jpg = overlays / f"{Path(name).stem}.jpg"
-        jpg = _ensure_max_filesize_jpg(img, 40 * 1024 * 1024)
-        out_jpg.write_bytes(jpg)
+            cv2.putText(img, label, (x1, max(0, y1-6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30, 220, 30), 2, cv2.LINE_AA)
 
-        # Thumbs smaller (half of previous 160 -> 80px width)
+        # --- SAVE overlay ---
+        overlay_path = overlays / f"{Path(name).stem}.jpg"
+        overlay_path.write_bytes(_ensure_max_filesize_jpg(img))
+
+        # --- SAVE thumbnail (fixed width ~ 420px) ---
         h, w = img.shape[:2]
-        tw = 80
-        th = int(h * (tw / w))
-        thumb_img = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
-        ok, tbuf = cv2.imencode(".jpg", thumb_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-        (thumbs / out_jpg.name).write_bytes(tbuf)
+        t_w = 420
+        t_h = max(1, int(h * (t_w / max(1, w))))
+        thumb_img = cv2.resize(img, (t_w, t_h), interpolation=cv2.INTER_AREA)
+        ok, tbuf = cv2.imencode(".jpg", thumb_img, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if ok:
+            (thumbs / f"{Path(name).stem}.jpg").write_bytes(tbuf.tobytes())
+
+        # URLs must include /media/ prefix
+        overlay_url = f"/media/{overlay_path.relative_to(MEDIA_DIR)}".replace("\\", "/")
+        thumb_url   = f"/media/{(thumbs / f'{Path(name).stem}.jpg').relative_to(MEDIA_DIR)}".replace("\\", "/")
 
         manifest.append({
             "file": name,
-            "overlay": f"/media/{session_dir.relative_to(MEDIA_DIR)}/overlays/{out_jpg.name}",
-            "thumb":   f"/media/{session_dir.relative_to(MEDIA_DIR)}/thumbs/{out_jpg.name}",
+            "overlay": overlay_url,
+            "thumb": thumb_url,
+            "n": len(boxes),
         })
+
         done += 1
         logger.info(f"UI:INFO:test: overlay {done}/{total}: {name}")
 
     (session_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return overlays, thumbs, manifest
+
 
 def _session_assets(session_dir: Path) -> dict:
     imgs_dir = session_dir / "images"
@@ -760,6 +847,21 @@ async def api_test_run(
     if not model_dir.exists():
         raise HTTPException(status_code=404, detail=f"Model '{model_dir.name}' not found.")
 
+    # Read class_names (if present) from the selected model’s metadata
+    class_names = []
+    try:
+        mm = model_dir / "model_meta.json"
+        if mm.exists():
+            meta_js = json.loads(mm.read_text(encoding="utf-8"))
+            cn = meta_js.get("class_names")
+            if isinstance(cn, list):
+                class_names = [str(x) for x in cn]
+    except Exception:
+        pass
+    
+    logger.info(f"UI:INFO:test: Using model dir: {model_dir}")
+
+
     safe_result = _safe_name(result_name)
     stamp = safe_result or _now_stamp()
     sess = MEDIA_DIR / f"sessions/{stamp}"
@@ -801,16 +903,45 @@ async def api_test_run(
             elif use_thermal and mode == "rgb":
                 logger.info("UI:INFO:test: Model is RGB-only; ignoring 'Use thermal band' during testing.")
 
-            preds_dir = predict_folder(ds_dir, sess, model_dir, use_thermal)
-            logger.info(f"[test] Predictions at {preds_dir}")
+            # --- Run heavy pipeline off the event loop so SSE can flush live ---
+            async def _run_pipeline():
+                # 1) prediction
+                logger.info("UI:INFO:test: starting prediction…")
+                # pdir = predict_folder(ds_dir, sess, model_dir, use_thermal)
+                # Choose the pipeline by user checkbox + model's declared input_mode
+                model_mode = (mode or "rgb").lower()
+                if use_thermal and model_mode == "rgbtherm":
+                    logger.info("UI:INFO:test: Thermal path selected (rgb+thermal).")
+                    pdir = predict_folder_rgbtherm(ds_dir, sess, model_dir, True)
+                else:
+                    if use_thermal and model_mode == "rgb":
+                        logger.info("UI:INFO:test: Model is RGB-only; ignoring 'Use thermal band' during testing.")
+                    pdir = predict_folder_rgb(ds_dir, sess, model_dir, False)
 
-            ov_dir, th_dir, manifest = _draw_overlays(images_for_map, preds_dir, sess)
-            logger.info(f"[test] Overlays: {ov_dir}  Thumbs: {th_dir}")
+                logger.info(f"UI:INFO:test: prediction complete. preds_dir={pdir}")
 
-            gj_path, image_points = _preds_to_geojson(images_for_map, preds_dir, sess)
-            logger.info(f"[test] GeoJSON: {gj_path}")
+                # 2) overlays & thumbs
+                logger.info("UI:INFO:test: rendering overlays…")
+                ov_dir, th_dir, manifest_local = _draw_overlays(images_for_map, pdir, sess, class_names)
+                logger.info(f"UI:INFO:test: overlays complete. overlays={ov_dir}, thumbs={th_dir}")
+
+                # 3) geojson
+                logger.info("UI:INFO:test: building geojson…")
+                gj, pts = _preds_to_geojson(images_for_map, pdir, sess, class_names)
+                logger.info(f"UI:INFO:test: geojson complete. file={gj}")
+
+                return pdir, ov_dir, th_dir, manifest_local, gj, pts
+
+            preds_dir, ov_dir, th_dir, manifest, gj_path, image_points = await asyncio.to_thread(
+                lambda: asyncio.run(_run_pipeline())  # run sync in thread; inside we do the steps
+            )
+
+            # compute total predictions and log it (shows in frontend mini-log)
+            total_preds = sum(int(it.get("n", 0)) for it in manifest)
+            logger.info(f"UI:INFO:test: total predictions = {total_preds}")
 
             assets = _session_assets(sess)
+
 
             logger.info("UI:OK:test: Test complete. Layers added to the map.")
             return {
@@ -820,7 +951,10 @@ async def api_test_run(
                 "image_points": image_points,
                 "manifest": manifest,
                 "assets": assets,
-                "tiler": "ok" if RIO_OK else "unavailable"
+                "tiler": "ok" if RIO_OK else "unavailable",
+                "total_preds": total_preds,
+                "class_names": class_names,
+                "model_path": str(model_dir),
             }
         finally:
             logger.removeHandler(file_handler)
