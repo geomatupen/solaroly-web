@@ -66,6 +66,7 @@ function populateModels(list){
   const sel = $("#selModelFolder");
   sel.innerHTML = "";
   list.forEach(m => {
+    // console.log(m)
     const o = document.createElement("option");
     o.value = m.name;
     o.textContent = `${m.name} — ${m.input_mode}`;
@@ -108,6 +109,7 @@ async function loadDatasets(){
 async function loadModels(){
   const res = await fetch(api.models);
   const js = await res.json();
+  // console.log(js)
   if(js.ok){ populateModels(js.models); }
 }
 async function loadSessions(selectLatest=true){

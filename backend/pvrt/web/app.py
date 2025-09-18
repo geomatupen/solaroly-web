@@ -1,4 +1,6 @@
 # backend/pvrt/web/app.py
+from __future__ import annotations
+
 import asyncio
 import io
 import json
@@ -12,34 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 
-from fastapi import FastAPI, Form, UploadFile, File, HTTPException
+from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import Response
-from starlette.requests import Request
-from detectron2.data import MetadataCatalog
+from starlette.responses import StreamingResponse
 
-from . import sse as sse_mod
-from .sse import LogBroker, SSELogHandler, sse_response
-
-from ..dataops.scan_decode_split import scan_and_decode_split
-from ..trainops.trainer_rgb_only import RGBOnlyTrainer
-from ..trainops.trainer_rgb_thermal_tolerant import RTolerantTrainer
-# from ..infer.predict_rgb_thermal import predict_folder
-# app.py (top)
-from ..infer.predict_rgb_only import predict_folder as predict_folder_rgb
-from ..infer.predict_rgb_thermal import predict_folder as predict_folder_rgbtherm
-
-
-import piexif
-import warnings
-
-# Optional image overlay utilities
-import cv2
-import numpy as np
 from PIL import Image
+import numpy as np
 
-# --- Optional tiler deps ---
+# --- Optional tiler deps (best-effort) ---
 try:
     import rasterio
     from rasterio.warp import reproject, Resampling
@@ -51,14 +34,45 @@ try:
 except Exception:
     RIO_OK = False
 
-app = FastAPI(title="PVRT API", version="1.3.0")
+# --- Backend-agnostic bridge and registry ---
+from ..core.registry import register_backend
+from .bridge import train_entry, predict_entry
+from ..backends.detectron.backend import register as register_detectron
+
+# --- SSE/logging bridge (your existing file) ---
+from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
+
+# --- Reuse your data helpers (RJPEG decode & scanning) ---
+from ..dataops.scan_decode_split import (
+    ensure_dirp_init, scan_split_decode_thermal, # safe to call only if thermal requested
+)
+
+# ---------------- Paths & constants ----------------
+ROOT = Path(__file__).resolve().parents[2]        # .../backend/pvrt
+PROJECT_ROOT = ROOT.parent                         # repo root
+DATA_DIR = PROJECT_ROOT / "data"
+TRAIN_DIR = DATA_DIR / "train"
+VALID_DIR = DATA_DIR / "valid"
+TEST_DIR  = DATA_DIR / "test"
+
+OUTPUTS   = PROJECT_ROOT / "outputs" / "runs"      # per-run outputs (weights, meta, logs)
+OUTPUTS.mkdir(parents=True, exist_ok=True)
+
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
+MEDIA_DIR    = PROJECT_ROOT / "media"              # browsable artifacts (thumbs, overlays, geojson)
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+IMAGE_EXTS = {".jpg",".jpeg",".png",".tif",".tiff",".bmp",".webp",".JPG",".JPEG",".PNG",".TIF",".TIFF",".BMP",".WEBP"}
+
+# --------------- FastAPI app & CORS ----------------
+app = FastAPI(title="PVRT API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# ---------------- Logging / SSE ----------------
+# --------------- Logging / SSE ----------------
 broker = LogBroker()
 sse_handler = SSELogHandler(broker)
 sse_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", "%H:%M:%S"))
@@ -69,40 +83,32 @@ logger.setLevel(logging.INFO)
 logger.handlers.clear()
 logger.addHandler(sse_handler)
 
-def _attach_external_loggers():
-    for name in ("detectron2", "fvcore", "d2", "detectron2.data", "detectron2.utils.events", "detectron2.engine"):
-        lg = logging.getLogger(name)
-        lg.setLevel(logging.INFO)
-        if not any(isinstance(h, SSELogHandler) for h in lg.handlers):
-            lg.addHandler(sse_handler)
-        lg.propagate = False
+# --------------- Backend registration ----------------
+register_detectron(register_backend)  # Detectron now; add YOLO later by registering it here.
 
-@app.on_event("startup")
-async def _on_startup():
-    loop = asyncio.get_running_loop()
-    sse_mod.set_event_loop(loop)
-    _attach_external_loggers()
-    warnings.filterwarnings("ignore", message="torch.meshgrid: in an upcoming release.*")
-    if not RIO_OK:
-        logger.info("UI:INFO:test: Raster tiler disabled (missing rasterio/pyproj/mercantile).")
-    logger.info("Startup: SSE ready.")
+# --------------- Cancel flag (best-effort) ----------------
+CANCEL_FLAGS: Dict[str, bool] = {"train": False}
 
-# -------- Redirect stdout/stderr to logging for long jobs --------
-class _StreamToLogger(io.TextIOBase):
+# ================== small, reusable utils ==================
+
+class _StreamToLogger:
+    """Redirect print()/stdout/err to our logger (so they reach SSE)."""
     def __init__(self, level=logging.INFO):
-        super().__init__()
         self.level = level
-        self._buf = ""
-    def write(self, buf):
-        self._buf += str(buf)
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            if line.strip():
+        self._buf = []
+
+    def write(self, msg: str):
+        msg = str(msg)
+        if not msg:
+            return
+        # Split on lines so SSE consumers see live flow
+        for line in msg.splitlines():
+            line = line.strip()
+            if line:
                 logging.getLogger("pvrt").log(self.level, line)
+
     def flush(self):
-        if self._buf.strip():
-            logging.getLogger("pvrt").log(self.level, self._buf.strip())
-            self._buf = ""
+        return
 
 @contextmanager
 def redirect_std_to_logger():
@@ -118,368 +124,40 @@ def redirect_std_to_logger():
             pass
         sys.stdout, sys.stderr = old_out, old_err
 
-# ---------------- Paths ----------------
-ROOT = Path(__file__).resolve().parents[2]
-PROJECT_ROOT = ROOT.parent
-DATA_DIR = PROJECT_ROOT / "data"
-TRAIN_DIR = DATA_DIR / "train"
-VALID_DIR = DATA_DIR / "valid"
-TEST_DIR  = DATA_DIR / "test"
-OUTPUTS   = PROJECT_ROOT / "outputs" / "mrcnn"
-FRONTEND_DIR = PROJECT_ROOT / "frontend"
-MEDIA_DIR = PROJECT_ROOT / "media"
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-TEST_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUTS.mkdir(parents=True, exist_ok=True)
-
 def _now_stamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
 
-# ---------------- Common endpoints ----------------
-@app.get("/api/logs")
-async def stream_logs(request: Request):
-    q = await broker.subscribe()
-    logger.info("Client subscribed to logs.")
-    return sse_response(q)
-
-@app.get("/api/health")
-async def api_health():
-    return {"ok": True}
-
-def _read_model_meta(out_dir: Path) -> dict:
-    p = out_dir / "model_meta.json"
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            return {}
-    return {}
-
-# --------------- Cancel (best-effort) ----------------
-CANCEL_FLAGS = {"train": False}
-
-@app.post("/api/cancel")
-async def api_cancel(job: str = Form(...)):
-    job = job.strip().lower()
-    if job == "train":
-        CANCEL_FLAGS["train"] = True
-        logger.info("UI:INFO:train: Cancel requested (best-effort). Training will stop at the next safe point if supported.")
-        return {"ok": True, "job": "train"}
-    elif job == "test":
-        logger.info("UI:INFO:test: Cancel requested (client-side).")
-        return {"ok": True, "job": "test"}
-    else:
-        raise HTTPException(status_code=400, detail="Unknown job. Use 'train' or 'test'.")
-
-# ---------------- Training helpers ----------------
-def _force_axis_aligned(cfg):
-    cfg.MODEL.ANCHOR_GENERATOR.ANGLES = [[0]]
-    logging.getLogger("pvrt").info("[train] Forcing axis-aligned anchors: MODEL.ANCHOR_GENERATOR.ANGLES=[[0]]")
-
-def _safe_solver_steps(max_iter: int):
-    # make milestones strictly inside (0, MAX_ITER)
-    s1 = int(max_iter * 0.66)
-    s2 = int(max_iter * 0.88)
-    steps = sorted({s for s in (s1, s2) if 0 < s < int(max_iter)})
-    return tuple(steps)
-
-_SAFE_NAME_RE = re.compile(r'[^A-Za-z0-9._-]+')
 def _safe_name(name: str | None) -> str:
     if not name:
         return ""
     name = name.strip()[:128]
-    return _SAFE_NAME_RE.sub("_", name)
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")
 
-def _train_rgb_only_with_params(run_dir: Path, max_iter: int, base_lr: float, ims_per_batch: int) -> Path:
-    from detectron2.config import get_cfg
-    from detectron2 import model_zoo
-    from detectron2.engine import default_setup
-    from detectron2.evaluation import COCOEvaluator, inference_on_dataset
-    from detectron2.utils.events import EventStorage
-
-    from ..trainops.datasets import register_split_coco
-    from ..trainops.helpers import get_num_classes
-
-    train_dir, val_dir, out_dir = TRAIN_DIR, VALID_DIR, run_dir
-    register_split_coco("pv_train", train_dir)
-    register_split_coco("pv_val",   val_dir)
-    ann_train = next((p for p in [
-        train_dir/"_annotations.coco", train_dir/"_annotations.coco.json",
-        train_dir/"train.json", train_dir/"annotations.json"
-    ] if p.exists()), None)
-    if ann_train is None:
-        raise FileNotFoundError(f"COCO JSON not found in {train_dir}")
-    num_classes = get_num_classes(ann_train)
-
-    cfg = get_cfg()
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-    cfg.DATASETS.TRAIN = ("pv_train",)
-    cfg.DATASETS.TEST  = ("pv_val",)
-    cfg.DATALOADER.NUM_WORKERS = 2
-
-    cfg.SOLVER.IMS_PER_BATCH = int(ims_per_batch)
-    cfg.SOLVER.BASE_LR = float(base_lr)
-    cfg.SOLVER.MAX_ITER = int(max_iter)
-    cfg.SOLVER.STEPS = _safe_solver_steps(cfg.SOLVER.MAX_ITER)  # <— safe milestones
-    cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(max_iter/6))
-    cfg.TEST.EVAL_PERIOD = 0  # we do a single eval after training
-
-    cfg.INPUT.FORMAT = "RGB"
-    cfg.MODEL.PIXEL_MEAN = [0.485, 0.456, 0.406]
-    cfg.MODEL.PIXEL_STD  = [0.229, 0.224, 0.225]
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = int(num_classes)
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5
-
-    _force_axis_aligned(cfg)
-
-    cfg.OUTPUT_DIR = str(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    default_setup(cfg, {})
-    with EventStorage(0):
-        trainer = RGBOnlyTrainer(cfg)
-        trainer.resume_or_load(resume=False)
-        logging.getLogger("pvrt").info(
-            f"[train] Using IMS_PER_BATCH={cfg.SOLVER.IMS_PER_BATCH}, BASE_LR={cfg.SOLVER.BASE_LR}, MAX_ITER={cfg.SOLVER.MAX_ITER}, STEPS={cfg.SOLVER.STEPS}"
-        )
-        trainer.train()
-
-    # Ensure final weights are written even if eval crashes:
-    try:
-        if hasattr(trainer, "checkpointer"):
-            trainer.checkpointer.save("model_final")
-    except Exception as e:
-        logging.getLogger("pvrt").warning(f"[train] Could not save final checkpoint explicitly: {e}")
-
-    # Post-train eval (non-fatal)
-    try:
-        val_loader = RGBOnlyTrainer.build_test_loader(cfg, "pv_val")
-        evaluator = COCOEvaluator("pv_val", cfg, False, output_dir=cfg.OUTPUT_DIR)
-        _ = inference_on_dataset(trainer.model, val_loader, evaluator)
-    except Exception as e:
-        logging.getLogger("pvrt").warning(f"UI:INFO:train: Final evaluation skipped due to error: {e}")
-
-    train_name = cfg.DATASETS.TRAIN[0] if len(cfg.DATASETS.TRAIN) else None
-    try:
-        meta_train = MetadataCatalog.get(train_name) if train_name else None
-        class_names = list(getattr(meta_train, "thing_classes", [])) if meta_train else []
-    except Exception:
-        class_names = []
-
-    with (out_dir / "model_meta.json").open("w", encoding="utf-8") as f:
-        json.dump({
-            "input_mode": "rgb",
-            "num_classes": int(cfg.MODEL.ROI_HEADS.NUM_CLASSES),
-            "score_thresh_test": float(getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", 0.6)),
-            "class_names": class_names  # <-- add this
-        }, f, indent=2)
-
-    return out_dir / "model_final.pth"
-
-
-def _train_rgb_thermal_with_params(run_dir: Path, max_iter: int, base_lr: float, ims_per_batch: int) -> Path:
-    from detectron2.config import get_cfg
-    from detectron2 import model_zoo
-    from detectron2.engine import default_setup
-    from detectron2.evaluation import COCOEvaluator, inference_on_dataset
-    from detectron2.utils.events import EventStorage
-
-    from ..trainops.datasets import register_split_coco
-    from ..trainops.helpers import get_num_classes
-
-    train_dir, val_dir, out_dir = TRAIN_DIR, VALID_DIR, run_dir
-    register_split_coco("pv_train", train_dir)
-    register_split_coco("pv_val",   val_dir)
-    ann_train = next((p for p in [
-        train_dir/"_annotations.coco", train_dir/"_annotations.coco.json",
-        train_dir/"train.json", train_dir/"annotations.json"
-    ] if p.exists()), None)
-    if ann_train is None:
-        raise FileNotFoundError(f"COCO JSON not found in {train_dir}")
-    num_classes = get_num_classes(ann_train)
-
-    cfg = get_cfg()
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-    cfg.DATASETS.TRAIN = ("pv_train",)
-    cfg.DATASETS.TEST  = ("pv_val",)
-    cfg.DATALOADER.NUM_WORKERS = 2
-
-    cfg.SOLVER.IMS_PER_BATCH = int(ims_per_batch)
-    cfg.SOLVER.BASE_LR = float(base_lr)
-    cfg.SOLVER.MAX_ITER = int(max_iter)
-    cfg.SOLVER.STEPS = _safe_solver_steps(cfg.SOLVER.MAX_ITER)  # <— safe milestones
-    cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(max_iter/6))
-    cfg.TEST.EVAL_PERIOD = 0
-
-    cfg.INPUT.FORMAT = "RGB"
-    cfg.MODEL.PIXEL_MEAN = [0.5, 0.5, 0.5, 0.5]
-    cfg.MODEL.PIXEL_STD  = [0.5, 0.5, 0.5, 0.5]
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = int(num_classes)
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5
-
-    _force_axis_aligned(cfg)
-
-    cfg.OUTPUT_DIR = str(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    default_setup(cfg, {})
-    with EventStorage(0):
-        trainer = RTolerantTrainer(cfg)
-        trainer.resume_or_load(resume=False)
-        logging.getLogger("pvrt").info(
-            f"[train] Using IMS_PER_BATCH={cfg.SOLVER.IMS_PER_BATCH}, BASE_LR={cfg.SOLVER.BASE_LR}, MAX_ITER={cfg.SOLVER.MAX_ITER}, STEPS={cfg.SOLVER.STEPS}"
-        )
-        trainer.train()
-
-    # Ensure final weights are written even if eval crashes:
-    try:
-        if hasattr(trainer, "checkpointer"):
-            trainer.checkpointer.save("model_final")
-    except Exception as e:
-        logging.getLogger("pvrt").warning(f"[train] Could not save final checkpoint explicitly: {e}")
-
-    # Post-train eval (non-fatal)
-    try:
-        val_loader = RTolerantTrainer.build_test_loader(cfg, "pv_val")
-        evaluator = COCOEvaluator("pv_val", cfg, False, output_dir=cfg.OUTPUT_DIR)
-        _ = inference_on_dataset(trainer.model, val_loader, evaluator)
-    except Exception as e:
-        logging.getLogger("pvrt").warning(f"UI:INFO:train: Final evaluation skipped due to error: {e}")
-
-    # collect class names (best-effort via registered metadata)
-    try:
-        train_name = "pv_train"
-        meta_train = MetadataCatalog.get(train_name)
-        class_names = list(getattr(meta_train, "thing_classes", [])) if meta_train else []
-    except Exception:
-        class_names = []
-
-    with (out_dir / "model_meta.json").open("w", encoding="utf-8") as f:
-        json.dump({
-            "input_mode": "rgbtherm",
-            "num_classes": int(cfg.MODEL.ROI_HEADS.NUM_CLASSES),
-            "score_thresh_test": float(getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", 0.6)),
-            "class_names": class_names
-        }, f, indent=2)
-
-    return out_dir / "model_final.pth"
-
-def _train_job(
-    use_thermal: bool,
-    max_iter: int,
-    base_lr: float,
-    ims_per_batch: int,
-    model_name: str = "",
-) -> None:
-    name = model_name or _now_stamp()
-    run_dir = OUTPUTS / name
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(run_dir / "train.log", encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", "%H:%M:%S"))
-    logger.addHandler(file_handler)
-
-    ext_names = ("detectron2", "fvcore", "detectron2.engine")
-    ext_handlers = []
-    for name in ext_names:
-        lg = logging.getLogger(name)
-        fh = logging.FileHandler(run_dir / "train.log", encoding="utf-8")
-        fh.setLevel(logging.INFO)
-        fh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", "%H:%M:%S"))
-        lg.addHandler(fh)
-        ext_handlers.append((lg, fh))
-
-    CANCEL_FLAGS["train"] = False
-
-    with redirect_std_to_logger():
-        try:
-            logger.info("UI:OK:train: Training started…")
-            logger.info(f"[train] Run dir: {run_dir}")
-            logger.info(f"[train] use_thermal={use_thermal} max_iter={max_iter} base_lr={base_lr} batch={ims_per_batch}")
-            logger.info(f"UI:INFO:train: iterations={max_iter} batch={ims_per_batch} lr={base_lr}")
-
-            if use_thermal:
-                logger.info("[train] Scanning TRAIN/VALID for radiometric data…")
-                _, tr_stats = scan_and_decode_split(TRAIN_DIR)
-                _, va_stats = scan_and_decode_split(VALID_DIR)
-                logger.info(f"[train] TRAIN RJPEG: ok={tr_stats['ok']} fail={tr_stats['fail']} total={tr_stats['total']}")
-                logger.info(f"[train] VALID RJPEG: ok={va_stats['ok']} fail={va_stats['fail']} total={va_stats['total']}")
-                if CANCEL_FLAGS["train"]:
-                    logger.info("UI:INFO:train: Cancel observed before training loop. Aborting.")
-                    return
-                if tr_stats["ok"] == 0:
-                    err = tr_stats.get("first_error") or "No radiometric data or DJI SDK not available."
-                    logger.info(f"UI:INFO:train: Could not decode thermal from any TRAIN images. Reason: {err}. Proceeding with RGB-only.")
-                    logger.warning("[train] WARNING: No thermal in TRAIN. Falling back to RGB-only.")
-                    final = _train_rgb_only_with_params(run_dir, max_iter, base_lr, ims_per_batch)
-                else:
-                    if tr_stats["fail"] > 0:
-                        logger.info(
-                            f"UI:INFO:train: Some TRAIN images lack thermal ({tr_stats['fail']}/{tr_stats['total']}). "
-                            "Those will use zeros in the thermal channel."
-                        )
-                    final = _train_rgb_thermal_with_params(run_dir, max_iter, base_lr, ims_per_batch)
-            else:
-                logger.info("[train] RGB-only selected.")
-                final = _train_rgb_only_with_params(run_dir, max_iter, base_lr, ims_per_batch)
-
-            logger.info(f"[train] Done. Weights at: {final}")
-            logger.info("UI:OK:train: Training completed.")
-        except Exception as e:
-            logger.exception(f"[train] FAILED: {e}")
-            logger.error(f"UI:ERR:train: Training failed: {e}")
-        finally:
-            logger.removeHandler(file_handler)
-            for lg, fh in ext_handlers:
-                lg.removeHandler(fh)
-
-# -------------- Train API --------------
-@app.post("/api/train")
-async def api_train(
-    use_thermal: bool = Form(default=False),
-    max_iter: int = Form(default=500),
-    base_lr: float = Form(default=0.002),
-    ims_per_batch: int = Form(default=4),
-    model_name: str = Form(default=""),
-):
-    safe_model_name = _safe_name(model_name)
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, _train_job, use_thermal, max_iter, base_lr, ims_per_batch, safe_model_name)
-    return {
-        "ok": True,
-        "use_thermal": use_thermal,
-        "max_iter": max_iter,
-        "base_lr": base_lr,
-        "ims_per_batch": ims_per_batch,
-    }
-
-# -------------- List model runs --------------
-def _list_models():
-    models = []
-    for d in sorted([p for p in OUTPUTS.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True):
-        if (d / "model_final.pth").exists():
-            meta = _read_model_meta(d)
-            models.append({
-                "name": d.name,
-                "mtime": int(d.stat().st_mtime),
-                "input_mode": meta.get("input_mode", "rgb")
-            })
-    return models
-
-@app.get("/api/models")
-async def api_models():
-    return {"ok": True, "models": _list_models()}
-
-# -------------- Test dataset helpers --------------
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 def _is_image(p: Path) -> bool:
     return p.suffix.lower() in IMAGE_EXTS
 
-def _slugify(name: str) -> str:
-    base = Path(name).stem
-    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-._")
-    return base or "dataset"
+def _read_model_meta(run_dir: Path) -> dict:
+    meta = run_dir / "model_meta.json"
+    if meta.exists():
+        try:
+            return json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def _list_models() -> List[str]:
+    models = []
+    if OUTPUTS.exists():
+        for d in sorted(OUTPUTS.iterdir()):
+            if d.is_dir() and (d / "model_meta.json").exists():
+                # out.append(p.name)
+                meta = _read_model_meta(d)
+                models.append({
+                    "name": d.name,
+                    "mtime": int(d.stat().st_mtime),
+                    "input_mode": meta.get("input_mode", "rgb")
+                })
+    return models
 
 def _unique_dataset_dir(base_name: str) -> Path:
     d = TEST_DIR / base_name
@@ -492,346 +170,332 @@ def _unique_dataset_dir(base_name: str) -> Path:
             return cand
         i += 1
 
-def _save_zip_as_dataset(up: UploadFile, preferred_base: str | None = None) -> Path:
-    base = _slugify(preferred_base) if preferred_base else _slugify(up.filename or "dataset")
-    dest = _unique_dataset_dir(base)
-    dest.mkdir(parents=True, exist_ok=True)
-    data = up.file.read()
-    with io.BytesIO(data) as bio:
-        with zipfile.ZipFile(bio) as zf:
-            tmp = dest / "__tmp_extract__"
-            tmp.mkdir(parents=True, exist_ok=True)
-            zf.extractall(tmp)
-            for p in tmp.rglob("*"):
-                if p.is_file() and _is_image(p):
-                    out = dest / p.name
-                    k = 1
-                    while out.exists():
-                        out = dest / f"{p.stem}-{k}{p.suffix}"
-                        k += 1
-                    shutil.copy2(p, out)
-            shutil.rmtree(tmp, ignore_errors=True)
-    logger.info(f"[test] Created dataset '{dest.name}' with {len([*dest.glob('*')])} files.")
-    return dest
+def _save_zip_as_dataset(zip_file: UploadFile, preferred_base: str | None = None) -> Path:
+    base = _safe_name(preferred_base or Path(zip_file.filename or "dataset.zip").stem) or "dataset"
+    ds_dir = _unique_dataset_dir(base)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+
+    buf = zip_file.file.read()
+    with zipfile.ZipFile(io.BytesIO(buf)) as zf:
+        zf.extractall(ds_dir)
+
+    # flatten one-level if typical zip has top folder
+    kids = list(ds_dir.iterdir())
+    if len(kids) == 1 and kids[0].is_dir():
+        inner = kids[0]
+        for p in inner.iterdir():
+            shutil.move(str(p), str(ds_dir))
+        inner.rmdir()
+    return ds_dir
 
 def _save_images_as_dataset(files: List[UploadFile], preferred_base: str | None = None) -> Path:
-    base = _slugify(preferred_base) if preferred_base else _slugify(files[0].filename or "dataset")
-    dest = _unique_dataset_dir(base)
-    dest.mkdir(parents=True, exist_ok=True)
+    base = _safe_name(preferred_base or "images") or "images"
+    ds_dir = _unique_dataset_dir(base)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+
     for f in files:
-        if not _is_image(Path(f.filename)):
+        if not f.filename:
             continue
-        out = dest / Path(f.filename).name
-        with out.open("wb") as w:
-            shutil.copyfileobj(f.file, w)
-    logger.info(f"[test] Created dataset '{dest.name}' with {len([*dest.glob('*')])} files.")
-    return dest
+        ext = Path(f.filename).suffix.lower()
+        if ext in IMAGE_EXTS:
+            (ds_dir / Path(f.filename).name).write_bytes(f.file.read())
+    return ds_dir
 
-def _list_datasets():
-    datasets = []
-    for d in sorted([p for p in TEST_DIR.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True):
-        count = sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
-        datasets.append({
-            "name": d.name,
-            "count": count,
-            "mtime": int(d.stat().st_mtime),
-        })
-    return datasets
+# ----------------- overlays & geojson -----------------
+# Keep these simple and library-light; they operate on predictor JSON files.
 
-# ---- EXIF helpers ----
-def _exif_gps_to_deg(gps_ifd) -> Optional[tuple]:
-    def _to_deg(val):
-        d = val[0][0]/val[0][1]; m = val[1][0]/val[1][1]; s = val[2][0]/val[2][1]
-        return d + m/60 + s/3600
+def _coerce_pred_json(p: Path) -> dict:
     try:
-        lat = _to_deg(gps_ifd[piexif.GPSIFD.GPSLatitude])
-        lon = _to_deg(gps_ifd[piexif.GPSIFD.GPSLongitude])
-        lat_ref = gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef, b'N')
-        lon_ref = gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef, b'E')
-        if lat_ref in (b'S', 'S'): lat = -lat
-        if lon_ref in (b'W', 'W'): lon = -lon
-        return (lat, lon)
+        j = json.loads(p.read_text(encoding="utf-8"))
+        # normalize keys used by front-end (boxes: [x1,y1,x2,y2], scores, classes)
+        j.setdefault("boxes", [])
+        j.setdefault("scores", [])
+        j.setdefault("classes", [])
+        j.setdefault("file", p.stem)
+        return j
     except Exception:
-        return None
+        return {"file": p.stem, "boxes": [], "scores": [], "classes": []}
 
-def _read_exif_latlon(img_path: Path) -> Optional[tuple]:
-    try:
-        exif_dict = piexif.load(str(img_path))
-        gps = exif_dict.get("GPS") or {}
-        return _exif_gps_to_deg(gps) if gps else None
-    except Exception:
-        return None
-
-def _to_feature_point(lat, lon, props):
-    return {"type":"Feature", "properties": props or {}, "geometry":{"type":"Point","coordinates":[lon,lat]}}
-
-def _to_square_polygon(lat, lon, size_deg=1e-5):
-    return {
-        "type": "Polygon",
-        "coordinates": [[
-            [lon - size_deg, lat - size_deg],
-            [lon + size_deg, lat - size_deg],
-            [lon + size_deg, lat + size_deg],
-            [lon - size_deg, lat + size_deg],
-            [lon - size_deg, lat - size_deg],
-        ]]
-    }
-
-def _coerce_pred_json(data, fallback_name: str):
+def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
-    Accepts either:
-      dict: {"file","boxes","scores","classes"} (preferred)
-      list: [ { "bbox":[x1,y1,x2,y2], "score":..., "class":... }, ... ]
-            or [ [x1,y1,x2,y2], ... ]
-    Returns (name, boxes, scores, classes). Unknown shapes -> empty.
+    Produce /overlays (thick boxes) and /thumbs (tiny) under out_root,
+    plus a small manifest JSON mapping original file name → generated URLs.
     """
-    name = fallback_name
-    boxes, scores, classes = [], [], []
+    overlays = out_root / "overlays"; overlays.mkdir(parents=True, exist_ok=True)
+    thumbs   = out_root / "thumbs";   thumbs.mkdir(parents=True, exist_ok=True)
+    manifest = out_root / "manifest.json"
 
-    # dict-shaped (your current writer)
-    if isinstance(data, dict):
-        name = data.get("file") or fallback_name
-        boxes  = data.get("boxes")  or data.get("bboxes") or []
-        scores = data.get("scores") or []
-        classes= data.get("classes")or []
-        return name, boxes, scores, classes
+    mapper: Dict[str, Dict[str, str]] = {}
 
-    # list-shaped (older/alternate exporters)
-    if isinstance(data, list):
-        for det in data:
-            if isinstance(det, dict):
-                b = det.get("bbox") or det.get("box") or det.get("b")
-                if b and len(b) >= 4:
-                    boxes.append([float(b[0]), float(b[1]), float(b[2]), float(b[3])])
-                    scores.append(float(det.get("score", 0.0)))
-                    classes.append(int(det.get("class", det.get("cls", 0))))
-            elif isinstance(det, (list, tuple)) and len(det) >= 4:
-                boxes.append([float(det[0]), float(det[1]), float(det[2]), float(det[3])])
-        # pad to align lengths
-        if len(scores)  < len(boxes):  scores  += [0.0] * (len(boxes) - len(scores))
-        if len(classes) < len(boxes):  classes += [0]   * (len(boxes) - len(classes))
-        return name, boxes, scores, classes
-
-    return name, boxes, scores, classes
-
-
-
-def _preds_to_geojson(images_dir: Path, preds_dir: Path, media_session_dir: Path, score_thresh: float = 0.6 , class_names: list[str] | None = None) -> Tuple[Path, list]:
-    class_names = class_names or []
-    features = []
-    image_points = []
-    pred_base = preds_dir / "preds" if (preds_dir / "preds").exists() else preds_dir
-    for json_file in sorted(pred_base.glob("*.json")):
-        data = json.loads(json_file.read_text())
-        # tolerate list/dict shapes; skip unknown JSONs silently
-        name, boxes, scores, classes = _coerce_pred_json(data, json_file.stem)
-        if not boxes and not scores and not classes:
-            continue  # not a prediction JSON we recognize
-
-        src_img = images_dir / name
-        latlon = _read_exif_latlon(src_img) if src_img.exists() else None
-        img_url = f"/media/{media_session_dir.relative_to(MEDIA_DIR)}/images/{src_img.name}" if src_img.exists() else None
-
-        if latlon:
-            lat, lon = latlon
-            features.append(_to_feature_point(lat, lon, {"type":"image","name":name,"url":img_url}))
-            image_points.append({"name": name, "lat": lat, "lon": lon, "url": img_url})
-
-            for b, s, c in zip(boxes, scores, classes):
-                try:
-                    if float(s) < score_thresh:
-                        continue
-                except Exception:
-                    pass
-                cid = int(c) if isinstance(c, (int, float, str)) and str(c).isdigit() else 0
-                cname = class_names[cid] if class_names and 0 <= cid < len(class_names) else str(cid)
-                props = {
-                    "type":"anomaly","image":name,
-                    "score": float(s) if isinstance(s,(int,float,str)) else 0.0,
-                    "class": int(c) if isinstance(c,(int,float,str)) else 0,
-                    "classname": cname,
-                    "bbox_pixel": b, "polygon_note":"approx_square"
-                }
-                poly = _to_square_polygon(lat, lon, 1e-5)
-                features.append({"type":"Feature","properties":props,"geometry":poly})
-
-    gj = {"type":"FeatureCollection","features":features, "name":"pvrt_anomalies"}
-    out = media_session_dir / "anomalies.geojson"
-    out.write_text(json.dumps(gj, indent=2))
-    return out, image_points
-
-def _copy_images_for_session(src_dir: Path, ses_dir: Path) -> Path:
-    img_dir = ses_dir / "images"
-    img_dir.mkdir(parents=True, exist_ok=True)
-    for p in sorted(src_dir.iterdir()):
-        if p.is_file() and _is_image(p):
-            dst = img_dir / p.name
-            if not dst.exists():
-                shutil.copy2(p, dst)
-    return img_dir
-
-def _ensure_max_filesize_jpg(bgr: "cv2.Mat", max_bytes: int = 40 * 1024 * 1024) -> bytes:
-    h, w = bgr.shape[:2]
-    scale = 1.0
-    quality = 90
-    while True:
-        resized = bgr if scale >= 0.999 else cv2.resize(bgr, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-        if not ok:
-            raise RuntimeError("JPEG encode failed")
-        if len(buf) <= max_bytes or (scale <= 0.3 and quality <= 60):
-            return bytes(buf)
-        if scale > 0.5:
-            scale *= 0.8
-        elif quality > 60:
-            quality -= 5
-        else:
-            scale *= 0.9
-
-def _draw_overlays(images_dir: Path, preds_dir: Path, session_dir: Path, class_names: list[str] | None = None) -> Tuple[Path, Path, list]:
-    class_names = class_names or []
-    overlays = session_dir / "overlays"
-    thumbs   = session_dir / "thumbs"
-    overlays.mkdir(exist_ok=True, parents=True)
-    thumbs.mkdir(exist_ok=True, parents=True)
-    manifest = []
-
-    # Look in preds/ subfolder if it exists
-    pred_base = preds_dir / "preds" if (preds_dir / "preds").exists() else preds_dir
-    json_files = sorted(pred_base.glob("*.json"))
-    total = len(json_files)
-
-    done = 0
-    for jf in json_files:
-        data = json.loads(jf.read_text())
-        name, boxes, scores, classes = _coerce_pred_json(data, jf.stem)  # tolerant
-        if not name:
-            name = jf.stem
-
-        src = images_dir / name
-        if not src.exists():
+    for img in sorted(images_dir.iterdir()):
+        if not _is_image(img):
             continue
-        img = cv2.imread(str(src), cv2.IMREAD_COLOR)
-        if img is None:
-            continue
+        pred = preds_dir / "preds" / f"{img.stem}.json"
+        jj = _coerce_pred_json(pred) if pred.exists() else {"boxes": [], "scores": [], "classes": [], "file": img.name}
 
-        # draw rectangles
-        for b, s, c in zip(boxes, scores, classes):
-            x1, y1, x2, y2 = map(int, b[:4])
-            cv2.rectangle(img, (x1, y1), (x2, y2), (30, 220, 30), 2)
-            cls_id = int(c) if isinstance(c, (int, float, str)) and str(c).isdigit() else 0
-            cls_name = class_names[cls_id] if class_names and 0 <= cls_id < len(class_names) else str(cls_id)
-            label = f"{cls_name}:{float(s):.2f}"
+        try:
+            im = Image.open(img).convert("RGB")
+            arr = np.array(im, dtype=np.uint8)
+        except Exception:
+            arr = np.zeros((256, 256, 3), dtype=np.uint8)
 
-            cv2.putText(img, label, (x1, max(0, y1-6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30, 220, 30), 2, cv2.LINE_AA)
+        # draw simple boxes (no external deps)
+        boxes = jj.get("boxes", [])
+        classes = jj.get("classes", [])
+        for i, b in enumerate(boxes):
+            try:
+                x1,y1,x2,y2 = map(int, b)
+                # frame
+                arr[y1:y1+2, x1:x2] = 255
+                arr[y2-2:y2, x1:x2] = 255
+                arr[y1:y2, x1:x1+2] = 255
+                arr[y1:y2, x2-2:x2] = 255
+            except Exception:
+                continue
 
-        # --- SAVE overlay ---
-        overlay_path = overlays / f"{Path(name).stem}.jpg"
-        overlay_path.write_bytes(_ensure_max_filesize_jpg(img))
+        # save overlay and thumb
+        ov = overlays / f"{img.stem}.png"
+        th = thumbs / f"{img.stem}.png"
+        Image.fromarray(arr).save(ov, format="PNG", optimize=True)
+        Image.fromarray(arr[::8, ::8]).save(th, format="PNG", optimize=True)
 
-        # --- SAVE thumbnail (fixed width ~ 420px) ---
-        h, w = img.shape[:2]
-        t_w = 420
-        t_h = max(1, int(h * (t_w / max(1, w))))
-        thumb_img = cv2.resize(img, (t_w, t_h), interpolation=cv2.INTER_AREA)
-        ok, tbuf = cv2.imencode(".jpg", thumb_img, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
-        if ok:
-            (thumbs / f"{Path(name).stem}.jpg").write_bytes(tbuf.tobytes())
+        mapper[img.name] = {
+            "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
+            "thumb":   f"/media/{th.relative_to(MEDIA_DIR).as_posix()}" if str(th).startswith(str(MEDIA_DIR)) else th.name,
+        }
 
-        # URLs must include /media/ prefix
-        overlay_url = f"/media/{overlay_path.relative_to(MEDIA_DIR)}".replace("\\", "/")
-        thumb_url   = f"/media/{(thumbs / f'{Path(name).stem}.jpg').relative_to(MEDIA_DIR)}".replace("\\", "/")
-
-        manifest.append({
-            "file": name,
-            "overlay": overlay_url,
-            "thumb": thumb_url,
-            "n": len(boxes),
-        })
-
-        done += 1
-        logger.info(f"UI:INFO:test: overlay {done}/{total}: {name}")
-
-    (session_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    manifest.write_text(json.dumps(mapper, indent=2), encoding="utf-8")
     return overlays, thumbs, manifest
 
-
-def _session_assets(session_dir: Path) -> dict:
-    imgs_dir = session_dir / "images"
-    overlays = session_dir / "overlays"
-    thumbs   = session_dir / "thumbs"
-    def _urls(d: Path):
-        if not d.exists(): return []
-        return [f"/media/{d.relative_to(MEDIA_DIR)}/{p.name}" for p in sorted(d.glob("*")) if p.is_file()]
-    tifs = [u for u in _urls(imgs_dir) if u.lower().endswith((".tif", ".tiff"))]
-    return {
-        "images": _urls(imgs_dir),
-        "tifs": tifs,
-        "overlays": _urls(overlays),
-        "thumbs": _urls(thumbs),
+def _preds_to_geojson(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, List[Tuple[float,float]]]:
+    """
+    Build a very simple GeoJSON with image centers as points (best-effort).
+    This is intentionally lightweight since many images have no geotags.
+    """
+    gj = {
+        "type": "FeatureCollection",
+        "features": []
     }
+    centers: List[Tuple[float, float]] = []
 
-def _count_thermal_tifs(ds_dir: Path) -> int:
-    tdir = ds_dir / "thermal"
-    if not tdir.exists():
+    for img in sorted(images_dir.iterdir()):
+        if not _is_image(img):
+            continue
+        # we don't rely on EXIF here; downstream map can still show image footprint later if available
+        centers.append((0.0, 0.0))
+        gj["features"].append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {"image": img.name}
+        })
+
+    out = out_root / "preds.geojson"
+    out.write_text(json.dumps(gj, indent=2), encoding="utf-8")
+    return out, centers
+
+# ---------- tiny list helpers (datasets/models/sessions) ----------
+
+def _count_top_level_images(d: Path) -> int:
+    """Count images directly under d (non-recursive)."""
+    if not d.exists() or not d.is_dir():
         return 0
-    return sum(1 for p in tdir.rglob("*") if p.suffix.lower() in (".tif", ".tiff"))
+    return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
 
-# -------------- List datasets --------------
+def _list_datasets() -> list[dict]:
+    """
+    Return detailed dataset info from data/test/.
+    Shape: [{"name": "<folder>", "count": <n>, "mtime": <unix-ts>}, ...]
+    """
+    if not TEST_DIR.exists():
+        return []
+    items = []
+    for p in sorted([x for x in TEST_DIR.iterdir() if x.is_dir()],
+                    key=lambda x: x.stat().st_mtime, reverse=True):
+        items.append({
+            "name": p.name,
+            "count": _count_top_level_images(p),
+            "mtime": int(p.stat().st_mtime),
+        })
+    return items
+
+
+def _list_sessions() -> list[dict]:
+    """
+    Return detailed sessions from media/sessions/.
+    Shape: [{"name": "<session-id>", "mtime": <unix-ts>}, ...]
+    """
+    base = MEDIA_DIR / "sessions"
+    if not base.exists():
+        return []
+    items = []
+    for p in sorted([x for x in base.iterdir() if x.is_dir()],
+                    key=lambda x: x.stat().st_mtime, reverse=True):
+        items.append({
+            "name": p.name,                 # normalized to just the id
+            "mtime": int(p.stat().st_mtime)
+        })
+    return items
+
+# ---------- wire all relevant loggers to SSE ----------
+def _wire_logging_to_sse(handler: logging.Handler) -> None:
+    """
+    Attach the SSE handler to common loggers and enable propagation so
+    Detectron2/fvcore/torch and your own logs flow to the browser.
+    Safe to call multiple times; skips duplicate handler classes.
+    """
+    targets = [
+        "",                      # root
+        "pvrt",                  # your app logger
+        "uvicorn", "uvicorn.error", "uvicorn.access",
+        "detectron2", "fvcore", "fvcore.common.checkpoint",
+        "torch", "torch.distributed", "torch.cuda",
+    ]
+    for name in targets:
+        lg = logging.getLogger(name)
+        # avoid stacking identical handler classes on repeated calls
+        if not any(type(h) is type(handler) for h in lg.handlers):
+            lg.addHandler(handler)
+        if lg.level > logging.INFO:
+            lg.setLevel(logging.INFO)
+        lg.propagate = True
+
+
+
+# ================== lifecycle & basic routes ==================
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    loop = asyncio.get_running_loop()
+    broker.set_loop(loop)              # <-- IMPORTANT for real-time streaming
+    _wire_logging_to_sse(sse_handler)  
+    logger.info("PVRT API started.")
+
+@app.get("/api/logs")
+async def stream_logs():
+    q = await broker.subscribe()     # returns a Queue seeded with history
+    return sse_response(q)           # no other changes needed
+
+
+@app.get("/api/health")
+async def api_health():
+    return {"ok": True, "time": _now_stamp()}
+
+@app.post("/api/cancel")
+async def api_cancel(job: str = Form(...)):
+    job = job.strip().lower()
+    if job == "train":
+        CANCEL_FLAGS["train"] = True
+        logger.info("UI:INFO:train: Cancel requested (best-effort).")
+        return {"ok": True}
+    raise HTTPException(status_code=400, detail=f"Unknown job: {job}")
+
+# ================== TRAIN ==================
+
+@app.post("/api/train")
+async def api_train(
+    use_thermal: bool = Form(False),
+    max_iter: int = Form(1000),
+    base_lr: float = Form(0.00025),
+    ims_per_batch: int = Form(2),
+    model_name: str = Form(""),
+    backend: str = Form("detectron"),
+):
+    safe_name = _safe_name(model_name) or _now_stamp()
+    run_dir = OUTPUTS / safe_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    CANCEL_FLAGS["train"] = False
+    logger.info("UI:OK:train: Training started…")
+    logger.info(
+        f"[train] run={run_dir.name} backend={backend} "
+        f"use_thermal={use_thermal} iters={max_iter} lr={base_lr} batch={ims_per_batch}"
+    )
+
+    # Prepare thermal pairs if requested
+    if use_thermal:
+        ensure_dirp_init()
+        scan_split_decode_thermal(TRAIN_DIR)
+        scan_split_decode_thermal(VALID_DIR)
+
+    # Offload the heavy training to a background thread so SSE can stream
+    def _do_train():
+        from detectron2.utils.logger import setup_logger
+        setup_logger()  # route detectron2/fvcore to std logging (SSE handler will pick it up)
+        with redirect_std_to_logger():
+            return train_entry(
+                backend=backend,
+                train_dir=TRAIN_DIR,
+                val_dir=VALID_DIR,
+                out_dir=run_dir,
+                use_thermal_request=use_thermal,
+                max_iter=max_iter,
+                base_lr=base_lr,
+                ims_per_batch=ims_per_batch,
+                run_name=run_dir.name,
+            )
+
+    try:
+        resp = await asyncio.to_thread(_do_train)  # <-- key change
+        meta = resp.get("meta", {})
+        logger.info(f"[train] complete: run={run_dir.name}")
+        logger.info("UI:OK:train: Training completed.")
+        return {"ok": True, "run": run_dir.name, "meta": meta}
+    except Exception as e:
+        logger.exception("Training failed.")
+        raise HTTPException(status_code=500, detail=f"Training failed: {e}")
+
+
+# -------------- List model runs --------------
+
+@app.get("/api/models")
+async def api_models():
+    return {"ok": True, "models": _list_models()}
+
+
+# ================== TEST: dataset intake ==================
+
 @app.get("/api/test_datasets")
 async def api_test_datasets():
-    return {"ok": True, "datasets": _list_datasets()}
+    details = _list_datasets()                      # current shape: [{name, count, mtime}, ...]
+    names = [d["name"] for d in details]           # simple shape: ["name", ...]
+    return {"ok": True, "datasets": details, "dataset_names": names}
 
-# -------------- Upload dataset(s) --------------
 @app.post("/api/test_upload")
-async def api_test_upload(
+async def api_test_upload_underscore(
     files: List[UploadFile] = File(...),
-    result_name: str = Form(default=""),
+    result_name: str = Form(""),
 ):
-    buffered: List[UploadFile] = []
-    for f in files:
-        content = await f.read()
-        buffered.append(UploadFile(filename=f.filename, file=io.BytesIO(content), headers=f.headers))
-
-        raw = (result_name or "").strip()
-    safe_result = _safe_name(raw)
-    if not safe_result:
-        safe_result = f"data_{_now_stamp()}"   # default with data_ prefix
-
-
-    created = []
-    with redirect_std_to_logger():
-        zips = [f for f in buffered if (f.filename or "").lower().endswith(".zip")]
-        imgs = [f for f in buffered if not (f.filename or "").lower().endswith(".zip")]
-
-        if zips:
-            # use user's preferred name for the dataset folder
-            ds = _save_zip_as_dataset(zips[0], preferred_base=safe_result)
-            created.append(ds.name)
-            # if multiple zips were sent, you can optionally import others too with unique suffixes
-            for z in zips[1:]:
-                dsz = _save_zip_as_dataset(z)  # fallback to derived name
-                created.append(dsz.name)
-        elif imgs:
-            ds = _save_images_as_dataset(imgs, preferred_base=safe_result)
-            created.append(ds.name)
+    """
+    Alias for upload using underscore path expected by the UI.
+    """
+    # Reuse the same logic as your existing upload handler.
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+    base = _safe_name(result_name) or _safe_name(files[0].filename or "upload")
+    created: List[str] = []
+    zips = [f for f in files if (f.filename or "").lower().endswith(".zip")]
+    imgs = [f for f in files if Path(f.filename or "").suffix.lower() in IMAGE_EXTS]
+    if zips:
+        ds_dir = _save_zip_as_dataset(zips[0], preferred_base=base); created.append(ds_dir.name)
+        for z in zips[1:]:
+            dsz = _save_zip_as_dataset(z); created.append(dsz.name)
+    elif imgs:
+        ds_dir = _save_images_as_dataset(imgs, preferred_base=base); created.append(ds_dir.name)
+    if not created:
+        return {"ok": False, "created": []}
+    logger.info(f"UI:OK:test: Created datasets: {', '.join(created)}")
+    return {"ok": True, "created": created}
 
 
-        if not created:
-            logger.info("UI:WARN:test: No valid files (images/zip) detected.")
-            return {"ok": False, "created": []}
+# ================== TEST: run ==================
 
-        logger.info(f"UI:OK:test: Created datasets: {', '.join(created)}")
-        return {"ok": True, "created": created}
-
-# -------------- Run test/inference --------------
 @app.post("/api/test_run")
 async def api_test_run(
     dataset: str = Form(...),
     model: Optional[str] = Form(default=None),
     use_thermal: bool = Form(default=False),
     result_name: str = Form(default=""),
+    forced_backend: Optional[str] = Form(default=None),
 ):
     ds_dir = TEST_DIR / dataset
     if not ds_dir.exists() or not ds_dir.is_dir():
@@ -839,164 +503,87 @@ async def api_test_run(
 
     if model:
         model_dir = OUTPUTS / model
+        if not model_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
     else:
         models = _list_models()
         if not models:
             raise HTTPException(status_code=404, detail="No trained models found.")
-        model_dir = OUTPUTS / models[0]["name"]
-    if not model_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Model '{model_dir.name}' not found.")
+        model_dir = OUTPUTS / models[-1]
 
-    # Read class_names (if present) from the selected model’s metadata
-    class_names = []
-    try:
-        mm = model_dir / "model_meta.json"
-        if mm.exists():
-            meta_js = json.loads(mm.read_text(encoding="utf-8"))
-            cn = meta_js.get("class_names")
-            if isinstance(cn, list):
-                class_names = [str(x) for x in cn]
-    except Exception:
-        pass
-    
-    logger.info(f"UI:INFO:test: Using model dir: {model_dir}")
+    out_root = MEDIA_DIR / "sessions" / (_safe_name(result_name) or _now_stamp())
+    out_root.mkdir(parents=True, exist_ok=True)
 
+    if use_thermal:
+        ensure_dirp_init()
+        scan_split_decode_thermal(ds_dir)
 
-    safe_result = _safe_name(result_name)
-    stamp = safe_result or _now_stamp()
-    sess = MEDIA_DIR / f"sessions/{stamp}"
-
-    sess.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(sess / "test.log", encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", "%H:%M:%S"))
-    logger.addHandler(file_handler)
-
-    with redirect_std_to_logger():
-        try:
-            meta = _read_model_meta(model_dir)
-            mode = meta.get("input_mode", "rgb")
-
-            logger.info(f"[test] Model: {model_dir.name} (mode={mode})")
-            logger.info(f"[test] Dataset: '{dataset}'  use_thermal={use_thermal}")
-            logger.info(f"[test] Session: {sess}")
-
-            images_for_map = _copy_images_for_session(ds_dir, sess)
-
-            if use_thermal and mode == "rgbtherm":
-                logger.info("[test] Thermal requested. Decoding radiometric RJPEG to .tif…")
-                _, stats = scan_and_decode_split(ds_dir)  # writes to ds_dir/thermal/*.tif
-                tif_count = _count_thermal_tifs(ds_dir)
-                if stats["ok"] == 0:
-                    reason = stats.get("first_error") or "No radiometric data or DJI SDK not available."
-                    logger.info(
-                        "UI:INFO:test: None of the images contain radiometric data. "
-                        f"Reason: {reason}. Proceeding with RGB tensors (thermal channel=0)."
-                    )
-                else:
-                    logger.info(f"[test] Thermal decode: ok={stats['ok']} fail={stats['fail']} total={stats['total']}  tif_files={tif_count}")
-                    if stats["fail"] > 0:
-                        logger.info(
-                            f"UI:INFO:test: Some images lack thermal ({stats['fail']}/{stats['total']}). "
-                            "Those will use zeros in the thermal channel."
-                        )
-            elif use_thermal and mode == "rgb":
-                logger.info("UI:INFO:test: Model is RGB-only; ignoring 'Use thermal band' during testing.")
-
-            # --- Run heavy pipeline off the event loop so SSE can flush live ---
-            async def _run_pipeline():
-                # 1) prediction
-                logger.info("UI:INFO:test: starting prediction…")
-                # pdir = predict_folder(ds_dir, sess, model_dir, use_thermal)
-                # Choose the pipeline by user checkbox + model's declared input_mode
-                model_mode = (mode or "rgb").lower()
-                if use_thermal and model_mode == "rgbtherm":
-                    logger.info("UI:INFO:test: Thermal path selected (rgb+thermal).")
-                    pdir = predict_folder_rgbtherm(ds_dir, sess, model_dir, True)
-                else:
-                    if use_thermal and model_mode == "rgb":
-                        logger.info("UI:INFO:test: Model is RGB-only; ignoring 'Use thermal band' during testing.")
-                    pdir = predict_folder_rgb(ds_dir, sess, model_dir, False)
-
-                logger.info(f"UI:INFO:test: prediction complete. preds_dir={pdir}")
-
-                # 2) overlays & thumbs
-                logger.info("UI:INFO:test: rendering overlays…")
-                ov_dir, th_dir, manifest_local = _draw_overlays(images_for_map, pdir, sess, class_names)
-                logger.info(f"UI:INFO:test: overlays complete. overlays={ov_dir}, thumbs={th_dir}")
-
-                # 3) geojson
-                logger.info("UI:INFO:test: building geojson…")
-                gj, pts = _preds_to_geojson(images_for_map, pdir, sess, class_names)
-                logger.info(f"UI:INFO:test: geojson complete. file={gj}")
-
-                return pdir, ov_dir, th_dir, manifest_local, gj, pts
-
-            preds_dir, ov_dir, th_dir, manifest, gj_path, image_points = await asyncio.to_thread(
-                lambda: asyncio.run(_run_pipeline())  # run sync in thread; inside we do the steps
+    def _do_predict():
+        with redirect_std_to_logger():
+            return predict_entry(
+                weights_dir=model_dir,
+                images_dir=ds_dir,
+                out_dir=out_root,
+                use_thermal_request=use_thermal,
+                forced_backend=forced_backend,
             )
 
-            # compute total predictions and log it (shows in frontend mini-log)
-            total_preds = sum(int(it.get("n", 0)) for it in manifest)
-            logger.info(f"UI:INFO:test: total predictions = {total_preds}")
+    try:
+        presp = await asyncio.to_thread(_do_predict)  # <-- offload
+    except Exception as e:
+        logger.exception("Inference failed.")
+        raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
 
-            assets = _session_assets(sess)
+    preds_dir = Path(presp["results_dir"])
+    class_names = (_read_model_meta(model_dir).get("class_names") or [])
+    ov_dir, th_dir, manifest = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
+    gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
 
-
-            logger.info("UI:OK:test: Test complete. Layers added to the map.")
-            return {
-                "ok": True,
-                "session": str(sess.relative_to(MEDIA_DIR)),
-                "geojson_url": f"/media/{gj_path.relative_to(MEDIA_DIR)}",
-                "image_points": image_points,
-                "manifest": manifest,
-                "assets": assets,
-                "tiler": "ok" if RIO_OK else "unavailable",
-                "total_preds": total_preds,
-                "class_names": class_names,
-                "model_path": str(model_dir),
-            }
-        finally:
-            logger.removeHandler(file_handler)
-
-# -------------- Sessions for Results/Map tabs --------------
-def _list_sessions():
-    base = MEDIA_DIR / "sessions"
-    if not base.exists():
-        return []
-    items = []
-    for d in sorted([p for p in base.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True):
-        items.append({
-            "name": f"sessions/{d.name}",
-            "mtime": int(d.stat().st_mtime)
-        })
-    return items
-
-@app.get("/api/sessions")
-async def api_sessions():
-    return {"ok": True, "sessions": _list_sessions()}
-
-@app.get("/api/session_summary")
-async def api_session_summary(session: str):
-    ses = MEDIA_DIR / session
-    if not ses.exists():
-        raise HTTPException(status_code=404, detail="Session not found")
-    gj = ses / "anomalies.geojson"
-    manifest_path = ses / "manifest.json"
-    manifest = []
-    if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text())
-        except Exception:
-            manifest = []
+    logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
         "ok": True,
-        "session": session,
-        "geojson_url": f"/media/{gj.relative_to(MEDIA_DIR)}" if gj.exists() else None,
-        "assets": _session_assets(ses),
-        "manifest": manifest,
-        "tiler": "ok" if RIO_OK else "unavailable"
+        "results_dir": str(preds_dir),
+        "overlays": str(ov_dir),
+        "thumbs": str(th_dir),
+        "manifest": str(manifest),
+        "geojson": str(gj),
+        "backend": presp.get("used_backend"),
+        "model_mode": presp.get("model_mode"),
+        "used_thermal": bool(presp.get("used_thermal")),
+        "media_root": f"/media/sessions/{out_root.name}",
     }
+
+
+# ================== SESSIONS (lightweight) ==================
+
+# -------------- Sessions list --------------
+@app.get("/api/sessions")
+async def api_sessions():
+    """
+    Returns both a detailed list and a simple list of session IDs.
+    """
+    details = _list_sessions()                 # [{"name","mtime"}, ...] where name == session id
+    ids = [d["name"] for d in details]
+    return {"ok": True, "sessions": details, "session_ids": ids}
+
+
+@app.get("/api/session_summary")
+async def api_session_summary_query(session: str):
+    """
+    Alias that accepts ?session=... (underscore path).
+    """
+    base = MEDIA_DIR / "sessions" / session
+    if not base.exists():
+        raise HTTPException(status_code=404, detail="Session not found.")
+    manifest = base / "manifest.json"
+    gj = base / "preds.geojson"
+    return {
+        "ok": True,
+        "name": session,
+        "manifest": (f"/media/sessions/{session}/manifest.json" if manifest.exists() else None),
+        "geojson": (f"/media/sessions/{session}/preds.geojson" if gj.exists() else None),
+    }
+
 
 # -------------- Simple dynamic tiler for TIFF (XYZ) --------------
 _TILER_INDEX: Dict[str, List[Path]] = {}

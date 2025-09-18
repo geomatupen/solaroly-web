@@ -1,8 +1,11 @@
 # backend/pvrt/dataops/scan_decode_split.py
 from __future__ import annotations
-import json, traceback, logging
+
+import json
+import logging
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional, Tuple
+
 import numpy as np
 import tifffile
 
@@ -11,75 +14,124 @@ from dji_thermal_sdk.utility import rjpeg_to_heatmap
 
 from ..config import DIRP_LIB, describe_dirp
 
-_IMG_EXTS = {".jpg",".jpeg",".JPG",".JPEG",".png",".PNG",".tif",".tiff",".TIF",".TIFF"}
-_DJI_INIT = False
 log = logging.getLogger("pvrt")
 
-def _ensure_dji():
+_IMG_EXTS = {
+    ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp",
+    ".JPG", ".JPEG", ".PNG", ".TIF", ".TIFF", ".BMP", ".WEBP",
+}
+
+_DJI_READY = False  # set by ensure_dirp_init()
+
+
+# -----------------------
+# Public, small API
+# -----------------------
+
+def ensure_dirp_init() -> None:
     """
-    Initialize DJI DIRP with an explicit, correct library path.
-    Raises with a clear message if the lib is missing or wrong.
+    Initialize DJI DIRP once using the absolute shared library path (DIRP_LIB).
+    Raises a clear error if the library is missing or invalid.
     """
-    global _DJI_INIT
-    if _DJI_INIT:
+    global _DJI_READY
+    if _DJI_READY:
         return
-    if not DIRP_LIB or not DIRP_LIB.exists():
+
+    lib = Path(DIRP_LIB) if DIRP_LIB else None
+    if not lib or not lib.exists():
         raise FileNotFoundError(
-            f"DJI DIRP library not found. {describe_dirp()}. "
-            f"Set PVRT_DIRP_LIB to the absolute path of your libdirp.so/.dll."
+            f"DJI DIRP library not found. {describe_dirp()} "
+            f"Set PVRT_DIRP_LIB to the absolute path of your libdirp (.so/.dll)."
         )
-    # This mirrors your previously working code: pass the exact .so/.dll path.
-    dji_init(str(DIRP_LIB))
-    log.info(f"[dji] Initialized DIRP using: {DIRP_LIB}")
-    _DJI_INIT = True
 
-def _list_rgb_images(split_dir: Path):
-    for p in sorted(split_dir.iterdir()):
-        if p.suffix in _IMG_EXTS and not p.name.endswith("_thermal.tif"):
-            yield p
+    # Initialize the SDK with the exact .so/.dll path.
+    dji_init(str(lib))
+    log.info(f"[DJI] DIRP initialized: {lib}")
+    _DJI_READY = True
 
-def scan_and_decode_split(split_dir: str | Path) -> Tuple[Path, Dict]:
+
+def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | str | None]]:
     """
-    Try to decode thermal from every image in `split_dir`.
-    Writes thermal tiffs into split_dir/thermal/, plus pairs.json mapping:
-        { "<abs/rgb.jpg>": "<abs/thermal.tif>", ... }
+    For each RGB image in `images_dir`, ensure a thermal TIFF exists in `images_dir/thermal`
+    and maintain `images_dir/thermal/pairs.json` with:
+        { "<rgb_filename>": "thermal/<stem>_thermal.tif" }
 
-    Returns: (pairs_json_path, stats_dict)
-    stats_dict = {"ok": int, "fail": int, "total": int, "first_error": Optional[str]}
+    Rules:
+      - If a thermal TIFF already exists, keep it (idempotent).
+      - Else, try to decode RJPEG via DJI SDK and write a float32 single-band TIFF.
+      - Never overwrite existing thermal files.
+      - Keys in pairs.json are *filenames* (not absolute paths) to match predictors.
+
+    Returns:
+      (pairs_json_path, stats)
+      stats = {"ok": int, "fail": int, "total": int, "first_error": Optional[str]}
     """
-    split_dir = Path(split_dir)
-    out_dir = split_dir / "thermal"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pairs = {}
+    images_dir = Path(images_dir)
+    thermal_dir = images_dir / "thermal"
+    thermal_dir.mkdir(parents=True, exist_ok=True)
+    pairs_path = thermal_dir / "pairs.json"
+
+    # Load existing pairs (don’t lose prior work)
+    try:
+        pairs: Dict[str, str] = json.loads(pairs_path.read_text(encoding="utf-8"))
+        if not isinstance(pairs, dict):
+            pairs = {}
+    except Exception:
+        pairs = {}
+
     ok = fail = 0
     first_error: Optional[str] = None
 
+    # Try once at the start; if it fails, we skip decoding and keep pairs as-is.
     try:
-        _ensure_dji()
+        ensure_dirp_init()
     except Exception as e:
-        # If DJI init fails, record once and skip decoding all (so caller can decide fallback)
-        tb = "".join(traceback.format_exception_only(type(e), e)).strip()
-        first_error = tb
-        # Log a very explicit diagnostic:
-        log.error(f"[dji] INIT FAILED: {tb}. Details: {describe_dirp()}")
-        return (out_dir / "pairs.json"), {"ok": 0, "fail": 0, "total": 0, "first_error": first_error}
+        msg = f"{type(e).__name__}: {e}"
+        log.error(f"[DJI] DIRP init failed: {msg}. Details: {describe_dirp()}")
+        pairs_path.write_text(json.dumps(pairs, indent=2), encoding="utf-8")
+        return pairs_path, {"ok": 0, "fail": 0, "total": 0, "first_error": msg}
 
-    for rgb in _list_rgb_images(split_dir):
+    for rgb in sorted(images_dir.iterdir()):
+        if not _looks_like_rgb(rgb):
+            continue
+
+        stem = rgb.stem
+        out_tif = thermal_dir / f"{stem}_thermal.tif"
+
+        # Already paired correctly?
+        already = pairs.get(rgb.name)
+        if already and (images_dir / already).exists():
+            continue
+
+        # If a TIFF exists from before, reuse it and set/refresh the pair.
+        if out_tif.exists():
+            pairs[rgb.name] = str(out_tif.relative_to(images_dir))
+            continue
+
+        # Decode RJPEG → float32 map → TIFF
         try:
-            # Prefer a dtype object, but the wrapper also accepts "float32"
-            temps = rjpeg_to_heatmap(str(rgb), dtype=np.float32)
+            temps = rjpeg_to_heatmap(str(rgb), dtype=np.float32)  # HxW float32
             if not isinstance(temps, np.ndarray) or temps.ndim != 2:
-                raise ValueError("Thermal plane missing or invalid shape.")
-            tpath = out_dir / f"{rgb.stem}_thermal.tif"
-            tifffile.imwrite(str(tpath), temps.astype("float32"))
-            pairs[str(rgb.resolve())] = str(tpath.resolve())
+                raise ValueError("Invalid thermal plane read from RJPEG.")
+
+            # Write single-band float32 TIFF
+            tifffile.imwrite(str(out_tif), temps.astype(np.float32))
+            pairs[rgb.name] = str(out_tif.relative_to(images_dir))
             ok += 1
         except Exception as e:
+            # Record only the first error for UI, continue processing others
             if first_error is None:
-                # Keep the first meaningful error to bubble up to UI
-                first_error = "".join(traceback.format_exception_only(type(e), e)).strip()
+                first_error = f"{type(e).__name__}: {e}"
             fail += 1
 
-    pairs_path = out_dir / "pairs.json"
-    pairs_path.write_text(json.dumps(pairs, indent=2))
+    pairs_path.write_text(json.dumps(pairs, indent=2), encoding="utf-8")
     return pairs_path, {"ok": ok, "fail": fail, "total": ok + fail, "first_error": first_error}
+
+
+# -----------------------
+# Small helpers
+# -----------------------
+
+def _looks_like_rgb(p: Path) -> bool:
+    # treat any image that is not *our* generated thermal tif as an RGB candidate
+    return p.is_file() and p.suffix in _IMG_EXTS and not p.name.endswith("_thermal.tif")
