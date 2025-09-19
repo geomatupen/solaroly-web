@@ -337,29 +337,55 @@ def _list_sessions() -> list[dict]:
     return items
 
 # ---------- wire all relevant loggers to SSE ----------
-def _wire_logging_to_sse(handler: logging.Handler) -> None:
+def _wire_logging_to_sse() -> None:
     """
-    Attach the SSE handler to common loggers and enable propagation so
-    Detectron2/fvcore/torch and your own logs flow to the browser.
-    Safe to call multiple times; skips duplicate handler classes.
+    Stream our logs (pvrt.*) and selected 3rd-party logs to SSE exactly once.
+    - 'pvrt' has the SSE handler and does NOT propagate to root.
+    - children (pvrt.test, etc.) propagate to 'pvrt' (no handlers of their own).
+    - detectron2/fvcore/torch attach SSE handler directly and do NOT propagate.
+    - uvicorn* do not propagate to avoid double printing.
     """
-    targets = [
-        "",                      # root
-        "pvrt",                  # your app logger
-        "uvicorn", "uvicorn.error", "uvicorn.access",
-        "detectron2", "fvcore", "fvcore.common.checkpoint",
-        "torch", "torch.distributed", "torch.cuda",
-    ]
-    for name in targets:
+    # parent already has sse_handler, ensure one handler only
+    parent = logging.getLogger("pvrt")
+    parent.setLevel(logging.INFO)
+    parent.propagate = False
+    parent.handlers = [h for h in parent.handlers if not isinstance(h, SSELogHandler)]
+    parent.addHandler(sse_handler)
+
+    # children bubble up to 'pvrt' (no own handlers)
+    child = logging.getLogger("pvrt.test")
+    child.handlers = []
+    child.setLevel(logging.INFO)
+    child.propagate = True
+
+    # 3rd-party: attach handler directly, no propagation (no duplicates)
+    for name in ("detectron2", "fvcore", "fvcore.common.checkpoint", "torch"):
         lg = logging.getLogger(name)
-        # avoid stacking identical handler classes on repeated calls
-        if not any(type(h) is type(handler) for h in lg.handlers):
-            lg.addHandler(handler)
-        if lg.level > logging.INFO:
-            lg.setLevel(logging.INFO)
-        lg.propagate = True
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        lg.handlers = [h for h in lg.handlers if not isinstance(h, SSELogHandler)]
+        lg.addHandler(sse_handler)
+
+    # keep uvicorn logs out of the SSE stream (or set to True if you want them)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", ""):  # '' is root
+        logging.getLogger(name).propagate = False
 
 
+
+def _session_assets(session_dir: Path) -> dict:
+    imgs_dir = session_dir / "images"
+    overlays = session_dir / "overlays"
+    thumbs   = session_dir / "thumbs"
+    def _urls(d: Path):
+        if not d.exists(): return []
+        return [f"/media/{d.relative_to(MEDIA_DIR)}/{p.name}" for p in sorted(d.glob("*")) if p.is_file()]
+    tifs = [u for u in _urls(imgs_dir) if u.lower().endswith((".tif", ".tiff"))]
+    return {
+        "images": _urls(imgs_dir),
+        "tifs": tifs,
+        "overlays": _urls(overlays),
+        "thumbs": _urls(thumbs),
+    }
 
 # ================== lifecycle & basic routes ==================
 
@@ -367,7 +393,7 @@ def _wire_logging_to_sse(handler: logging.Handler) -> None:
 async def _on_startup() -> None:
     loop = asyncio.get_running_loop()
     broker.set_loop(loop)              # <-- IMPORTANT for real-time streaming
-    _wire_logging_to_sse(sse_handler)  
+    _wire_logging_to_sse()  
     logger.info("PVRT API started.")
 
 @app.get("/api/logs")
@@ -511,12 +537,14 @@ async def api_test_run(
             raise HTTPException(status_code=404, detail="No trained models found.")
         model_dir = OUTPUTS / models[-1]
 
-    out_root = MEDIA_DIR / "sessions" / (_safe_name(result_name) or _now_stamp())
+    session = (_safe_name(result_name) or _now_stamp())
+    out_root = MEDIA_DIR / "sessions" / session
     out_root.mkdir(parents=True, exist_ok=True)
 
     if use_thermal:
         ensure_dirp_init()
         scan_split_decode_thermal(ds_dir)
+        logger.info("thermal images decoded")
 
     def _do_predict():
         with redirect_std_to_logger():
@@ -536,8 +564,23 @@ async def api_test_run(
 
     preds_dir = Path(presp["results_dir"])
     class_names = (_read_model_meta(model_dir).get("class_names") or [])
-    ov_dir, th_dir, manifest = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
+    # ov_dir, th_dir, manifest = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
+    ov_dir, th_dir, manifest_path = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
     gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
+
+    if isinstance(manifest_path, (str, Path)):
+        mp = Path(manifest_path)
+        if mp.suffix.lower() == ".json" and mp.exists():
+            try:
+                manifest_items = json.loads(mp.read_text(encoding="utf-8"))
+            except Exception:
+                manifest_items = []
+        else:
+            manifest_items = []
+    elif isinstance(manifest_path, list):
+        manifest_items = manifest_path
+    else:
+        manifest_items = []
 
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
@@ -545,12 +588,13 @@ async def api_test_run(
         "results_dir": str(preds_dir),
         "overlays": str(ov_dir),
         "thumbs": str(th_dir),
-        "manifest": str(manifest),
+        "manifest": manifest_items,
         "geojson": str(gj),
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),
         "used_thermal": bool(presp.get("used_thermal")),
         "media_root": f"/media/sessions/{out_root.name}",
+        "session":session,
     }
 
 
@@ -568,20 +612,26 @@ async def api_sessions():
 
 
 @app.get("/api/session_summary")
-async def api_session_summary_query(session: str):
-    """
-    Alias that accepts ?session=... (underscore path).
-    """
-    base = MEDIA_DIR / "sessions" / session
-    if not base.exists():
-        raise HTTPException(status_code=404, detail="Session not found.")
-    manifest = base / "manifest.json"
-    gj = base / "preds.geojson"
+async def api_session_summary(session: str):
+    base = MEDIA_DIR / "sessions"
+    ses = base / session
+    if not ses.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    gj = ses / "anomalies.geojson"
+    manifest_path = ses / "manifest.json"
+    manifest = []
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception:
+            manifest = []
     return {
         "ok": True,
-        "name": session,
-        "manifest": (f"/media/sessions/{session}/manifest.json" if manifest.exists() else None),
-        "geojson": (f"/media/sessions/{session}/preds.geojson" if gj.exists() else None),
+        "session": session,
+        "geojson_url": f"/media/{gj.relative_to(MEDIA_DIR)}" if gj.exists() else None,
+        "assets": _session_assets(ses),
+        "manifest": manifest,
+        "tiler": "ok" if RIO_OK else "unavailable"
     }
 
 

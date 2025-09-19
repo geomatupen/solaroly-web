@@ -269,6 +269,7 @@ async function runTest(){
 
     if(!js.ok) throw new Error("test failed");
 
+    console.log(js)
     currentSession = js.session;
     ok("test", "Testing completed.");
     setText("#testStatus", `Inference complete. ${totalPreds} predictions.`);
@@ -296,6 +297,7 @@ function cancelTest(){ if(testAbort){ testAbort.abort(); } }
 // ---------- results ----------
 async function showResultsForSelected(){
   const session = $("#selResults").value;
+  // console.log(session)
   if(!session) return;
   currentSession = session;
   const res = await fetch(`${api.sessionSummary}?session=${encodeURIComponent(session)}`);
@@ -319,6 +321,7 @@ function renderResultsGrid(manifest){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
     return;
   }
+  // console.log(manifest)
   manifest.forEach((item, idx)=>{
     const div = document.createElement("div");
     div.className = "thumb";

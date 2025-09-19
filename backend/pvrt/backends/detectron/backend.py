@@ -45,6 +45,9 @@ from detectron2.utils.logger import setup_logger
 # use your previous helpers.py to read class count from COCO (source of truth)
 from ...core.helpers import get_num_classes
 
+import logging
+log = logging.getLogger("pvrt")
+
 
 # ----------------------------- small helpers ------------------------------ #
 
@@ -108,8 +111,6 @@ class DetectronBackend(Backend):
     """
 
     def train(self, cfg_in: TrainConfig) -> Path:
-        import logging
-        log = logging.getLogger("pvrt")
 
         train_dir, val_dir, out_dir = Path(cfg_in.train_dir), Path(cfg_in.val_dir), Path(cfg_in.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -214,9 +215,9 @@ class DetectronBackend(Backend):
     def predict(self, cfg_in: PredictConfig) -> Path:
         """
         Test with thermal only if:
-          - user requested thermal, AND
-          - images have thermal sidecars, AND
-          - the model was trained with thermal (meta: input_mode == 'rgbt')
+        - user requested thermal, AND
+        - images have thermal sidecars, AND
+        - the model was trained with thermal (meta: input_mode == 'rgbt')
         Otherwise, fallback to RGB predictor.
         """
         images_dir = Path(cfg_in.images_dir)
@@ -225,24 +226,38 @@ class DetectronBackend(Backend):
         out_dir.mkdir(parents=True, exist_ok=True)
 
         meta = load_model_meta(weights)
-        model_mode = input_mode_from_meta(meta, default="rgb")
-        can_thermal = (model_mode == "rgbt")
-        wants_thermal = bool(cfg_in.use_thermal and has_thermal_for_images(images_dir))
+        model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
 
-        if wants_thermal and can_thermal:
+        # break the conditions out so we can log a precise reason
+        request_thermal   = bool(cfg_in.use_thermal)
+        data_has_thermal  = has_thermal_for_images(images_dir)
+        model_is_rgbt     = model_mode in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}
+
+        if request_thermal and data_has_thermal and model_is_rgbt:
+            # log.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt → rgbt")
+            log.info("UI:INFO:test: backend=detectron | selected=rgbt")
             return predict_folder_rgbt(
                 images_dir=images_dir,
                 weights_dir=weights,
                 out_dir=out_dir,
-                # score_thresh=float(meta.get("score_thresh_test", 0.5)),
             )
+
+        # --- fallback to RGB; compute a clear reason for the mini-log ---
+        if not request_thermal:
+            reason = "request_false"
+        elif not data_has_thermal:
+            reason = "no_thermal_in_dataset"
         else:
-            return predict_folder_rgb(
-                images_dir=images_dir,
-                weights_dir=weights,
-                out_dir=out_dir,
-                # score_thresh=float(meta.get("score_thresh_test", 0.5)),
-            )
+            reason = f"model_mode={model_mode!r}"  # model not trained for thermal
+
+        log.warning(f"UI:WARN:test: decision: FALLBACK to RGB (reason={reason})")
+        log.info("UI:INFO:test: backend=detectron | selected=rgb")
+        return predict_folder_rgb(
+            images_dir=images_dir,
+            weights_dir=weights,
+            out_dir=out_dir,
+        )
+
 
     def read_meta(self, weights_dir: Path) -> dict:
         return load_model_meta(weights_dir)

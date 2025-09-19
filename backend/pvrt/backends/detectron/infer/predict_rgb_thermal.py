@@ -1,304 +1,255 @@
 # backend/pvrt/infer/predict_rgb_thermal.py
 from __future__ import annotations
-
+import json, hashlib, logging, time
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
-import json
 
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
-
 from detectron2.config import get_cfg
-from detectron2.engine import DefaultPredictor
+from detectron2.checkpoint import DetectionCheckpointer
+from detectron2.modeling import build_model
 from detectron2 import model_zoo
 
-# Shared results helpers
-from ....core.results import ensure_results_layout, write_pred_json
+# widen model to 4ch and extend pixel stats
+from ..utils.model_patch import make_cfg_4ch, patch_first_conv_to_4ch
+from ....core.io import load_model_meta, input_mode_from_meta
+from .predict_rgb_only import predict_folder as run_rgb
 
-
-# ---------------------------
-# Small, focused utilities
-# ---------------------------
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp",
-              ".JPG", ".JPEG", ".PNG", ".BMP", ".TIF", ".TIFF", ".WEBP"}
-
-THERMAL_DIR_NAMES = ("thermal", "ir", "t", "temp")
-THERMAL_EXTS = (".tif", ".tiff", ".png")
-
-
-def _list_images(d: Path) -> List[Path]:
-    return [p for p in sorted(Path(d).iterdir()) if p.suffix in IMAGE_EXTS and p.is_file()]
-
+_LOGGER_NAME = "pvrt.test"
+def _log() -> logging.Logger:
+    lg = logging.getLogger(_LOGGER_NAME)
+    if not lg.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter("%(message)s"))
+        lg.addHandler(h)
+        lg.setLevel(logging.INFO)
+    lg.propagate = False
+    return lg
 
 def _pick_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def _read_meta(weights_dir: Path) -> Dict:
-    meta = Path(weights_dir) / "model_meta.json"
-    return json.loads(meta.read_text(encoding="utf-8")) if meta.exists() else {}
-
-
-def _resolve_num_classes(weights_dir: Path, meta: Dict) -> int:
-    # Prefer explicit meta
-    if isinstance(meta.get("num_classes"), int) and meta["num_classes"] > 0:
-        return int(meta["num_classes"])
-    # Fallback: inspect nearby COCO annotations (best-effort)
-    for base in (Path(weights_dir), Path(weights_dir).parent, Path(weights_dir).parent.parent):
-        for jf in base.glob("*_annotations.coco*.json"):
-            try:
-                cats = json.loads(jf.read_text(encoding="utf-8")).get("categories", [])
-                return max(1, len(cats)) if isinstance(cats, list) else 1
-            except Exception:
-                continue
-    return 1
-
-
-def _resolve_score_thresh(meta: Dict, default: float = 0.5) -> float:
     try:
-        return float(meta.get("score_thresh_test", default))
+        return "cuda" if torch.cuda.is_available() else "cpu"
     except Exception:
-        return float(default)
+        return "cpu"
 
-
-def _resolve_weights_path(weights_dir: Path) -> Path:
-    p = Path(weights_dir) / "model_final.pth"
-    return p if p.exists() else Path(model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-
-
-def _load_pairs_json(images_dir: Path) -> Dict[str, str]:
-    """
-    Optional pairing file at `<images_dir>/thermal/pairs.json`:
-      { "image_file_name": "relative/or/absolute/path/to/thermal.tif", ... }
-    """
-    pj = Path(images_dir) / "thermal" / "pairs.json"
-    if pj.exists():
-        try:
-            j = json.loads(pj.read_text(encoding="utf-8"))
-            # normalize to strings
-            out = {}
-            for k, v in (j.items() if isinstance(j, dict) else []):
-                if isinstance(k, str) and isinstance(v, str):
-                    out[k] = v
-            return out
-        except Exception:
-            return {}
+def _load_meta(d: Path) -> dict:
+    p = d / "model_meta.json"
+    if p.exists():
+        try: return json.loads(p.read_text(encoding="utf-8"))
+        except Exception: pass
     return {}
 
+def _resolve_weights(d: Path) -> Path:
+    for n in ("model_best.pth","model_final.pth","model.pth"):
+        p = d / n
+        if p.exists(): return p
+    return d / "model_final.pth"
 
-def _guess_thermal_sidecar(images_dir: Path, img: Path) -> Optional[Path]:
-    """
-    Heuristics when no pairs.json is present:
-      1) <images_dir>/<thermal-like>/<stem>.tif(f)
-      2) <images_dir>/<stem>.tif(f)
-      3) None
-    """
-    # search common thermal subdirs
-    for dname in THERMAL_DIR_NAMES:
-        tdir = Path(images_dir) / dname
-        if tdir.exists() and tdir.is_dir():
-            for ext in THERMAL_EXTS:
-                cand = tdir / f"{img.stem}{ext}"
-                if cand.exists():
-                    return cand
+def _load_cfg(d: Path):
+    cfg = get_cfg()
+    yml = d / "config.yaml"
+    if yml.exists():
+        cfg.merge_from_file(str(yml)); cfg._pvrt_cfg_source = "run_config.yaml"
+    else:
+        cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
+        cfg._pvrt_cfg_source = "fallback_frcnn_zoo"
+    return cfg
 
-    # same directory as the RGB image
-    for ext in THERMAL_EXTS:
-        cand = Path(images_dir) / f"{img.stem}{ext}"
-        if cand.exists():
-            return cand
-
+def _find_thermal(rgb: Path) -> Path | None:
+    for cand in (rgb.with_name(rgb.stem+"_thermal.tif"),
+                 rgb.with_name(rgb.stem+"_thermal.tiff")):
+        if cand.exists(): return cand
     return None
 
+def _normalize_thermal(arr: np.ndarray) -> np.ndarray:
+    th = arr.astype(np.float32)
+    if th.ndim == 3: th = th[...,0]
+    vmax = float(np.nanmax(th)) if th.size else 0.0
+    if vmax > 1.5:   # looks like °C
+        th = np.clip(th, 0.0, 100.0) / 100.0
+    else:            # already 0..1, or constant
+        tmin, tmax = float(np.nanmin(th)), float(np.nanmax(th))
+        th = (th - tmin) / (tmax - tmin) if tmax > tmin else th*0.0
+    return th
 
-def _load_thermal_channel(path: Path) -> Optional[np.ndarray]:
-    """
-    Load a thermal raster (tif/png). Return uint8 2D array scaled 0..255.
-    Strategy:
-      - If data is float: per-image min/max normalize (robust to outliers with percentiles)
-      - If data is uint16/uint8: simple min/max normalize to 0..255
-    """
-    # Use cv2 to avoid heavy deps; it can read tif in many builds
-    arr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if arr is None:
-        return None
+def _palette_bgr():  # high contrast on false-color
+    return [(0,255,255),(255,0,255),(255,255,0),(0,128,255),(0,255,0),(255,0,0),(128,0,255),(0,0,255)]
 
-    # Take single channel if multi-band by mistake
-    if arr.ndim == 3:
-        arr = arr[..., 0]
+def _falsecolor(th01: np.ndarray) -> np.ndarray:
+    th8 = np.clip(th01*255.0,0,255).astype(np.uint8)
+    return cv2.applyColorMap(th8, cv2.COLORMAP_JET)
 
-    arr = arr.astype(np.float32)
-
-    # Robust scaling: clip to [p2, p98] then map to 0..255
-    p2, p98 = np.percentile(arr, [2.0, 98.0])
-    lo, hi = float(p2), float(p98)
-    if hi <= lo:
-        lo, hi = float(arr.min()), float(arr.max() if arr.max() > arr.min() else arr.min() + 1.0)
-
-    arr = np.clip((arr - lo) / (hi - lo), 0.0, 1.0) * 255.0
-    return arr.astype(np.uint8)
-
-
-def _bgrt_stack(img_bgr: np.ndarray, t_uint8: np.ndarray) -> np.ndarray:
-    """
-    Make a 4-channel BGRT tensor (last channel is thermal).
-    """
-    if img_bgr.ndim != 3 or img_bgr.shape[2] != 3:
-        raise ValueError("Expected BGR image with 3 channels")
-    if t_uint8.ndim != 2:
-        raise ValueError("Expected thermal as single-band uint8")
-    if t_uint8.shape[:2] != img_bgr.shape[:2]:
-        # resize thermal to match RGB
-        t_uint8 = cv2.resize(t_uint8, (img_bgr.shape[1], img_bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
-    return np.dstack([img_bgr, t_uint8])
-
-
-# --------- conv1 patching (fallback if your pvrt.model_patch is absent) ---------
-
-def _patch_first_conv_to_4ch(model: nn.Module) -> None:
-    """
-    Find the first Conv2d expecting 3 channels and replace it with a 4-ch variant.
-    The 4th channel weights are initialized as the mean of the first three.
-    """
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Conv2d) and module.in_channels == 3:
-            # Create new conv with same hyperparams but 4 input channels
-            new_conv = nn.Conv2d(
-                in_channels=4,
-                out_channels=module.out_channels,
-                kernel_size=module.kernel_size,
-                stride=module.stride,
-                padding=module.padding,
-                dilation=module.dilation,
-                groups=module.groups,
-                bias=(module.bias is not None),
-                padding_mode=module.padding_mode,
-            )
-            with torch.no_grad():
-                w = module.weight  # [out, 3, k, k]
-                # init from old conv
-                new_conv.weight[:, :3, :, :] = w
-                # 4th channel = mean of first three
-                new_conv.weight[:, 3:4, :, :] = w.mean(dim=1, keepdim=True)
-                if module.bias is not None:
-                    new_conv.bias.copy_(module.bias)
-            # Replace it in its parent
-            parent = model
-            parts = name.split(".")
-            for p in parts[:-1]:
-                parent = getattr(parent, p)
-            setattr(parent, parts[-1], new_conv)
-            return  # patched first conv; done
-
-
-# ---------------------------
-# Public API
-# ---------------------------
-
-def predict_folder(
-    *,
-    images_dir: Path,
-    weights_dir: Path,
-    out_dir: Path,
-    score_thresh: Optional[float] = None,
-) -> Path:
-    """
-    RGB + Thermal inference.
-
-    1) For each RGB image, locate a thermal sidecar:
-       - If thermal/pairs.json exists, use it (image_name → path)
-       - Else try common locations (thermal/<stem>.tif, same folder, etc.)
-    2) Form a BGRT 4-channel array (thermal scaled to uint8).
-    3) Build a Detectron2 model, patch first conv to 4 channels, set PIXEL_MEAN/STD of length 4.
-    4) Write one JSON per image under out_dir/preds/<stem>.json
-
-    Returns: `out_dir` (with the standard results layout).
-    """
-    images_dir = Path(images_dir)
-    weights_dir = Path(weights_dir)
-    out_dir = Path(out_dir)
-
-    paths = ensure_results_layout(out_dir)
-    preds_dir = paths["preds"]
-
-    # ---- Build config & predictor ----
-    meta = _read_meta(weights_dir)
-    num_classes = _resolve_num_classes(weights_dir, meta)
-    score_thresh_eff = float(score_thresh) if score_thresh is not None else _resolve_score_thresh(meta, 0.5)
-    device = _pick_device()
-
-    cfg = get_cfg()
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-    cfg.MODEL.DEVICE = device
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = int(num_classes)
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh_eff)
-    cfg.MODEL.WEIGHTS = str(_resolve_weights_path(weights_dir))
-
-    # Make normalization 4-channel aware (BGRT). You can tweak thermal stats if you saved them in meta.
-    # Here we keep RGB as Detectron defaults and use mid-gray for thermal as a neutral baseline.
-    cfg.MODEL.PIXEL_MEAN = [103.530, 116.280, 123.675, 128.0]  # B, G, R, T
-    cfg.MODEL.PIXEL_STD  = [57.375, 57.120, 58.395, 58.0]
-
-    # Anchor angles safeguard (axis-aligned)
-    if hasattr(cfg.MODEL, "ANCHOR_GENERATOR") and hasattr(cfg.MODEL.ANCHOR_GENERATOR, "ANGLES"):
-        cfg.MODEL.ANCHOR_GENERATOR.ANGLES = [[0]]
-
-    predictor = DefaultPredictor(cfg)
-
-    # Patch first conv to accept 4 channels (if not already patched at training)
-    _patch_first_conv_to_4ch(predictor.model)
-
-    # ---- pairing: pairs.json or heuristics ----
-    pairs = _load_pairs_json(images_dir)
-
-    # ---- Predict every image ----
-    for img in _list_images(images_dir):
-        # RGB
-        bgr = cv2.imread(str(img), cv2.IMREAD_COLOR)
-        if bgr is None:
-            write_pred_json(preds_dir, img.stem, boxes_xyxy=[], scores=[], classes=[], extra={"file": img.name})
-            continue
-
-        # Thermal
-        tpath = None
-        if img.name in pairs:
-            cand = Path(pairs[img.name])
-            tpath = cand if cand.is_absolute() else (images_dir / cand)
+def _draw_overlay_rgbt(bgr: np.ndarray, th01: np.ndarray, boxes, scores, classes, names) -> np.ndarray:
+    base = cv2.addWeighted(bgr, 0.5, _falsecolor(th01), 0.5, 0.0)
+    pal  = _palette_bgr()
+    for bx, sc, cl in zip(boxes, scores, classes):
+        if not bx: continue
+        x1,y1,x2,y2 = map(int, bx)
+        name  = names[cl] if 0 <= cl < len(names) else f"cls_{cl}"
+        label = f"{name} {int(round(float(sc)*100))}%"
+        color = pal[cl % len(pal)]
+        cv2.rectangle(base, (x1,y1), (x2,y2), color, 2)
+        (tw,th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        bx2, by2 = x1+tw+8, y1-th-8
+        if by2 < 0:
+            cv2.rectangle(base, (x1,y1), (bx2,y1+th+8), color, -1)
+            cv2.putText(base, label, (x1+4,y1+th+2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
         else:
-            tpath = _guess_thermal_sidecar(images_dir, img)
+            cv2.rectangle(base, (x1,y1), (bx2,by2),    color, -1)
+            cv2.putText(base, label, (x1+4,y1-6),      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
+    return base
 
-        if not tpath or not tpath.exists():
-            # no thermal; write empty preds to signal mismatch
-            write_pred_json(preds_dir, img.stem, boxes_xyxy=[], scores=[], classes=[], extra={
-                "file": img.name, "warning": "thermal_sidecar_not_found"
-            })
+# use core helpers for layout / JSON / PNG save
+from ....core.results import ensure_results_layout, write_pred_json, write_metrics_json, save_overlay_png
+
+def _build_model_4ch(weights_dir: Path):
+    device = _pick_device()
+    meta   = _load_meta(weights_dir)
+    cfg    = _load_cfg(weights_dir)
+
+    wpth = _resolve_weights(weights_dir)
+    cfg.MODEL.WEIGHTS = str(wpth)
+    cfg.MODEL.DEVICE  = device
+
+    try:
+        nc = int(getattr(cfg.MODEL.ROI_HEADS,"NUM_CLASSES",0) or 0)
+    except Exception:
+        nc = 0
+    m_nc = int(meta.get("num_classes",0) or 0)
+    if nc <= 0 and m_nc > 0:
+        cfg.MODEL.ROI_HEADS.NUM_CLASSES = m_nc
+
+    thr = meta.get("score_thresh_test")
+    if thr is not None:
+        try: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(thr)
+        except: pass
+
+    # build and widen to 4ch
+    model = build_model(cfg)
+    model.eval().to(device)
+    make_cfg_4ch(cfg)                     # extend PIXEL_MEAN/STD to 4ch
+    patch_first_conv_to_4ch(model)  # widen conv1
+    DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
+
+    # class names
+    names = [str(x) for x in meta.get("class_names", [f"cls_{i}" for i in range(int(getattr(cfg.MODEL.ROI_HEADS,'NUM_CLASSES',0) or 0))])]
+    return model, cfg, names, wpth
+
+def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool = True) -> Path:
+    """
+    RGB+Thermal inference (sidecar <stem>_thermal.tif[f]).
+    PNG overlays only, with class + %; live mini-logs; end summary.
+    """
+    log = _log()
+    t0  = time.time()
+
+    images = Path(images_dir)
+    out    = Path(out_dir)
+    wdir   = Path(weights_dir)
+
+    meta = load_model_meta(Path(weights_dir))
+    model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
+
+    if model_mode not in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}:
+        log.warning(
+            f"UI:WARN:test: thermal path received RGB model (model_mode={model_mode!r}) → FALLBACK to RGB"
+        )
+        
+        return run_rgb(
+            images_dir=images_dir,
+            out_dir=out_dir,
+            weights_dir=weights_dir,
+            use_thermal=False,
+        )
+
+    # Explicit banner so the mini-log always says which mode ran
+    log.info("UI:INFO:test: Running the mode RGB+Thermal (4ch)")
+
+    layout      = ensure_results_layout(out)
+    preds_dir   = layout["preds"]
+    overlays_dir= layout["overlay"]
+
+    model, cfg, names, wpth = _build_model_4ch(wdir)
+
+    # one-time header
+    try:
+        w_sz  = wpth.stat().st_size if wpth.exists() else -1
+        w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8] if wpth.exists() else "missing"
+    except Exception:
+        w_sz, w_md5 = -1, "n/a"
+
+    exts = {".jpg",".jpeg",".png",".tif",".tiff",".bmp"}
+    imgs = [p for p in sorted(images.iterdir()) if p.suffix.lower() in exts]
+    n    = len(imgs)
+
+    log.info("UI:OK:test: Testing started (RGB+Thermal)")
+    log.info(f"UI:INFO:test: Images={n} | Device={cfg.MODEL.DEVICE} | Thr={getattr(cfg.MODEL.ROI_HEADS,'SCORE_THRESH_TEST',None)} | WeightsMD5={w_md5}")
+    # log.info(f"UI:INFO:test: Using model: {wdir}")
+
+    total, with_dets = 0, 0
+    for i, p in enumerate(imgs, 1):
+        bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
+        if bgr is None:
+            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"read_failed"})
+            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (read_failed)")
             continue
 
-        t8 = _load_thermal_channel(tpath)
-        if t8 is None:
-            write_pred_json(preds_dir, img.stem, boxes_xyxy=[], scores=[], classes=[], extra={
-                "file": img.name, "warning": "thermal_load_failed"
-            })
+        th_path = _find_thermal(p)
+        if th_path is None:
+            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"no_thermal_sidecar"})
+            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (no_thermal_sidecar)")
             continue
 
-        # 4-channel BGRT
-        bgrt = _bgrt_stack(bgr, t8)
+        therm = cv2.imread(str(th_path), cv2.IMREAD_UNCHANGED)
+        if therm is None:
+            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"thermal_read_failed"})
+            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (thermal_read_failed)")
+            continue
 
-        # DefaultPredictor expects HxWxC array; it will handle normalization
-        outputs = predictor(bgrt)
-        inst = outputs.get("instances", None)
+        H,W = bgr.shape[:2]
+        th  = _normalize_thermal(therm)
+        if th.shape[:2] != (H,W):
+            th = cv2.resize(th, (W,H), interpolation=cv2.INTER_LINEAR)
+
+        # feed 4ch tensor
+        ch4    = np.dstack([bgr.astype(np.float32), (th*255.0)]).astype(np.float32)
+        tensor = torch.as_tensor(ch4.transpose(2,0,1)).to(cfg.MODEL.DEVICE)
+        with torch.no_grad():
+            outs = model([{"image": tensor, "height": H, "width": W}])
+        inst = outs[0].get("instances", None)
+        inst = inst.to("cpu") if inst is not None else None
 
         if inst is None or len(inst) == 0:
             boxes, scores, classes = [], [], []
         else:
-            inst = inst.to("cpu")
             boxes   = inst.pred_boxes.tensor.numpy().tolist()
             scores  = inst.scores.numpy().tolist()
             classes = inst.pred_classes.numpy().tolist()
 
-        write_pred_json(preds_dir, img.stem, boxes_xyxy=boxes, scores=scores, classes=classes, extra={"file": img.name})
+        k = len(scores)
+        total += k
+        if k>0: with_dets += 1
 
-    return out_dir
+        write_pred_json(preds_dir, p.stem, boxes, scores, classes, extra={"file": p.name})
+
+        # draw BEFORE save; single PNG overlay in overlays dir
+        overlay = _draw_overlay_rgbt(bgr, th, boxes, scores, classes, names)
+        save_overlay_png(overlays_dir, p.stem, overlay)
+
+        log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")
+
+    elapsed = time.time() - t0
+    metrics = {
+        "backend":"detectron","input_mode":"rgbt","use_thermal":True,"device":cfg.MODEL.DEVICE,
+        "score_thresh_test": getattr(cfg.MODEL.ROI_HEADS,"SCORE_THRESH_TEST",None),
+        "num_images": n, "images_with_detections": with_dets, "total_detections": total,
+        "avg_detections_per_image": round(total/n, 3) if n else 0.0,
+        "elapsed_sec": round(elapsed, 3),
+        "img_per_sec": round(n/elapsed, 3) if elapsed>0 else None
+    }
+    write_metrics_json(out, metrics)
+
+    log.info(f"UI:INFO:test: predictions_total={total}")
+    # log.info("UI:OK:test: Test complete")
+    return out
