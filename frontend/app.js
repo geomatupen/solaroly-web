@@ -276,7 +276,7 @@ async function runTest(){
 
     // load into map & results
     await applySessionToMap(currentSession);
-    renderResultsGrid(js.manifest);
+    renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
     await loadSessions(true);
     $("#selResults").value = currentSession;
     $("#selMapSession").value = currentSession;
@@ -303,8 +303,10 @@ async function showResultsForSelected(){
   const res = await fetch(`${api.sessionSummary}?session=${encodeURIComponent(session)}`);
   const js = await res.json();
   if(!js.ok) return;
+  console.log(js)
   renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
 }
+
 function pairThumbs(assets){
   const mapThumb = new Map((assets.thumbs||[]).map(u=>[u.split("/").pop(), u]));
   const out = [];
@@ -317,12 +319,15 @@ function pairThumbs(assets){
 function renderResultsGrid(manifest){
   const grid = $("#resultsGrid");
   grid.innerHTML = "";
+  console.log(manifest)
+  console.log(manifest.length)
   if(!manifest || !manifest.length){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
-    return;
+    // return;
   }
   // console.log(manifest)
   manifest.forEach((item, idx)=>{
+    console.log("inside loop")
     const div = document.createElement("div");
     div.className = "thumb";
     div.innerHTML = `

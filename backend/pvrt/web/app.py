@@ -524,6 +524,7 @@ async def api_test_run(
     forced_backend: Optional[str] = Form(default=None),
 ):
     ds_dir = TEST_DIR / dataset
+    
     if not ds_dir.exists() or not ds_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
 
@@ -538,6 +539,9 @@ async def api_test_run(
         model_dir = OUTPUTS / models[-1]
 
     session = (_safe_name(result_name) or _now_stamp())
+    base = MEDIA_DIR / "sessions"
+    ses = base / session
+
     out_root = MEDIA_DIR / "sessions" / session
     out_root.mkdir(parents=True, exist_ok=True)
 
@@ -581,6 +585,8 @@ async def api_test_run(
         manifest_items = manifest_path
     else:
         manifest_items = []
+    
+    assets = _session_assets(ses)
 
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
@@ -589,6 +595,7 @@ async def api_test_run(
         "overlays": str(ov_dir),
         "thumbs": str(th_dir),
         "manifest": manifest_items,
+        "assets": assets,
         "geojson": str(gj),
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),
