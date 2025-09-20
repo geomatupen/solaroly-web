@@ -92,9 +92,9 @@ def has_thermal_for_images(images_dir: Path) -> bool:
     """
     Heuristic to decide if thermal data is available for a set of images.
     Rules (in order):
-      1) If a `thermal/pairs.json` exists → True.
-      2) If any known thermal subdir contains files → True.
-      3) Otherwise → False.
+      1) If a `thermal/pairs.json` exists - True.
+      2) If any known thermal subdir contains files - True.
+      3) Otherwise - False.
     """
     d = Path(images_dir)
 

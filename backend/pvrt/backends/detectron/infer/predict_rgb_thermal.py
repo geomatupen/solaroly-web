@@ -228,7 +228,7 @@ def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool = True) -
 
     if model_mode not in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}:
         log.warning(
-            f"UI:WARN:test: thermal path received RGB model (model_mode={model_mode!r}) → FALLBACK to RGB"
+            f"UI:WARN:test: thermal path received RGB model (model_mode={model_mode!r}) - FALLBACK to RGB"
         )
         
         return run_rgb(

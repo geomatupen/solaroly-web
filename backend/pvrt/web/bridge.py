@@ -33,7 +33,7 @@ def _select_infer_mode(
 
     Returns:
       (use_thermal, reason)
-      - use_thermal: True → rgbt, False → rgb
+      - use_thermal: True - rgbt, False - rgb
       - reason: non-empty only when falling back to rgb
     """
     data_has_thermal = has_thermal_for_images(images_dir)
@@ -42,7 +42,7 @@ def _select_infer_mode(
     if use_thermal_request and data_has_thermal and model_is_rgbt:
         # OK to use thermal
         _log_test.info(
-            "UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt → rgbt"
+            "UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt"
         )
         return True, None
 
@@ -85,7 +85,7 @@ def train_entry(
     thermal_ok = bool(use_thermal_request and has_thermal_for_images(train_dir))
     _log_full.info(
         f"UI:INFO:train: decision: use_thermal_request={use_thermal_request}, "
-        f"data_has_thermal={thermal_ok} → {'rgbt' if thermal_ok else 'rgb'}"
+        f"data_has_thermal={thermal_ok} - {'rgbt' if thermal_ok else 'rgb'}"
     )
 
     backend_impl = get_backend(backend)
@@ -144,7 +144,7 @@ def predict_entry(
 
     # (Optional) backend selection info (helps when override is used)
     if forced_backend and forced_backend != meta.get("backend"):
-        _log_full.info(f"UI:INFO:test: backend override: forced={forced_backend} meta={meta.get('backend')} → using {backend_name}")
+        _log_full.info(f"UI:INFO:test: backend override: forced={forced_backend} meta={meta.get('backend')} - using {backend_name}")
 
     results_dir = backend_impl.predict(
         PredictConfig(

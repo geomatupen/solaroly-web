@@ -173,7 +173,7 @@ class DetectronBackend(Backend):
 
         cfg.DATALOADER.NUM_WORKERS = 2
         cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
-        cfg.TEST.EVAL_PERIOD = max(100, int(cfg.SOLVER.MAX_ITER // 10))
+        cfg.TEST.EVAL_PERIOD = 50 # max(50, int(cfg.SOLVER.MAX_ITER // 10))
         cfg.OUTPUT_DIR = str(out_dir)
         cfg.INPUT.FORMAT = "BGR"
 
@@ -187,8 +187,105 @@ class DetectronBackend(Backend):
             f"[train] run={getattr(cfg_in, 'run_name', out_dir.name)} "
             f"thermal={thermal_ok} classes={num_classes}"
         )
+
+        class _RawLossLogger(hooks.HookBase):
+            def after_step(self):
+                if self.trainer.iter % cfg.SOLVER.LOG_PERIOD == 0:
+                    hb = self.trainer.storage.history("total_loss")
+                    s = hb.latest()
+                    raw = float(getattr(s, "value", s))
+                    logging.getLogger("pvrt.test").info(f"UI:LOG:loss: iter={self.trainer.iter} total_loss(raw)={raw:.4f}")
+        # trainer.register_hooks([_RawLossLogger()])
+
+
+        # capture last seen total_loss from EventStorage
+        class _LossTap(hooks.HookBase):
+            def __init__(self):
+                self.last_raw = None
+                self.last_med20 = None  # matches what the console prints (20-iter median)
+
+            def after_step(self):
+                try:
+                    hb = self.trainer.storage.history("total_loss")   # HistoryBuffer
+                    s = hb.latest()                                   # Scalar or float
+                    self.last_raw = float(getattr(s, "value", s))
+                    try:
+                        self.last_med20 = float(hb.median(20))
+                    except Exception:
+                        self.last_med20 = self.last_raw
+                except Exception:
+                    pass
+
+
+        loss_tap = _LossTap()
+        trainer.register_hooks([loss_tap])
+
+        # 2) build val loader/evaluator once
+        val_loader = (RTolerantTrainer if thermal_ok else RGBOnlyTrainer).build_test_loader(cfg, "pv_val")
+        evaluator  = COCOEvaluator("pv_val", distributed=False, output_dir=str(out_dir))
+
+        _best = {"ap50": float("-inf")} #AP50 - Average Precision at IoU 0.50. ie. area under the entire precision–recall curve
+
+        def _eval_and_log():
+            res = inference_on_dataset(trainer.model, val_loader, evaluator)
+
+            # 1) extract AP50 from the evaluator RESULTS (these are "bbox" keys)
+            ap50 = res.get("bbox/AP50")
+            if ap50 is None:
+                bbox = res.get("bbox")
+                if isinstance(bbox, dict):
+                    ap50 = bbox.get("AP50")
+
+            try:
+                ap50 = float(ap50)
+            except (TypeError, ValueError):
+                ap50 = float("nan")
+
+            # Optional: treat NaN as 0.0 so first eval still saves a best
+            if not math.isfinite(ap50):
+                ap50 = 0.0
+
+            # 2) write it into EventStorage under a STABLE key BestCheckpointer watches
+            trainer.storage.put_scalar("val/AP50", ap50, smoothing_hint=False)
+
+            # 3) on improvement: log, save meta, and (safety) save the checkpoint too
+            if ap50 > _best["ap50"]:
+                _best["ap50"] = ap50
+                log.info(f"UI:OK:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} - model_best.pth")
+
+                # ensure a file exists even if BestCheckpointer misses it
+                trainer.checkpointer.save("model_best")
+
+                _normalize_and_save_meta(out_dir, {
+                    "best_model": {
+                        "iter": int(trainer.iter),
+                        "bbox_AP50": round(ap50, 4),
+                        "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
+                        "total_loss_raw": None if loss_tap.last_raw is None else float(loss_tap.last_raw),
+                        "path": str(Path(out_dir) / "model_best.pth"),
+                    }
+                })
+
+            return res
+
+        # evaluate every EVAL_PERIOD; save model_best.pth when metric improves
+        trainer.register_hooks([
+            # hooks.EvalHook(cfg.TEST.EVAL_PERIOD, lambda: inference_on_dataset(trainer.model, val_loader, evaluator)),
+            hooks.EvalHook(cfg.TEST.EVAL_PERIOD, _eval_and_log),
+            hooks.BestCheckpointer(
+                cfg.TEST.EVAL_PERIOD,
+                trainer.checkpointer,
+                val_metric="val/AP50",   # or "bbox/AP"
+                mode="max",
+                file_prefix="model_best"
+            ),
+        ])
+
+
         trainer.resume_or_load(resume=False)
         trainer.train()
+
+        
 
         # Ensure final checkpoint exists and model_final.pth is made a copy of the best (if any)
         try:
@@ -201,53 +298,18 @@ class DetectronBackend(Backend):
                 log.info("PHASE:save model_final (no best found)")
         except Exception as e:
             log.warning(f"PHASE:save FAILED (non-fatal): {e}")
+        finally:
+            # save final stats to meta
+            _normalize_and_save_meta(out_dir, {
+                "final_model": {
+                    "iter": int(trainer.iter),
+                    "total_loss_med20": None if loss_tap.last_med20  is None else float(loss_tap.last_med20 ),
+                    "total_loss_raw": None if loss_tap.last_raw  is None else float(loss_tap.last_raw ),
+                    "path": str(Path(out_dir) / "model_final.pth"),
+                }
+            })
 
-        # Post-train evaluation — never let it crash the request
-        try:
-            log.info("PHASE:eval begin")
-            if thermal_ok:
-                val_loader = RTolerantTrainer.build_test_loader(cfg, "pv_val")
-            else:
-                val_loader = RGBOnlyTrainer.build_test_loader(cfg, "pv_val")
-            evaluator = COCOEvaluator("pv_val", False, output_dir=str(out_dir))
-            inference_on_dataset(trainer.model, val_loader, evaluator)
-            log.info("PHASE:eval end")
-        except Exception as e:
-            log.warning(f"[eval] skipped due to error: {e}")
-
-        _best = {"ap50": float("-inf")}
-
-        def _eval_and_log():
-            res = inference_on_dataset(trainer.model, val_loader, evaluator)
-
-            # robust AP50 extraction across D2 versions
-            ap50 = res.get("bbox/AP50")
-            if ap50 is None and isinstance(res.get("bbox"), dict):
-                ap50 = res["bbox"].get("AP50")
-
-            try:
-                ap50 = float(ap50)
-            except (TypeError, ValueError):
-                ap50 = float("nan")
-
-            if math.isfinite(ap50) and ap50 > _best["ap50"]:
-                _best["ap50"] = ap50
-                log.info(f"UI:INFO:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} → model_best.pth")
-
-            return res
-        # evaluate every EVAL_PERIOD; save model_best.pth when metric improves
-        trainer.register_hooks([
-            # hooks.EvalHook(cfg.TEST.EVAL_PERIOD, lambda: inference_on_dataset(trainer.model, val_loader, evaluator)),
-            hooks.EvalHook(cfg.TEST.EVAL_PERIOD, _eval_and_log),
-            hooks.BestCheckpointer(
-                cfg.TEST.EVAL_PERIOD,
-                trainer.checkpointer,
-                val_metric="bbox/AP50",   # or "bbox/AP"
-                mode="max",
-                file_prefix="model_best"
-            ),
-        ])
-
+        
         MODEL_NAME = Path(MODEL_YAML).stem
         # Save normalized meta for the run
         _normalize_and_save_meta(out_dir, {
@@ -263,7 +325,7 @@ class DetectronBackend(Backend):
                 "base_lr": float(cfg.SOLVER.BASE_LR),
                 "ims_per_batch": int(cfg.SOLVER.IMS_PER_BATCH),
                 "run_name": getattr(cfg_in, "run_name", ""),
-            }
+            },
         })
 
         return out_dir
@@ -290,7 +352,7 @@ class DetectronBackend(Backend):
         model_is_rgbt     = model_mode in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}
 
         if request_thermal and data_has_thermal and model_is_rgbt:
-            # log.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt → rgbt")
+            # log.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt")
             log.info("UI:INFO:test: backend=detectron | selected=rgbt")
             return predict_folder_rgbt(
                 images_dir=images_dir,

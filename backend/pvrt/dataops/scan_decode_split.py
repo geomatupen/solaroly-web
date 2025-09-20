@@ -123,7 +123,7 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
             reuse += 1
             continue
 
-        # Decode RJPEG → float32 map → TIFF
+        # Decode RJPEG - float32 map - TIFF
         try:
             temps = rjpeg_to_heatmap(str(rgb), dtype=np.float32)  # HxW float32
             if not isinstance(temps, np.ndarray) or temps.ndim != 2:
@@ -133,9 +133,9 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
             try:
                 tmin = float(np.nanmin(temps))
                 tmax = float(np.nanmax(temps))
-                log.info(f"UI:INFO:prep: decoded {rgb.name} → {out_tif.name} | range={tmin:.2f}..{tmax:.2f}°C")
+                log.info(f"UI:INFO:prep: decoded {rgb.name} - {out_tif.name} | range={tmin:.2f}..{tmax:.2f}°C")
             except Exception:
-                log.info(f"UI:INFO:prep: decoded {rgb.name} → {out_tif.name}")
+                log.info(f"UI:INFO:prep: decoded {rgb.name} - {out_tif.name}")
 
             # Write single-band float32 TIFF
             tifffile.imwrite(str(out_tif), temps.astype(np.float32))

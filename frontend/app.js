@@ -692,7 +692,7 @@ function setupUI(){
   document.getElementById("imgNext")?.addEventListener("click", _nextImg);
   document.getElementById("imgPrev")?.addEventListener("click", _prevImg);
 
-  // keyboard: ← → Esc (also allow A/D)
+  // keyboard: ← - Esc (also allow A/D)
   document.addEventListener("keydown", (e)=>{
     if (!_lightboxOpen) return;
     const k = e.key;

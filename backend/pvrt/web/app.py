@@ -219,7 +219,7 @@ def _coerce_pred_json(p: Path) -> dict:
 def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
     Produce /overlays (prefer predictor-colored overlays if present) and /thumbs under out_root,
-    plus a manifest JSON mapping original file name → generated URLs.
+    plus a manifest JSON mapping original file name - generated URLs.
     """
     # local-only imports so you don't have to change module imports
     import json, shutil, logging
@@ -238,7 +238,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
     if use_colored:
         logger.info(f"UI:INFO:post: using existing colored overlays from {colored_src}")
     else:
-        logger.info("UI:INFO:post: no predictor overlays found → drawing fallback overlays")
+        logger.info("UI:INFO:post: no predictor overlays found - drawing fallback overlays")
 
     # simple, vivid RGB palette (works on RGB + thermal backgrounds)
     def _palette_rgb():

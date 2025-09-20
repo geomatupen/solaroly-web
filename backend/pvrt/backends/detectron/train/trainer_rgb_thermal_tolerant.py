@@ -10,7 +10,7 @@ from detectron2.engine import DefaultTrainer
 from detectron2.data import build_detection_train_loader, build_detection_test_loader
 from detectron2.evaluation import COCOEvaluator
 
-# Reuse your tolerant mapper that guarantees aligned RGB+Thermal → 4 channels
+# Reuse your tolerant mapper that guarantees aligned RGB+Thermal - 4 channels
 from .mapper_rgb_thermal_tolerant import RGBThermalDatasetMapper
 
 
