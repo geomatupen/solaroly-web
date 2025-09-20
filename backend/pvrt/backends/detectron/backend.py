@@ -39,8 +39,12 @@ from .infer.predict_rgb_thermal import predict_folder as predict_folder_rgbt
 from detectron2.config import get_cfg
 from detectron2 import model_zoo
 from detectron2.data import MetadataCatalog
+from detectron2.engine import hooks
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
 from detectron2.utils.logger import setup_logger
+
+from shutil import copy2
+import math
 
 # use your previous helpers.py to read class count from COCO (source of truth)
 from ...core.helpers import get_num_classes
@@ -70,7 +74,7 @@ def _normalize_and_save_meta(out_dir: Path, meta: Dict) -> None:
 def _coherent_input_resize(cfg) -> None:
     """
     Normalize cfg.INPUT.* so any Detectron2 path that consults it sees a valid combo.
-    This prevents 'range' + [800] errors (the cause of your 500).
+    This prevents 'range' + [800] errors.
     """
     # training policy
     sampling = str(getattr(cfg.INPUT, "MIN_SIZE_TRAIN_SAMPLING", "choice")).lower()
@@ -147,24 +151,29 @@ class DetectronBackend(Backend):
             class_names = [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
 
         # Build cfg
+        MODEL_YAML = "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
         cfg = get_cfg()
-        cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
+        cfg.merge_from_file(model_zoo.get_config_file(MODEL_YAML))
+        cfg.MODEL.MASK_ON = False  
+
         cfg.DATASETS.TRAIN = ("pv_train",)
         cfg.DATASETS.TEST  = ("pv_val",)
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
-        cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
+        cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 128
+        cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(MODEL_YAML)
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5
 
         cfg.SOLVER.IMS_PER_BATCH = int(cfg_in.ims_per_batch or 2)
         cfg.SOLVER.BASE_LR       = float(cfg_in.base_lr or 0.00025)
         cfg.SOLVER.MAX_ITER      = int(cfg_in.max_iter or 1000)
         cfg.SOLVER.STEPS         = list(_safe_solver_steps(cfg.SOLVER.MAX_ITER))
-        cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(cfg.SOLVER.MAX_ITER / 6))
+        # cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(cfg.SOLVER.MAX_ITER / 6))
+        cfg.SOLVER.CHECKPOINT_PERIOD = 10**9  # disabled time-based checkpoints
         cfg.SOLVER.LOG_PERIOD    = 1
 
         cfg.DATALOADER.NUM_WORKERS = 2
         cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
-        cfg.TEST.EVAL_PERIOD = 0
+        cfg.TEST.EVAL_PERIOD = max(100, int(cfg.SOLVER.MAX_ITER // 10))
         cfg.OUTPUT_DIR = str(out_dir)
         cfg.INPUT.FORMAT = "BGR"
 
@@ -181,10 +190,15 @@ class DetectronBackend(Backend):
         trainer.resume_or_load(resume=False)
         trainer.train()
 
-        # Ensure final checkpoint exists
+        # Ensure final checkpoint exists and model_final.pth is made a copy of the best (if any)
         try:
-            trainer.checkpointer.save("model_final")
-            log.info("PHASE:save model_final")
+            best = Path(out_dir) / "model_best.pth"
+            if best.exists():
+                copy2(best, Path(out_dir) / "model_final.pth")
+                log.info("PHASE:save model_final <- model_best")
+            else:
+                trainer.checkpointer.save("model_final")
+                log.info("PHASE:save model_final (no best found)")
         except Exception as e:
             log.warning(f"PHASE:save FAILED (non-fatal): {e}")
 
@@ -201,13 +215,55 @@ class DetectronBackend(Backend):
         except Exception as e:
             log.warning(f"[eval] skipped due to error: {e}")
 
+        _best = {"ap50": float("-inf")}
+
+        def _eval_and_log():
+            res = inference_on_dataset(trainer.model, val_loader, evaluator)
+
+            # robust AP50 extraction across D2 versions
+            ap50 = res.get("bbox/AP50")
+            if ap50 is None and isinstance(res.get("bbox"), dict):
+                ap50 = res["bbox"].get("AP50")
+
+            try:
+                ap50 = float(ap50)
+            except (TypeError, ValueError):
+                ap50 = float("nan")
+
+            if math.isfinite(ap50) and ap50 > _best["ap50"]:
+                _best["ap50"] = ap50
+                log.info(f"UI:INFO:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} → model_best.pth")
+
+            return res
+        # evaluate every EVAL_PERIOD; save model_best.pth when metric improves
+        trainer.register_hooks([
+            # hooks.EvalHook(cfg.TEST.EVAL_PERIOD, lambda: inference_on_dataset(trainer.model, val_loader, evaluator)),
+            hooks.EvalHook(cfg.TEST.EVAL_PERIOD, _eval_and_log),
+            hooks.BestCheckpointer(
+                cfg.TEST.EVAL_PERIOD,
+                trainer.checkpointer,
+                val_metric="bbox/AP50",   # or "bbox/AP"
+                mode="max",
+                file_prefix="model_best"
+            ),
+        ])
+
+        MODEL_NAME = Path(MODEL_YAML).stem
         # Save normalized meta for the run
         _normalize_and_save_meta(out_dir, {
             "backend": "detectron",
             "input_mode": "rgbt" if thermal_ok else "rgb",
+            "model_name": MODEL_NAME, 
+            "model_zoo": MODEL_YAML,
             "num_classes": num_classes,
             "class_names": class_names,
             "score_thresh_test": float(cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST),
+            "train_params": {                         # NEW (grouped for clarity)
+                "max_iter": int(cfg.SOLVER.MAX_ITER),
+                "base_lr": float(cfg.SOLVER.BASE_LR),
+                "ims_per_batch": int(cfg.SOLVER.IMS_PER_BATCH),
+                "run_name": getattr(cfg_in, "run_name", ""),
+            }
         })
 
         return out_dir

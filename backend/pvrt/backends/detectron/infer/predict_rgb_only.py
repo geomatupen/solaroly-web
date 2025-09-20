@@ -51,23 +51,80 @@ def _palette_bgr():
     return [(0,255,255),(255,0,255),(255,255,0),(0,128,255),(0,255,0),(255,0,0),(128,0,255),(0,0,255)]
 
 def _draw_overlay(bgr, boxes, scores, classes, names):
-    out = bgr.copy(); pal = _palette_bgr()
+    out = bgr.copy()
+    H, W = out.shape[:2]
+    pal = _palette_bgr()
+
+    # thickness scales with image size (but never <2)
+    thickness = max(2, int(round(min(H, W) * 0.003)))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45
+    text_thickness = 1
+    pad = 4  # label padding inside the pill
+
     for bx, sc, cl in zip(boxes, scores, classes):
-        if not bx: continue
-        x1,y1,x2,y2 = map(int, bx)
-        name  = names[cl] if 0 <= cl < len(names) else f"cls_{cl}"
-        label = f"{name} {int(round(float(sc)*100))}%"
-        color = pal[cl % len(pal)]
-        cv2.rectangle(out, (x1,y1), (x2,y2), color, 2)
-        (tw,th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        bx2, by2 = x1+tw+8, y1-th-8
-        if by2 < 0:
-            cv2.rectangle(out, (x1,y1), (bx2,y1+th+8), color, -1)
-            cv2.putText(out, label, (x1+4,y1+th+2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255),1, cv2.LINE_AA)
-        else:
-            cv2.rectangle(out, (x1,y1), (bx2,by2),    color, -1)
-            cv2.putText(out, label, (x1+4,y1-6),      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255),1, cv2.LINE_AA)
+        if not bx:
+            continue
+        try:
+            x1, y1, x2, y2 = map(int, bx)
+        except Exception:
+            continue
+
+        # clamp to image bounds
+        x1 = max(0, min(W - 1, x1))
+        y1 = max(0, min(H - 1, y1))
+        x2 = max(0, min(W - 1, x2))
+        y2 = max(0, min(H - 1, y2))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        # label text
+        name = names[cl] if isinstance(cl, int) and 0 <= cl < len(names) else f"cls_{cl}"
+        pct = int(round(float(sc) * 100))
+        label = f"{name} {pct}%"
+
+        # vivid color per class
+        color = pal[int(cl) % len(pal)] if isinstance(cl, int) else pal[0]
+
+        # draw the detection box
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
+
+        # compute label box
+        (tw, th), _ = cv2.getTextSize(label, font, font_scale, text_thickness)
+        pill_w = tw + 2 * pad
+        pill_h = th + 2 * pad
+
+        # default: place above the box; if not enough room, place below
+        top = y1 - pill_h
+        bottom = y1
+        if top < 0:
+            top = y1
+            bottom = y1 + pill_h
+
+        left = x1
+        right = min(W - 1, x1 + pill_w)
+
+        # translucent colored background ("pill")
+        overlay = out.copy()
+        cv2.rectangle(overlay, (left, top), (right, bottom), color, thickness=-1)
+        cv2.addWeighted(overlay, 0.6, out, 0.4, 0.0, out)
+
+        # text position
+        tx = left + pad
+        ty = bottom - pad if top >= y1 else y1 - pad  # account for above/below placement
+
+        # text with black outline for contrast
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                cv2.putText(out, label, (tx + dx, ty + dy), font, font_scale,
+                            (0, 0, 0), text_thickness, lineType=cv2.LINE_AA)
+        cv2.putText(out, label, (tx, ty), font, font_scale,
+                    (255, 255, 255), text_thickness, lineType=cv2.LINE_AA)
+
     return out
+
 
 def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool=False) -> Path:
     log = _log()

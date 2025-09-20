@@ -218,46 +218,134 @@ def _coerce_pred_json(p: Path) -> dict:
 
 def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
-    Produce /overlays (thick boxes) and /thumbs (tiny) under out_root,
-    plus a small manifest JSON mapping original file name → generated URLs.
+    Produce /overlays (prefer predictor-colored overlays if present) and /thumbs under out_root,
+    plus a manifest JSON mapping original file name → generated URLs.
     """
+    # local-only imports so you don't have to change module imports
+    import json, shutil, logging
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    logger   = logging.getLogger("pvrt.test")
     overlays = out_root / "overlays"; overlays.mkdir(parents=True, exist_ok=True)
     thumbs   = out_root / "thumbs";   thumbs.mkdir(parents=True, exist_ok=True)
     manifest = out_root / "manifest.json"
+
+    # --- 1) Prefer existing colored overlays produced by predictors ---
+    #     (predictors save to <session>/overlay/<stem>.png)
+    colored_src = out_root / "overlay"  # singular
+    use_colored = colored_src.exists() and any(colored_src.glob("*.png"))
+    if use_colored:
+        logger.info(f"UI:INFO:post: using existing colored overlays from {colored_src}")
+    else:
+        logger.info("UI:INFO:post: no predictor overlays found → drawing fallback overlays")
+
+    # simple, vivid RGB palette (works on RGB + thermal backgrounds)
+    def _palette_rgb():
+        return [
+            (255, 0, 0), (0, 170, 255), (0, 200, 0), (255, 0, 200),
+            (255, 165, 0), (128, 0, 255), (0, 255, 255), (255, 255, 0),
+        ]
 
     mapper: Dict[str, Dict[str, str]] = {}
 
     for img in sorted(images_dir.iterdir()):
         if not _is_image(img):
             continue
-        pred = preds_dir / "preds" / f"{img.stem}.json"
-        jj = _coerce_pred_json(pred) if pred.exists() else {"boxes": [], "scores": [], "classes": [], "file": img.name}
 
-        try:
-            im = Image.open(img).convert("RGB")
-            arr = np.array(im, dtype=np.uint8)
-        except Exception:
-            arr = np.zeros((256, 256, 3), dtype=np.uint8)
+        stem = img.stem
+        ov   = overlays / f"{stem}.png"
+        th   = thumbs   / f"{stem}.png"
 
-        # draw simple boxes (no external deps)
-        boxes = jj.get("boxes", [])
-        classes = jj.get("classes", [])
-        for i, b in enumerate(boxes):
+        if use_colored and (colored_src / f"{stem}.png").exists():
+            # --- Reuse predictor overlay (copy into /overlays to keep structure consistent)
+            src = colored_src / f"{stem}.png"
             try:
-                x1,y1,x2,y2 = map(int, b)
-                # frame
-                arr[y1:y1+2, x1:x2] = 255
-                arr[y2-2:y2, x1:x2] = 255
-                arr[y1:y2, x1:x1+2] = 255
-                arr[y1:y2, x2-2:x2] = 255
+                shutil.copyfile(src, ov)
+                im_for_thumb = Image.open(ov).convert("RGB")
             except Exception:
-                continue
+                # if copy/open fails, fall back to drawing
+                pass
+        if not ov.exists():
+            # --- 2) Fallback: draw colored boxes + label using JSON preds ---
+            pred_json = preds_dir / "preds" / f"{stem}.json"
+            jj = _coerce_pred_json(pred_json) if pred_json.exists() else {
+                "boxes": [], "scores": [], "classes": [], "file": img.name
+            }
 
-        # save overlay and thumb
-        ov = overlays / f"{img.stem}.png"
-        th = thumbs / f"{img.stem}.png"
-        Image.fromarray(arr).save(ov, format="PNG", optimize=True)
-        Image.fromarray(arr[::8, ::8]).save(th, format="PNG", optimize=True)
+            try:
+                base = Image.open(img).convert("RGB")
+            except Exception:
+                base = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
+
+            draw = ImageDraw.Draw(base)
+            W, H = base.size
+            pal = _palette_rgb()
+
+            boxes   = jj.get("boxes", []) or []
+            scores  = jj.get("scores", []) or []
+            classes = jj.get("classes", []) or []
+
+            # scale thickness and text size to image size
+            thickness = max(1, int(round(min(W, H) * 0.003)))
+            try:
+                font = ImageFont.truetype("arial.ttf", size=max(3.5, int(min(W, H) * 0.0015)))
+                logger.info(f"using font: {font}")
+            except Exception:
+                font = ImageFont.load_default()
+                logger.info("using default font.")
+
+            for i, b in enumerate(boxes):
+                try:
+                    x1, y1, x2, y2 = map(int, b)
+                except Exception:
+                    continue
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                cls_id = classes[i] if i < len(classes) else 0
+                name   = class_names[cls_id] if 0 <= cls_id < len(class_names) else f"cls_{cls_id}"
+                sc     = float(scores[i]) if i < len(scores) else 0.0
+                label  = f"{name} {int(round(sc * 100))}%"
+
+                color  = pal[cls_id % len(pal)]
+                # rectangle outline
+                draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
+
+                # label pill (solid color for clarity)
+                # measure text
+                try:
+                    # Pillow >= 8.x
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                except Exception:
+                    tw, th_txt = draw.textsize(label, font=font)
+                pad = 4
+                pill_w = tw + 2 * pad
+                pill_h = th_txt + 2 * pad
+
+                # place above box if space, else inside/top
+                top = y1 - pill_h if (y1 - pill_h) >= 0 else y1
+                left = x1
+                # background
+                draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color)
+                # text (white) with a thin black shadow for contrast
+                tx, ty = left + pad, top + pad
+                for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
+                    draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
+                draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
+
+            base.save(ov, format="PNG", optimize=True)
+            im_for_thumb = base
+
+        # --- Thumb from overlay (colored or fallback) ---
+        try:
+            w, h = im_for_thumb.size
+            tw = max(96, w // 6); thh = max(96, h // 6)
+            im_thumb = im_for_thumb.resize((tw, thh))
+            im_thumb.save(th, format="PNG", optimize=True)
+        except Exception:
+            Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
 
         mapper[img.name] = {
             "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
@@ -266,6 +354,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
 
     manifest.write_text(json.dumps(mapper, indent=2), encoding="utf-8")
     return overlays, thumbs, manifest
+
 
 def _preds_to_geojson(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, List[Tuple[float,float]]]:
     """

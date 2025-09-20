@@ -269,7 +269,7 @@ async function runTest(){
 
     if(!js.ok) throw new Error("test failed");
 
-    console.log(js)
+    // console.log(js)
     currentSession = js.session;
     ok("test", "Testing completed.");
     setText("#testStatus", `Inference complete. ${totalPreds} predictions.`);
@@ -303,7 +303,7 @@ async function showResultsForSelected(){
   const res = await fetch(`${api.sessionSummary}?session=${encodeURIComponent(session)}`);
   const js = await res.json();
   if(!js.ok) return;
-  console.log(js)
+  // console.log(js)
   renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
 }
 
@@ -319,15 +319,15 @@ function pairThumbs(assets){
 function renderResultsGrid(manifest){
   const grid = $("#resultsGrid");
   grid.innerHTML = "";
-  console.log(manifest)
-  console.log(manifest.length)
+  // console.log(manifest)
+  // console.log(manifest.length)
   if(!manifest || !manifest.length){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
     // return;
   }
   // console.log(manifest)
   manifest.forEach((item, idx)=>{
-    console.log("inside loop")
+    // console.log("inside loop")
     const div = document.createElement("div");
     div.className = "thumb";
     div.innerHTML = `
