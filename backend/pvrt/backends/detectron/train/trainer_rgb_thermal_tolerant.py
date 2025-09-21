@@ -9,9 +9,12 @@ import torch.nn as nn
 from detectron2.engine import DefaultTrainer
 from detectron2.data import build_detection_train_loader, build_detection_test_loader
 from detectron2.evaluation import COCOEvaluator
+from .aug_utils import build_geometric_augs, build_rgb_photometric_augs
 
 # Reuse your tolerant mapper that guarantees aligned RGB+Thermal - 4 channels
 from .mapper_rgb_thermal_tolerant import RGBThermalDatasetMapper
+import logging
+log = logging.getLogger("pvrt")
 
 
 def _force_axis_aligned_anchors(cfg) -> None:
@@ -102,13 +105,21 @@ class RTolerantTrainer(DefaultTrainer):
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
-        # USE the 4-channel mapper for evaluation too (model expects BGRT)
-        return build_detection_test_loader(
-            cfg, dataset_name, mapper=RGBThermalDatasetMapper(cfg, is_train=False)
-        )
+        geom = build_geometric_augs(cfg)
+        mapper = RGBThermalDatasetMapper(cfg, is_train=False)
+        try:
+            return build_detection_test_loader(cfg, dataset_name, mapper=mapper)
+        except TypeError:
+            return build_detection_test_loader(cfg, dataset_name)
+
 
     @classmethod
     def build_train_loader(cls, cfg):
+        # log once what the mapper will apply
+        geom = build_geometric_augs(cfg)
+        log.info(
+            f"UI:OK:train: AUG:train[rgbt] = " + ", ".join(type(a).__name__ for a in geom) + " + Photometric(RGB only)"
+        )
         mapper = RGBThermalDatasetMapper(cfg, is_train=True)
         return build_detection_train_loader(cfg, mapper=mapper)
 
@@ -126,3 +137,4 @@ class RTolerantTrainer(DefaultTrainer):
         _ensure_model_pixel_stats_4ch(model)
 
         return model
+

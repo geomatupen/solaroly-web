@@ -6,6 +6,9 @@ import json, cv2, numpy as np, torch
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
 
+from .aug_utils import build_geometric_augs, build_rgb_photometric_augs
+
+
 THERMAL_DIR_NAMES = ("thermal", "ir", "t", "temp")
 THERMAL_EXTS = (".tif", ".tiff", ".png")
 
@@ -102,41 +105,49 @@ class RGBThermalDatasetMapper:
         d = dataset_dict.copy()
         rgb_path = Path(d["file_name"]); images_dir = rgb_path.parent
 
-        # 1) RGB
-        image = utils.read_image(str(rgb_path), format=self.image_format)  # HxWx3 (BGR)
-        h, w = image.shape[:2]
+        # 1) RGB (BGR) and thermal sidecar (neutral if missing)
+        rgb = utils.read_image(str(rgb_path), format=self.image_format)  # HxWx3
+        H, W = rgb.shape[:2]
 
-        # 2) Thermal sidecar
         pairs = _load_pairs_json(str(images_dir))
         if rgb_path.name in pairs:
             cand = Path(pairs[rgb_path.name]); t_path = cand if cand.is_absolute() else (images_dir / cand)
         else:
             t_path = _guess_thermal_sidecar(images_dir, rgb_path)
-        thermal = _load_thermal_uint8(t_path, (h, w)) if t_path and t_path.exists() else None
-        if thermal is None:
-            thermal = np.full((h, w), 128, dtype=np.uint8)  # neutral if missing
 
-        # 3) BGRT and augment
-        img4 = _stack_bgrt(image, thermal)
-        aug_input = T.AugInput(img4)
-        transforms = self.augmentations(aug_input)
-        image_aug = aug_input.image  # HxWx4
+        th = _load_thermal_uint8(t_path, (H, W)) if (t_path and t_path.exists()) else None
+        if th is None:
+            th = np.full((H, W), 128, dtype=np.uint8)  # neutral plane
 
-        # 4) To tensor
-        d["image"] = torch.as_tensor(image_aug.transpose(2, 0, 1).copy()).float()
+        # 2) Geometric augs: SAME transform for RGB & Thermal
+        if getattr(self, "is_train", False):
+            geo_list = build_geometric_augs(self.cfg)
+        else:
+            geo_list = [T.ResizeShortestEdge(self.cfg.INPUT.MIN_SIZE_TEST, self.cfg.INPUT.MAX_SIZE_TEST, "choice")]
 
-        # 5) Annotations -> Instances (TRAIN only)
+        geo = T.AugmentationList(geo_list)
+        aug_in = T.AugInput(rgb)
+        tfm = geo(aug_in)         # apply to RGB, capture transform
+        rgb = aug_in.image
+        th  = tfm.apply_image(th) # same transform to thermal
+
+        # 3) Photometric jitter: RGB only (train)
+        if getattr(self, "is_train", False):
+            rgb = T.AugmentationList(build_rgb_photometric_augs())(T.AugInput(rgb)).image
+
+        # 4) Annotations -> Instances (use ONLY the geometric transform)
         if "annotations" in d:
             annos = [
-                utils.transform_instance_annotations(
-                    obj, transforms, image_size=image_aug.shape[:2]  # <-- FIXED: image_size
-                )
-                for obj in d.pop("annotations")
-                if obj.get("iscrowd", 0) == 0
+                utils.transform_instance_annotations(a, tfm, rgb.shape[:2])
+                for a in d.pop("annotations")
+                if a.get("iscrowd", 0) == 0
             ]
-            instances = utils.annotations_to_instances(
-                annos, image_size=image_aug.shape[:2]              # <-- FIXED: image_size
+            d["instances"] = utils.filter_empty_instances(
+                utils.annotations_to_instances(annos, rgb.shape[:2])
             )
-            d["instances"] = utils.filter_empty_instances(instances)
 
+        # 5) Re-stack to 4ch & tensorize
+        img4 = _stack_bgrt(rgb, th)  # HxWx4
+        d["image"] = torch.as_tensor(img4.transpose(2, 0, 1).copy()).float()
         return d
+

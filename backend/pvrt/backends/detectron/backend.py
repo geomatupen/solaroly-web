@@ -252,7 +252,7 @@ class DetectronBackend(Backend):
 
             if ap50 > _best["ap50"]:
                 _best["ap50"] = ap50
-                log.info(f"UI:OK:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} → model_best.pth")
+                log.info(f"UI:OK:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} - model_best.pth")
                 trainer.checkpointer.save("model_best")  # safety: ensure file exists
                 _normalize_and_save_meta(out_dir, {
                     "best_model": {
