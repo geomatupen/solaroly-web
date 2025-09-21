@@ -225,48 +225,46 @@ class DetectronBackend(Backend):
         evaluator  = COCOEvaluator("pv_val", distributed=False, output_dir=str(out_dir))
 
         _best = {"ap50": float("-inf")} #AP50 - Average Precision at IoU 0.50. ie. area under the entire precision–recall curve
+        _latest = {"ap50": None}
 
-        def _eval_and_log():
-            res = inference_on_dataset(trainer.model, val_loader, evaluator)
-
-            # 1) extract AP50 from the evaluator RESULTS (these are "bbox" keys)
+        def _ap50_from_results(res) -> float:
+            """Extract bbox/AP50 from evaluator results across D2 variants."""
             ap50 = res.get("bbox/AP50")
             if ap50 is None:
                 bbox = res.get("bbox")
                 if isinstance(bbox, dict):
                     ap50 = bbox.get("AP50")
-
             try:
-                ap50 = float(ap50)
+                return float(ap50)
             except (TypeError, ValueError):
-                ap50 = float("nan")
+                return float("nan")
 
-            # Optional: treat NaN as 0.0 so first eval still saves a best
+
+        def _eval_and_log():
+            res  = inference_on_dataset(trainer.model, val_loader, evaluator)
+            ap50 = _ap50_from_results(res)
             if not math.isfinite(ap50):
-                ap50 = 0.0
+                ap50 = 0.0  # make first eval save something even if NaN
 
-            # 2) write it into EventStorage under a STABLE key BestCheckpointer watches
+            # expose for BestCheckpointer + TB
             trainer.storage.put_scalar("val/AP50", ap50, smoothing_hint=False)
+            _latest["ap50"] = ap50
 
-            # 3) on improvement: log, save meta, and (safety) save the checkpoint too
             if ap50 > _best["ap50"]:
                 _best["ap50"] = ap50
-                log.info(f"UI:OK:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} - model_best.pth")
-
-                # ensure a file exists even if BestCheckpointer misses it
-                trainer.checkpointer.save("model_best")
-
+                log.info(f"UI:OK:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} → model_best.pth")
+                trainer.checkpointer.save("model_best")  # safety: ensure file exists
                 _normalize_and_save_meta(out_dir, {
                     "best_model": {
                         "iter": int(trainer.iter),
-                        "bbox_AP50": round(ap50, 4),
+                        "val_bbox_AP50": round(ap50, 4),  #metric computed on the validation split (val) for bounding box detection (bbox) with Average Precision at IoU = 0.50 (AP50).
                         "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
-                        "total_loss_raw": None if loss_tap.last_raw is None else float(loss_tap.last_raw),
+                        "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
                         "path": str(Path(out_dir) / "model_best.pth"),
                     }
                 })
-
             return res
+
 
         # evaluate every EVAL_PERIOD; save model_best.pth when metric improves
         trainer.register_hooks([
@@ -299,10 +297,18 @@ class DetectronBackend(Backend):
         except Exception as e:
             log.warning(f"PHASE:save FAILED (non-fatal): {e}")
         finally:
+            final_ap50 = _latest["ap50"]
+            if final_ap50 is None:
+                try:
+                    s = trainer.storage.history("val/AP50").latest()
+                    final_ap50 = float(getattr(s, "value", s))
+                except Exception:
+                    final_ap50 = None
             # save final stats to meta
             _normalize_and_save_meta(out_dir, {
                 "final_model": {
                     "iter": int(trainer.iter),
+                    "val_bbox_AP50": None if final_ap50 is None else round(float(final_ap50), 4),
                     "total_loss_med20": None if loss_tap.last_med20  is None else float(loss_tap.last_med20 ),
                     "total_loss_raw": None if loss_tap.last_raw  is None else float(loss_tap.last_raw ),
                     "path": str(Path(out_dir) / "model_final.pth"),
