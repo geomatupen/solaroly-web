@@ -178,7 +178,7 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
 # use core helpers for layout / JSON / PNG save
 from ....core.results import ensure_results_layout, write_pred_json, write_metrics_json, save_overlay_png
 
-def _build_model_4ch(weights_dir: Path):
+def _build_model_4ch(weights_dir: Path, score_thresh: float):
     device = _pick_device()
     meta   = _load_meta(weights_dir)
     cfg    = _load_cfg(weights_dir)
@@ -197,7 +197,7 @@ def _build_model_4ch(weights_dir: Path):
 
     thr = meta.get("score_thresh_test")
     if thr is not None:
-        try: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(thr)
+        try: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
         except: pass
 
     # build and widen to 4ch
@@ -211,7 +211,7 @@ def _build_model_4ch(weights_dir: Path):
     names = [str(x) for x in meta.get("class_names", [f"cls_{i}" for i in range(int(getattr(cfg.MODEL.ROI_HEADS,'NUM_CLASSES',0) or 0))])]
     return model, cfg, names, wpth
 
-def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool = True) -> Path:
+def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, **_) -> Path:
     """
     RGB+Thermal inference (sidecar <stem>_thermal.tif[f]).
     PNG overlays only, with class + %; live mini-logs; end summary.
@@ -245,7 +245,7 @@ def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool = True) -
     preds_dir   = layout["preds"]
     overlays_dir= layout["overlay"]
 
-    model, cfg, names, wpth = _build_model_4ch(wdir)
+    model, cfg, names, wpth = _build_model_4ch(wdir, score_thresh)
 
     # one-time header
     try:

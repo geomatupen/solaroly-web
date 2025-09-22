@@ -105,7 +105,6 @@ class RTolerantTrainer(DefaultTrainer):
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
-        geom = build_geometric_augs(cfg)
         mapper = RGBThermalDatasetMapper(cfg, is_train=False)
         try:
             return build_detection_test_loader(cfg, dataset_name, mapper=mapper)

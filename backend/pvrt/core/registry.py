@@ -36,6 +36,7 @@ class PredictConfig:
     weights_dir: Path
     # user request: prefer thermal if model supports it and thermal exists
     use_thermal: bool
+    score_thresh: Optional[float] = None
 
 
 # ---------- what a backend must implement ----------

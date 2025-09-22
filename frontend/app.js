@@ -249,6 +249,7 @@ async function runTest(){
   const model = getSelectedModel();
   const useThermal = $("#chkUseThermalTest").checked;
   const resultName = (document.getElementById("inpResultName")?.value || "").trim() || makeStamp();
+  const testThreshold = (document.getElementById("testThreshold")?.value);
 
   setHidden($("#spinTest"), false);
   setText("#testStatus","Running inference…");
@@ -258,6 +259,7 @@ async function runTest(){
   if(model) fd.append("model", model);
   fd.append("use_thermal", useThermal ? "true":"false");
   fd.append("result_name", resultName);
+  fd.append("test_threshold", testThreshold);
 
   try{
     testAbort = new AbortController();

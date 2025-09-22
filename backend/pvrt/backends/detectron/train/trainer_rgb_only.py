@@ -28,12 +28,14 @@ class RGBOnlyTrainer(DefaultTrainer):
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
-        augs = build_geometric_augs(cfg)  # geometric only at eval
+        # No training augs at eval — just the default eval mapper (resize only)
         try:
-            mapper = DatasetMapper(cfg, is_train=False, augmentations=augs)
+            mapper = DatasetMapper(cfg, is_train=False)
             return build_detection_test_loader(cfg, dataset_name, mapper=mapper)
         except TypeError:
+            # older D2
             return build_detection_test_loader(cfg, dataset_name)
+
 
     @classmethod
     def build_train_loader(cls, cfg):

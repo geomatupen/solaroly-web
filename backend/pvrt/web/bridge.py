@@ -112,6 +112,7 @@ def predict_entry(
     out_dir: Path,
     use_thermal_request: bool,
     forced_backend: Optional[BackendName] = None,
+    score_thresh_frontend: Optional[float] = None,
 ) -> dict:
     """
     Decide whether to run RGBT or RGB inference:
@@ -142,6 +143,18 @@ def predict_entry(
     # Thermal decision for prediction (with clear mini-log line)
     use_thermal, _reason = _select_infer_mode(use_thermal_request, images_dir, model_mode)
 
+    # Resolve score threshold: prefer frontend; else meta; else 0.5
+    if score_thresh_frontend is not None:
+        chosen_thresh = float(score_thresh_frontend)
+        source = "frontend"
+    else:
+        chosen_thresh = float(meta.get("score_thresh_test", 0.5))
+        source = "meta"
+
+    _log_test.info(
+        f"UI:INFO:test: threshold={chosen_thresh:.3f} (source={source})"
+    )
+
     # (Optional) backend selection info (helps when override is used)
     if forced_backend and forced_backend != meta.get("backend"):
         _log_full.info(f"UI:INFO:test: backend override: forced={forced_backend} meta={meta.get('backend')} - using {backend_name}")
@@ -152,6 +165,7 @@ def predict_entry(
             out_dir=out_dir,
             weights_dir=weights_dir,
             use_thermal=use_thermal,
+            score_thresh=chosen_thresh,
         )
     )
     return {
@@ -159,4 +173,5 @@ def predict_entry(
         "used_backend": backend_name,
         "model_mode": model_mode,
         "used_thermal": use_thermal,
+        "score_thresh": chosen_thresh,
     }

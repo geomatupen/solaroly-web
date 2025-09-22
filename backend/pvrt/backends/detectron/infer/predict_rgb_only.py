@@ -126,7 +126,7 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
     return out
 
 
-def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool=False) -> Path:
+def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) -> Path:
     log = _log()
     log.info("UI:INFO:test: Using model mode RGB only (3ch)")
     t0  = time.time()
@@ -152,8 +152,8 @@ def predict_folder(images_dir, out_dir, weights_dir, use_thermal: bool=False) ->
     else:
         names = [f"cls_{i}" for i in range(getattr(cfg.MODEL.ROI_HEADS,"NUM_CLASSES",0) or 0)]
 
-    thr = meta.get("score_thresh_test", 0.6)
-    try:    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(thr)
+    # thr = meta.get("score_thresh_test", 0.6)
+    try:    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
     except: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
 
     predictor = DefaultPredictor(cfg)

@@ -610,6 +610,7 @@ async def api_test_run(
     model: Optional[str] = Form(default=None),
     use_thermal: bool = Form(default=False),
     result_name: str = Form(default=""),
+    test_threshold: str = Form(default=""),
     forced_backend: Optional[str] = Form(default=None),
 ):
     ds_dir = TEST_DIR / dataset
@@ -647,6 +648,7 @@ async def api_test_run(
                 out_dir=out_root,
                 use_thermal_request=use_thermal,
                 forced_backend=forced_backend,
+                score_thresh_frontend=test_threshold,
             )
 
     try:

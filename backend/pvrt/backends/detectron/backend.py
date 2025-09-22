@@ -227,37 +227,39 @@ class DetectronBackend(Backend):
         _best = {"ap50": float("-inf")} #AP50 - Average Precision at IoU 0.50. ie. area under the entire precision–recall curve
         _latest = {"ap50": None}
 
-        def _ap50_from_results(res) -> float:
-            """Extract bbox/AP50 from evaluator results across D2 variants."""
-            ap50 = res.get("bbox/AP50")
-            if ap50 is None:
-                bbox = res.get("bbox")
-                if isinstance(bbox, dict):
-                    ap50 = bbox.get("AP50")
-            try:
-                return float(ap50)
-            except (TypeError, ValueError):
-                return float("nan")
+        def _ap50_pct_from_results(res) -> float:
+            """Return AP50 in PERCENT (0..100) from COCOEvaluator results; NaN if missing."""
+            bbox = res.get("bbox")
+            if isinstance(bbox, dict):
+                try:
+                    val = float(bbox.get("AP50"))
+                    return val if 0.0 <= val <= 100.0 else float("nan")
+                except (TypeError, ValueError):
+                    pass
+            return float("nan")
 
+        _best   = {"ap50_pct": float("-inf")}
+        _latest = {"ap50_pct": None}
 
         def _eval_and_log():
-            res  = inference_on_dataset(trainer.model, val_loader, evaluator)
-            ap50 = _ap50_from_results(res)
-            if not math.isfinite(ap50):
-                ap50 = 0.0  # make first eval save something even if NaN
+            res = inference_on_dataset(trainer.model, val_loader, evaluator)
 
-            # expose for BestCheckpointer + TB
-            trainer.storage.put_scalar("val/AP50", ap50, smoothing_hint=False)
-            _latest["ap50"] = ap50
+            ap50_pct = _ap50_pct_from_results(res)       # percent, not fraction
+            if not math.isfinite(ap50_pct):
+                ap50_pct = 0.0                           # keep BestCheckpointer deterministic
 
-            if ap50 > _best["ap50"]:
-                _best["ap50"] = ap50
-                log.info(f"UI:OK:train: new_best bbox/AP50={ap50:.3f} at iter={trainer.iter} - model_best.pth")
-                trainer.checkpointer.save("model_best")  # safety: ensure file exists
+            # single source of truth for BestCheckpointer
+            trainer.storage.put_scalar("val/AP50_pct", ap50_pct, smoothing_hint=False)
+            _latest["ap50_pct"] = ap50_pct
+
+            if ap50_pct > _best["ap50_pct"]:
+                _best["ap50_pct"] = ap50_pct
+                log.info(f"UI:OK:train: new_best AP50={ap50_pct:.3f}% at iter={trainer.iter} → model_best.pth")
+                trainer.checkpointer.save("model_best")   # safety write
                 _normalize_and_save_meta(out_dir, {
                     "best_model": {
                         "iter": int(trainer.iter),
-                        "val_bbox_AP50": round(ap50, 4),  #metric computed on the validation split (val) for bounding box detection (bbox) with Average Precision at IoU = 0.50 (AP50).
+                        "val_bbox_AP50": round(ap50_pct, 4),    # percent
                         "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
                         "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
                         "path": str(Path(out_dir) / "model_best.pth"),
@@ -273,7 +275,7 @@ class DetectronBackend(Backend):
             hooks.BestCheckpointer(
                 cfg.TEST.EVAL_PERIOD,
                 trainer.checkpointer,
-                val_metric="val/AP50",   # or "bbox/AP"
+                val_metric="val/AP50_pct",  
                 mode="max",
                 file_prefix="model_best"
             ),
@@ -297,20 +299,20 @@ class DetectronBackend(Backend):
         except Exception as e:
             log.warning(f"PHASE:save FAILED (non-fatal): {e}")
         finally:
-            final_ap50 = _latest["ap50"]
-            if final_ap50 is None:
+            final_ap50_pct = _latest["ap50_pct"]
+            if final_ap50_pct is None:
                 try:
-                    s = trainer.storage.history("val/AP50").latest()
-                    final_ap50 = float(getattr(s, "value", s))
+                    s = trainer.storage.history("val/AP50_pct").latest()
+                    final_ap50_pct = float(getattr(s, "value", s))
                 except Exception:
-                    final_ap50 = None
-            # save final stats to meta
+                    final_ap50_pct = None
+
             _normalize_and_save_meta(out_dir, {
                 "final_model": {
                     "iter": int(trainer.iter),
-                    "val_bbox_AP50": None if final_ap50 is None else round(float(final_ap50), 4),
-                    "total_loss_med20": None if loss_tap.last_med20  is None else float(loss_tap.last_med20 ),
-                    "total_loss_raw": None if loss_tap.last_raw  is None else float(loss_tap.last_raw ),
+                    "val_bbox_AP50": None if final_ap50_pct is None else round(final_ap50_pct, 4),
+                    "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
+                    "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
                     "path": str(Path(out_dir) / "model_final.pth"),
                 }
             })
@@ -352,6 +354,13 @@ class DetectronBackend(Backend):
         meta = load_model_meta(weights)
         model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
 
+        # final score threshold (cfg_in wins; else meta; else 0.5)
+        score_thresh = (
+            float(cfg_in.score_thresh)
+            if cfg_in.score_thresh is not None
+            else float(meta.get("score_thresh_test", 0.5))
+        )
+
         # break the conditions out so we can log a precise reason
         request_thermal   = bool(cfg_in.use_thermal)
         data_has_thermal  = has_thermal_for_images(images_dir)
@@ -359,11 +368,12 @@ class DetectronBackend(Backend):
 
         if request_thermal and data_has_thermal and model_is_rgbt:
             # log.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt")
-            log.info("UI:INFO:test: backend=detectron | selected=rgbt")
+            log.info("UI:INFO:test: backend=detectron | selected=rgbt | score_thresh={score_thresh:.3f}")
             return predict_folder_rgbt(
                 images_dir=images_dir,
                 weights_dir=weights,
                 out_dir=out_dir,
+                score_thresh=score_thresh,
             )
 
         # --- fallback to RGB; compute a clear reason for the mini-log ---
@@ -380,6 +390,7 @@ class DetectronBackend(Backend):
             images_dir=images_dir,
             weights_dir=weights,
             out_dir=out_dir,
+            score_thresh=score_thresh, 
         )
 
 
