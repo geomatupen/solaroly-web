@@ -200,13 +200,16 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
         log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")
 
     elapsed = time.time() - t0
+    # training_meta_dir = os.path.join(weights, "model_meta.json")
+    # log.info(f"UI:INFO:test: model path={weights.name}")
     metrics = {
         "backend":"detectron","input_mode":"rgb","use_thermal":False,"device":cfg.MODEL.DEVICE,
         "score_thresh_test": getattr(cfg.MODEL.ROI_HEADS,"SCORE_THRESH_TEST",None),
         "num_images": n, "images_with_detections": with_dets, "total_detections": total,
         "avg_detections_per_image": round(total/n, 3) if n else 0.0,
         "elapsed_sec": round(elapsed, 3),
-        "img_per_sec": round(n/elapsed, 3) if elapsed>0 else None
+        "img_per_sec": round(n/elapsed, 3) if elapsed>0 else None,
+        "model_name": str(weights.name),
     }
     write_metrics_json(out_dir, metrics)
 
