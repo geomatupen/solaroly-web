@@ -279,6 +279,8 @@ async function runTest(){
     // load into map & results
     await applySessionToMap(currentSession);
     renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
+    loadResultsInfo(currentSession);
+    
     await loadSessions(true);
     $("#selResults").value = currentSession;
     $("#selMapSession").value = currentSession;
@@ -307,6 +309,7 @@ async function showResultsForSelected(){
   if(!js.ok) return;
   // console.log(js)
   renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
+  loadResultsInfo(currentSession);
 }
 
 function pairThumbs(assets){
@@ -323,6 +326,7 @@ function renderResultsGrid(manifest){
   grid.innerHTML = "";
   // console.log(manifest)
   // console.log(manifest.length)
+  
   if(!manifest || !manifest.length){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
     // return;
@@ -749,3 +753,95 @@ function startAutoStamping() {
   }, msToNextMinute);
 }
 document.addEventListener("DOMContentLoaded", startAutoStamping);
+
+
+
+
+// --- helpers to render any JSON as a nice key/value list ---
+function flattenForList(obj, prefix = "") {
+  const out = {};
+  if (!obj || typeof obj !== "object") return out;
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      Object.assign(out, flattenForList(v, key));
+    } else {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
+function renderJsonList(obj) {
+  const flat = flattenForList(obj);
+  const rows = Object.entries(flat)
+    .sort(([a],[b]) => a.localeCompare(b))
+    .map(([k, v]) => {
+      const val = (typeof v === "string") ? v : JSON.stringify(v);
+      return `<li><span class="key">${k}</span><span class="val">${val}</span></li>`;
+    })
+    .join("");
+  return `<ul class="kv-list">${rows}</ul>`;
+}
+
+// --- render the two cards (metrics + model meta) inside #resultsInfo ---
+function renderResultsInfo(metrics, modelMeta) {
+  const root = document.getElementById("resultsInfo");
+  if (!root) return;
+
+  root.innerHTML = `
+    <div class="info-grid">
+      ${metrics ? `
+        <section class="info-card">
+          <h4>Test Metrics</h4>
+          ${renderJsonList(metrics)}
+        </section>` : ``}
+      ${modelMeta ? `
+        <section class="info-card">
+          <h4>Model Meta</h4>
+          ${renderJsonList(modelMeta)}
+        </section>` : ``}
+    </div>
+  `;
+  root.hidden = !(metrics || modelMeta);
+}
+
+// Try to pull "train_YYYYMMDD_HHMMSS" out of model_name if we need a fallback
+function deriveRunNameFromModelName(name) {
+  // const m = /train_\d{8}_\d{6}/.exec(String(name || ""));
+  // return m ? m[0] : null;
+  return name
+}
+
+// Fetch metrics + model meta for a session, then render
+async function loadResultsInfo(sessionName) {
+  const infoEl = document.getElementById("resultsInfo");
+  if (infoEl) { infoEl.hidden = true; infoEl.innerHTML = ""; }
+
+  let metrics = null, meta = null;
+
+  // 1) metrics (required for the panel to be useful)
+  try {
+    const r = await fetch(`/api/results/${encodeURIComponent(sessionName)}/metrics`, { cache: "no-store" });
+    if (r.ok) metrics = await r.json();
+  } catch {}
+
+  // 2) model_meta (preferred endpoint under /results/)
+  try {
+    const r = await fetch(`/api/results/${encodeURIComponent(sessionName)}/model_meta`, { cache: "no-store" });
+    if (r.ok) meta = await r.json();
+  } catch {}
+
+  // 3) fallback: derive run name from metrics.model_name → /api/runs/{run}/meta
+  if (!meta && metrics?.model_name) {
+    const runName = deriveRunNameFromModelName(metrics.model_name);
+    if (runName) {
+      try {
+        const r2 = await fetch(`/api/runs/${encodeURIComponent(runName)}/meta`, { cache: "no-store" });
+        if (r2.ok) meta = await r2.json();
+      } catch {}
+    }
+  }
+
+  renderResultsInfo(metrics, meta);
+}

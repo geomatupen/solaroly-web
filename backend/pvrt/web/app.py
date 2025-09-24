@@ -18,6 +18,7 @@ from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 
 from PIL import Image
 import numpy as np
@@ -731,6 +732,22 @@ async def api_session_summary(session: str):
         "manifest": manifest,
         "tiler": "ok" if RIO_OK else "unavailable"
     }
+
+
+@app.get("/api/results/{session}/metrics")
+def api_metrics(session: str):
+    p = MEDIA_DIR / "sessions" / session / "metrics.json"
+    if not p.exists():
+        raise HTTPException(404, "metrics.json not found")
+    return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
+
+@app.get("/api/runs/{run_name}/meta")
+def api_model_meta(run_name: str):
+    p = OUTPUTS / run_name / "model_meta.json"
+    if not p.exists():
+        raise HTTPException(404, "model_meta.json not found")
+    return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
+
 
 
 # -------------- Simple dynamic tiler for TIFF (XYZ) --------------

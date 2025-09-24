@@ -194,3 +194,93 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   -webkit-text-fill-color: #e2e8f0;
   caret-color: #e2e8f0;
 }
+
+/* Results Info container */
+.results-info{
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.06);
+  max-height: 35vh;         /* fixed max height */
+  overflow: auto;           /* scroll inside */
+  margin-bottom: 1rem;
+
+  /* Small, subtle scrollbars (Firefox + WebKit) */
+  scrollbar-width: thin;                      
+  scrollbar-color: rgba(100,116,139,.6) transparent;
+}
+.results-info::-webkit-scrollbar{ width: 8px; height: 8px; }
+.results-info::-webkit-scrollbar-track{ background: transparent; } /* no white strip */
+.results-info::-webkit-scrollbar-thumb{
+  background-color: rgba(100,116,139,.6);
+  border-radius: 4px;
+  border: 2px solid transparent;             /* slimmer thumb */
+  background-clip: padding-box;
+}
+.results-info::-webkit-scrollbar-thumb:hover{
+  background-color: rgba(100,116,139,.85);
+}
+
+/* two cards side-by-side on wide screens, stacked on small */
+.results-info .info-grid{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 900px){
+  .results-info .info-grid{
+    grid-template-columns: 1fr;
+  }
+}
+
+/* each card (metrics / model meta) */
+.info-card{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+.info-card h4{
+  margin: 0 0 8px 0;
+  font-size: .95rem;
+  letter-spacing: .02em;
+  color: var(--text);
+}
+
+/* pretty key/value list (each <li> is a styled row) */
+.kv-list{
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.kv-list li{
+  display: grid;
+  grid-template-columns: 1fr auto;  /* key left, value right */
+  align-items: center;
+  gap: 12px;
+
+  background: rgba(14,165,233,.08);
+  /* border: 1px dashed rgba(14,165,233,.25); */
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.kv-list .key{
+  font-weight: 600;
+  color: #0369a1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+}
+.kv-list .val{
+  color: #0ea5e9;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-size: .9rem;
+}
+.kv-list .val code{
+  background: rgba(148,163,184,.15);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
