@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Sequence, Dict, Any
 import json
 import cv2
+from PIL import Image
 
 # -------------------------
 # Directory layout helpers
@@ -20,15 +21,15 @@ def ensure_results_layout(root: Path | str) -> Dict[str, Path]:
     Returns a dict with keys:
       - "root":    <root>
       - "preds":   <root>/preds
-      - "overlay": <root>/overlay         # NOTE: singular 'overlay' (your existing folder)
+      - "overlays": <root>/overlays         # NOTE: singular 'overlay' (your existing folder)
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     preds = root / "preds"
-    ovl   = root / "overlay"   # <-- singular, matches your project
+    ovl   = root / "overlays"   # <-- singular, matches your project
     preds.mkdir(exist_ok=True)
     ovl.mkdir(exist_ok=True)
-    return {"root": root, "preds": preds, "overlay": ovl}
+    return {"root": root, "preds": preds, "overlays": ovl}
 
 # -------------------------
 # JSON writers
@@ -88,4 +89,48 @@ def save_overlay_png(overlays_dir: Path | str, stem: str, bgr_image) -> Path:
         import numpy as np
         img = np.clip(img, 0, 255).astype("uint8")
     cv2.imwrite(str(out), img)
+    return out
+
+
+def save_overlay_jpg(
+    overlays_dir: Path | str,
+    stem: str,
+    bgr_image,
+    exif_source: Path | str | None = None,
+    quality: int = 92,
+) -> Path:
+    """
+    Save ONE JPEG overlay <stem>.jpg into the 'overlay' folder.
+    - Accepts a BGR uint8 (OpenCV) image.
+    - If exif_source is provided and has EXIF, copy it (GPS etc.) into the JPEG.
+    """
+    import numpy as np
+    import cv2
+
+    overlays_dir = Path(overlays_dir)
+    overlays_dir.mkdir(parents=True, exist_ok=True)
+    out = overlays_dir / f"{stem}.jpg"
+
+    img = bgr_image
+    if img.dtype != np.uint8:
+        img = np.clip(img, 0, 255).astype(np.uint8)
+
+    # BGR (cv2) -> RGB (Pillow)
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb)
+
+    # Try to copy EXIF (incl. GPS) from the original image
+    exif_bytes = None
+    if exif_source is not None:
+        try:
+            with Image.open(str(exif_source)) as src:
+                exif_bytes = src.info.get("exif")
+        except Exception:
+            exif_bytes = None  # fall back silently
+
+    save_kwargs = {"quality": quality, "subsampling": 0}
+    if exif_bytes:
+        save_kwargs["exif"] = exif_bytes
+
+    pil_img.save(out, format="JPEG", **save_kwargs)
     return out

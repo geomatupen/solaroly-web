@@ -14,6 +14,8 @@ const api = {
 };
 
 let MAP, baseLayers, overlayRegistry = {};
+let imagesLayerGroup = null;           // holds all image markers/overlays
+let imageMarkers = [];          // id -> L.Marker or L.ImageOverlay
 let geojsonLayer = null;
 let imageMarkersLayer = null;
 let tileLayers = [];
@@ -358,47 +360,79 @@ function initMap(){
   L.control.layers(baseLayers, {}, { position: "topleft" }).addTo(MAP);
   MAP.setView([0,0], 2);
 
+  if (!imagesLayerGroup) {
+    imagesLayerGroup = L.layerGroup().addTo(MAP);
+  }
   imageMarkersLayer = L.layerGroup().addTo(MAP);
+
   overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
   refreshLayersPanel();
   renderLegend();
 }
 
-async function applySessionToMap(session){
-  // clear old layers
-  if(geojsonLayer){ geojsonLayer.remove(); geojsonLayer = null; }
+function clearImageMarkers(){
   imageMarkersLayer.clearLayers();
-  tileLayers.forEach(l=>MAP.removeLayer(l));
-  tileLayers = [];
-  delete overlayRegistry["Anomalies"];
-  delete overlayRegistry["Thermal Tiles"];
-
-  // summary
-  const sumRes = await fetch(`${api.sessionSummary}?session=${encodeURIComponent(session)}`);
-  const sum = await sumRes.json();
-  if(sum.geojson_url){
-    await loadGeoJSON(sum.geojson_url);
-  }
-  // add image markers again (from geojson we can't reconstruct popups) – fetch quick
-  // session manifest not needed; markers come separately from /api/test_run, so just skip here
-
-  // TIF tiles
-  const tRes = await fetch(`${api.sessionTiles}?session=${encodeURIComponent(session)}`);
-  const tj = await tRes.json();
-  if(tj.ok && tj.layers && tj.layers.length){
-    const group = L.layerGroup();
-    tj.layers.forEach((t, idx)=>{
-      const tl = L.tileLayer(t.template, { minZoom: t.minzoom, maxZoom: t.maxzoom, opacity: 0.6, crossOrigin: true });
-      tl.addTo(group);
-      tileLayers.push(tl);
-    });
-    group.addTo(MAP);
-    overlayRegistry["Thermal Tiles"] = { layer: L.layerGroup(tileLayers), type: "raster", style: { opacity: 0.6 } };
-    refreshLayersPanel();
-  }else{
-    appendMiniLog("#testMiniLog","[map] Raster tiler unavailable or no TIFs in session.");
-  }
+  imageMarkers = [];
 }
+
+function installImageMarkers(geojson){
+  clearImageMarkers();
+  // Build markers from GeoJSON points
+  L.geoJSON(geojson, {
+    pointToLayer: (f, latlng) => L.marker(latlng),
+    onEachFeature: (f, layer) => {
+      const name = f?.properties?.name || f?.properties?.file || 'image';
+      const url  = f?.properties?.overlay || f?.properties?.url;
+      if (url) layer.bindPopup(`<a href="${url}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`);
+      imageMarkers.push({ id: name, name, marker: layer, shown: true });
+      layer.addTo(imageMarkersLayer);
+    }
+  });
+}
+
+
+async function applySessionToMap(sessionName){
+  // always get summary first
+  const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
+  if(!res.ok){ console.warn('session_summary failed'); return; }
+  const sum = await res.json();
+
+  // Build safe fallbacks (in case backend omitted fields)
+  const sessRoot = `/media/sessions/${encodeURIComponent(sessionName)}/`;
+  const anomaliesUrl =
+    sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + "anomalies.geojson");
+  const imagesUrl =
+    sum.images_geojson || sum.images || sum.images_gj || (sessRoot + "images.geojson");
+
+  // 1) anomalies (polygons)
+  if (anomaliesUrl) {
+    try {
+      await loadGeoJSON(anomaliesUrl);
+    } catch (e) {
+      console.warn("anomalies_geojson fetch failed:", e);
+    }
+  }
+
+  // 2) images (points -> markers list)
+  if (imagesUrl) {
+    try {
+      const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
+      installImageMarkers(gj);   // fills imageMarkers[] + adds to imageMarkersLayer
+    } catch (e) {
+      console.warn("images_geojson fetch failed:", e);
+      clearImageMarkers();
+    }
+  } else {
+    clearImageMarkers();
+  }
+
+  // 3) update sidebar after layers installed
+  refreshLayersPanel();
+}
+
+
+
+
 
 async function loadGeoJSON(url){
   const res = await fetch(url);
@@ -425,6 +459,86 @@ async function loadGeoJSON(url){
   try{ MAP.fitBounds(geojsonLayer.getBounds(), {padding:[20,20]}); }catch(_){}
 }
 
+async function loadImagesGeoJSON(url){
+  try{
+    const res = await fetch(url);
+    const gj = await res.json();
+    const feats = (gj && gj.type === "FeatureCollection") ? gj.features : [];
+    // keep only valid point features
+    return feats.filter(f => f?.geometry?.type === "Point" &&
+                             Array.isArray(f.geometry.coordinates) &&
+                             f.geometry.coordinates.length >= 2);
+  }catch(_){
+    return [];
+  }
+}
+
+function populateImagesList(features){
+  const ul = $("#imagesList");
+  if (!ul) return;
+  ul.innerHTML = "";
+
+  features.forEach((f, i)=>{
+    const name = f.properties?.name || f.properties?.file || `image ${i+1}`;
+    const url  = f.properties?.url || "";
+    const id   = `imgchk_${i}`;
+
+    const [x, y] = f.geometry.coordinates;   // lon, lat
+    const latlng = L.latLng(y, x);
+
+    // build marker (not added by default)
+    const html = `
+      <div style="min-width:200px">
+        <b>${escapeHtml(name)}</b>
+        ${url ? `<div style="margin-top:6px"><img src="${url}" style="max-width:240px;max-height:180px;display:block;border-radius:6px;border:1px solid var(--border)"></div>` : ""}
+        ${url ? `<div style="margin-top:6px"><a href="${url}" target="_blank">open image</a></div>` : ""}
+      </div>`;
+    const marker = L.marker(latlng).bindPopup(html);
+    imageMarkers.set(id, marker);
+
+    // list row
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <label class="chk">
+        <input type="checkbox" id="${id}">
+        <span>${escapeHtml(name)}</span>
+      </label>
+      <button class="iconDots" title="Zoom">🔍</button>
+    `;
+
+    const chk = li.querySelector("input");
+    const zoomBtn = li.querySelector("button");
+
+    chk.addEventListener("change", ()=>{
+      if (chk.checked) marker.addTo(imageMarkersLayer);
+      else { try{ imageMarkersLayer.removeLayer(marker); }catch(_){} }
+    });
+    zoomBtn.addEventListener("click", ()=>{
+      MAP.setView(latlng, Math.max(MAP.getZoom(), 18));
+      marker.openPopup();
+    });
+
+    ul.appendChild(li);
+  });
+
+  // bulk actions
+  $("#btnShowAllImages")?.addEventListener("click", ()=>{
+    $$("#imagesList input[type='checkbox']").forEach(cb=>{
+      cb.checked = true;
+      const m = imageMarkers.get(cb.id);
+      if (m) m.addTo(imageMarkersLayer);
+    });
+  });
+  $("#btnHideAllImages")?.addEventListener("click", ()=>{
+    $$("#imagesList input[type='checkbox']").forEach(cb=>{
+      cb.checked = false;
+      const m = imageMarkers.get(cb.id);
+      if (m) { try{ imageMarkersLayer.removeLayer(m); }catch(_){} }
+    });
+  });
+}
+
+
 function renderLegend(){
   const st = overlayRegistry["Anomalies"]?.style || { color:"#ff5722", fillColor:"#ff5722" };
   const el = $("#legend");
@@ -436,33 +550,95 @@ function renderLegend(){
 
 // ---------- layers panel + ⋮ menu ----------
 function refreshLayersPanel(){
-  const ul = $("#layersList");
-  ul.innerHTML = "";
+  // ----- LAYERS (detections/tiles) -----
+  const layersUl = document.querySelector('#layersList');
+  if (layersUl) {
+    const items = [];
 
-  Object.keys(overlayRegistry).forEach(name=>{
-    const info = overlayRegistry[name];
-    if(!info || !info.layer) return;
-    const li = document.createElement("li");
-    li.innerHTML = `
-      <label class="chk">
-        <input type="checkbox" ${MAP.hasLayer(info.layer) ? "checked":""} />
-        <span>${name}</span>
-      </label>
-      <button class="iconDots" title="Layer actions">⋮</button>
-    `;
-    const chk = li.querySelector("input");
-    chk.addEventListener("change", ()=>{
-      if(chk.checked) info.layer.addTo(MAP);
-      else MAP.removeLayer(info.layer);
+    // Build entries from overlayRegistry wrappers
+    Object.entries(overlayRegistry || {}).forEach(([name, info]) => {
+      const layer = info?.layer || info;               // unwrap if needed
+      if (!layer || typeof layer.addTo !== 'function') return;
+
+      const on = MAP.hasLayer(layer);
+      items.push(`
+        <li>
+          <label>
+            <input type="checkbox" data-layer="${escapeHtml(name)}" ${on ? 'checked' : ''}>
+            ${escapeHtml(name)}
+          </label>
+          <button class="iconDots" data-menu="${escapeHtml(name)}" title="⋮">⋮</button>
+        </li>`);
     });
-    const dots = li.querySelector(".iconDots");
-    dots.addEventListener("click", (e)=>{
-      e.stopPropagation();
-      openLayerMenu(name, info, e.clientX, e.clientY);
+
+    layersUl.innerHTML = items.join('');
+
+    // toggle visibility
+    layersUl.addEventListener('change', (e) => {
+      const key = e.target?.dataset?.layer;
+      if (!key) return;
+      const info = overlayRegistry[key];
+      const layer = info?.layer || info;
+      if (!layer) return;
+      if (e.target.checked) { layer.addTo(MAP); }
+      else { MAP.removeLayer(layer); }
     });
-    ul.appendChild(li);
-  });
+
+    // open small ⋮ menu (zoom/style)
+    layersUl.addEventListener('click', (e) => {
+      const key = e.target?.dataset?.menu;
+      if (!key) return;
+      const info = overlayRegistry[key];
+      if (!info) return;
+      const rect = e.target.getBoundingClientRect();
+      openLayerMenu(key, info, rect.left, rect.bottom + 6);
+    });
+  }
+
+  // ----- IMAGES (per-image toggles) -----
+  const imagesUl = document.querySelector('#imagesList');
+  if (imagesUl) {
+    if (!imageMarkers.length) {
+      imagesUl.innerHTML = `<li><span class="layerName muted">No geolocated images in this session</span></li>`;
+    } else {
+      imagesUl.innerHTML = imageMarkers.map((im, idx) => `
+        <li>
+          <label>
+            <input type="checkbox" data-img="${idx}" ${im.shown ? 'checked' : ''}>
+            ${escapeHtml(im.name)}
+          </label>
+        </li>`).join('');
+
+      imagesUl.onchange = (e) => {
+        const idx = e.target?.dataset?.img;
+        if (idx === undefined) return;
+        const im = imageMarkers[Number(idx)];
+        im.shown = e.target.checked;
+        if (im.shown) im.marker.addTo(imageMarkersLayer);
+        else imageMarkersLayer.removeLayer(im.marker);
+      };
+    }
+  }
+
+  // Show/Hide all images buttons
+  document.getElementById('btnShowAllImages')?.addEventListener('click', () => setAllImages(true), { once: true });
+  document.getElementById('btnHideAllImages')?.addEventListener('click', () => setAllImages(false), { once: true });
 }
+
+
+function setAllImages(show){
+  imageMarkers.forEach(im => {
+    im.shown = show;
+    if (show) im.marker.addTo(imageMarkersLayer);
+    else imageMarkersLayer.removeLayer(im.marker);
+  });
+  // reflect in checkboxes
+  const imagesUl = document.querySelector('#imagesList');
+  if (imagesUl) {
+    imagesUl.querySelectorAll('input[type=checkbox][data-img]').forEach((cb, i) => cb.checked = show);
+  }
+}
+
 
 function openLayerMenu(name, info, x, y){
   const menu = $("#layerMenu");
@@ -825,12 +1001,6 @@ async function loadResultsInfo(sessionName) {
   try {
     const r = await fetch(`/api/results/${encodeURIComponent(sessionName)}/metrics`, { cache: "no-store" });
     if (r.ok) metrics = await r.json();
-  } catch {}
-
-  // 2) model_meta (preferred endpoint under /results/)
-  try {
-    const r = await fetch(`/api/results/${encodeURIComponent(sessionName)}/model_meta`, { cache: "no-store" });
-    if (r.ok) meta = await r.json();
   } catch {}
 
   // 3) fallback: derive run name from metrics.model_name → /api/runs/{run}/meta

@@ -20,8 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
 from fastapi.responses import JSONResponse
 
-from PIL import Image
+from PIL import Image, ExifTags
+from PIL.ExifTags import TAGS, GPSTAGS
 import numpy as np
+import math
 
 # --- Optional tiler deps (best-effort) ---
 try:
@@ -219,11 +221,13 @@ def _coerce_pred_json(p: Path) -> dict:
 
 def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
-    Produce /overlays (prefer predictor-colored overlays if present) and /thumbs under out_root,
-    plus a manifest JSON mapping original file name - generated URLs.
+    Single-folder version:
+      - Only use/create <out_root>/overlays (JPG)
+      - Reuse existing JPG overlays if predictor already wrote them there
+      - Else draw fallback rectangles from preds JSON and save JPG
+      - Also create thumbs/ and a manifest.json
     """
-    # local-only imports so you don't have to change module imports
-    import json, shutil, logging
+    import json, logging
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
 
@@ -232,16 +236,6 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
     thumbs   = out_root / "thumbs";   thumbs.mkdir(parents=True, exist_ok=True)
     manifest = out_root / "manifest.json"
 
-    # --- 1) Prefer existing colored overlays produced by predictors ---
-    #     (predictors save to <session>/overlay/<stem>.png)
-    colored_src = out_root / "overlay"  # singular
-    use_colored = colored_src.exists() and any(colored_src.glob("*.png"))
-    if use_colored:
-        logger.info(f"UI:INFO:post: using existing colored overlays from {colored_src}")
-    else:
-        logger.info("UI:INFO:post: no predictor overlays found - drawing fallback overlays")
-
-    # simple, vivid RGB palette (works on RGB + thermal backgrounds)
     def _palette_rgb():
         return [
             (255, 0, 0), (0, 170, 255), (0, 200, 0), (255, 0, 200),
@@ -255,29 +249,24 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
             continue
 
         stem = img.stem
-        ov   = overlays / f"{stem}.png"
-        th   = thumbs   / f"{stem}.png"
+        ov   = overlays / f"{stem}.jpg"   # single format
+        th   = thumbs   / f"{stem}.jpg"
 
-        if use_colored and (colored_src / f"{stem}.png").exists():
-            # --- Reuse predictor overlay (copy into /overlays to keep structure consistent)
-            src = colored_src / f"{stem}.png"
-            try:
-                shutil.copyfile(src, ov)
-                im_for_thumb = Image.open(ov).convert("RGB")
-            except Exception:
-                # if copy/open fails, fall back to drawing
-                pass
+        # If predictor already wrote an overlay JPG here, reuse it
         if not ov.exists():
-            # --- 2) Fallback: draw colored boxes + label using JSON preds ---
+            # Fallback: read preds and draw
             pred_json = preds_dir / "preds" / f"{stem}.json"
             jj = _coerce_pred_json(pred_json) if pred_json.exists() else {
                 "boxes": [], "scores": [], "classes": [], "file": img.name
             }
 
             try:
-                base = Image.open(img).convert("RGB")
+                src = Image.open(img)
+                exif = src.info.get("exif", None)
+                base = src.convert("RGB")
             except Exception:
                 base = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
+                exif = None
 
             draw = ImageDraw.Draw(base)
             W, H = base.size
@@ -287,14 +276,11 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
             scores  = jj.get("scores", []) or []
             classes = jj.get("classes", []) or []
 
-            # scale thickness and text size to image size
             thickness = max(1, int(round(min(W, H) * 0.003)))
             try:
-                font = ImageFont.truetype("arial.ttf", size=max(3.5, int(min(W, H) * 0.0015)))
-                logger.info(f"using font: {font}")
+                font = ImageFont.truetype("arial.ttf", size=max(10, int(min(W, H) * 0.018)))
             except Exception:
                 font = ImageFont.load_default()
-                logger.info("using default font.")
 
             for i, b in enumerate(boxes):
                 try:
@@ -310,13 +296,9 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 label  = f"{name} {int(round(sc * 100))}%"
 
                 color  = pal[cls_id % len(pal)]
-                # rectangle outline
                 draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
 
-                # label pill (solid color for clarity)
-                # measure text
                 try:
-                    # Pillow >= 8.x
                     bbox = draw.textbbox((0, 0), label, font=font)
                     tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 except Exception:
@@ -325,31 +307,43 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 pill_w = tw + 2 * pad
                 pill_h = th_txt + 2 * pad
 
-                # place above box if space, else inside/top
                 top = y1 - pill_h if (y1 - pill_h) >= 0 else y1
                 left = x1
-                # background
                 draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color)
-                # text (white) with a thin black shadow for contrast
                 tx, ty = left + pad, top + pad
                 for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
                     draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
                 draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
 
-            base.save(ov, format="PNG", optimize=True)
-            im_for_thumb = base
+            # Save fallback as JPG (preserve EXIF if available)
+            try:
+                if exif:
+                    base.save(ov, format="JPEG", quality=90, exif=exif)
+                else:
+                    base.save(ov, format="JPEG", quality=90)
+            except Exception:
+                # if JPEG somehow fails, still ensure a file exists
+                base.save(ov, format="JPEG", quality=85)
 
-        # --- Thumb from overlay (colored or fallback) ---
+            im_for_thumb = base
+        else:
+            # open existing overlay for thumbnail
+            try:
+                im_for_thumb = Image.open(ov).convert("RGB")
+            except Exception:
+                im_for_thumb = Image.new("RGB", (256, 256), (0, 0, 0))
+
+        # Thumbnail (JPG)
         try:
             w, h = im_for_thumb.size
-            tw = max(96, w // 6); thh = max(96, h // 6)
+            tw, thh = max(96, w // 6), max(96, h // 6)
             im_thumb = im_for_thumb.resize((tw, thh))
-            im_thumb.save(th, format="PNG", optimize=True)
+            im_thumb.save(th, format="JPEG", quality=85)
         except Exception:
-            Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
+            Image.new("RGB", (96, 96), (0, 0, 0)).save(th, format="JPEG", quality=85)
 
         mapper[img.name] = {
-            "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
+            "overlays": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
             "thumb":   f"/media/{th.relative_to(MEDIA_DIR).as_posix()}" if str(th).startswith(str(MEDIA_DIR)) else th.name,
         }
 
@@ -357,31 +351,236 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
     return overlays, thumbs, manifest
 
 
-def _preds_to_geojson(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, List[Tuple[float,float]]]:
-    """
-    Build a very simple GeoJSON with image centers as points (best-effort).
-    This is intentionally lightweight since many images have no geotags.
-    """
-    gj = {
-        "type": "FeatureCollection",
-        "features": []
-    }
-    centers: List[Tuple[float, float]] = []
 
-    for img in sorted(images_dir.iterdir()):
-        if not _is_image(img):
+# ---------- Geo helpers: EXIF GPS + input type detection ----------
+
+# map EXIF tag ids → names once
+_EXIF_GPS_TAG = None
+try:
+    _EXIF_GPS_TAG = {v: k for k, v in ExifTags.TAGS.items()}["GPSInfo"]
+except Exception:
+    _EXIF_GPS_TAG = 34853  # fallback id
+
+def _to_float_ratio(val):
+    # PIL gives (num, den) tuples or IFDRational; normalize to float
+    try:
+        if hasattr(val, "numerator"):
+            return float(val.numerator) / float(val.denominator or 1)
+        num, den = val
+        return float(num) / float(den or 1)
+    except Exception:
+        try:
+            return float(val)
+        except Exception:
+            return 0.0
+
+def _dms_to_deg(dms_tuple):
+    # (deg, min, sec) -> decimal degrees
+    d = _to_float_ratio(dms_tuple[0])
+    m = _to_float_ratio(dms_tuple[1])
+    s = _to_float_ratio(dms_tuple[2])
+    return d + m/60.0 + s/3600.0
+
+def get_image_gps(image_path):
+    """
+    Return (lat, lon) in WGS84 from EXIF, or (None, None) if missing.
+    Works with JPG/TIFF. PNG rarely has EXIF.
+    """
+    try:
+        img = Image.open(image_path)
+        exif = getattr(img, "_getexif", lambda: None)()
+        if not exif:
+            return None, None
+
+        gps = {}
+        for k, v in exif.items():
+            tag = TAGS.get(k)
+            if tag == "GPSInfo":
+                for t in v:
+                    sub = GPSTAGS.get(t)
+                    gps[sub] = v[t]
+
+        def _to_float(x):
+            # EXIF rationals can be tuples (num, den)
+            return x[0] / x[1] if isinstance(x, tuple) else float(x)
+
+        def _dms_to_dd(dms, ref):
+            deg = _to_float(dms[0]); minu = _to_float(dms[1]); sec = _to_float(dms[2])
+            dd = deg + minu/60.0 + sec/3600.0
+            return -dd if ref in ("S", "W") else dd
+
+        lat = gps.get("GPSLatitude");  lat_ref = gps.get("GPSLatitudeRef")
+        lon = gps.get("GPSLongitude"); lon_ref = gps.get("GPSLongitudeRef")
+        if lat and lon and lat_ref and lon_ref:
+            return _dms_to_dd(lat, lat_ref.strip()), _dms_to_dd(lon, lon_ref.strip())
+    except Exception:
+        pass
+    return None, None
+
+
+def _detect_image_input_type(images_dir: Path) -> str:
+    """
+    'tif'  -> exactly one GeoTIFF present (orthophoto case)
+    'images' -> otherwise (many JPG/PNG/etc or multiple TIFFs)
+    """
+    tifs = [p for p in images_dir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
+    return "tif" if len(tifs) == 1 else "images"
+
+
+
+# ----------------- overlays & geojson -----------------
+def _meters_to_deg(lat_deg: float):
+    """
+    Return (deg_per_meter_lon, deg_per_meter_lat) at a given latitude.
+    Approximate but fine for small images.
+    """
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_deg))
+    return (1.0 / meters_per_deg_lon, 1.0 / meters_per_deg_lat)
+
+def _coerce_pred_json(p):
+    """Load a preds json that looks like {'boxes':[[x1,y1,x2,y2],...],'scores':[],'classes':[]}."""
+    try:
+        j = json.loads(Path(p).read_text(encoding="utf-8"))
+        return {
+            "boxes":  j.get("boxes",  []) or [],
+            "scores": j.get("scores", []) or [],
+            "classes":j.get("classes",[]) or [],
+        }
+    except Exception:
+        return {"boxes": [], "scores": [], "classes": []}
+
+def _preds_to_geojson(
+    images_dir: Path,
+    preds_dir: Path,
+    out_session: Path,
+    class_names,
+    score_thresh: float = 0.5,
+    meters_per_pixel: float = 0.10,   # << your notebook default (10cm/px). Adjust as needed.
+):
+    """
+    Build polygon GeoJSON for detections using EXIF (lat,lon) as the image center.
+    Geometry is Polygon in EPSG:4326. Also writes image centers to images.geojson.
+    Returns (anomalies_geojson_path, images_geojson_path).
+    """
+
+    anomalies = {"type": "FeatureCollection", "features": []}
+    images_fc = {"type": "FeatureCollection", "features": []}
+
+    preds_dir = Path(preds_dir)
+    out_session.mkdir(parents=True, exist_ok=True)
+
+    # walk images and match to preds
+    for img_path in sorted(Path(images_dir).iterdir()):
+        if not img_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
             continue
-        # we don't rely on EXIF here; downstream map can still show image footprint later if available
-        centers.append((0.0, 0.0))
-        gj["features"].append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
-            "properties": {"image": img.name}
-        })
 
-    out = out_root / "preds.geojson"
-    out.write_text(json.dumps(gj, indent=2), encoding="utf-8")
-    return out, centers
+        # EXIF WGS84
+        lat, lon = get_image_gps(str(img_path))
+        # record image center (if present) to images.geojson
+        if lat is not None and lon is not None:
+            images_fc["features"].append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                "properties": {"image": img_path.name}
+            })
+
+        # load predictions for this image
+        stem = img_path.stem
+        pred_json = preds_dir / "preds" / f"{stem}.json"
+        jj = _coerce_pred_json(pred_json) if pred_json.exists() else {"boxes": [], "scores": [], "classes": []}
+        boxes, scores, classes = jj["boxes"], jj["scores"], jj["classes"]
+
+        # image size (for pixel→meter offsets)
+        try:
+            from PIL import Image
+            with Image.open(str(img_path)) as im:
+                W, H = im.size
+        except Exception:
+            W = H = None
+
+        if not boxes or W is None or H is None:
+            continue
+
+        # Need EXIF center to place polygons on the map
+        if lat is None or lon is None:
+            # No EXIF → skip georeferenced polygons for this image
+            continue
+
+        # meters → degrees scaling at this latitude
+        dlon_per_m, dlat_per_m = _meters_to_deg(lat)
+
+        for i, b in enumerate(boxes):
+            try:
+                s = float(scores[i]) if i < len(scores) else 0.0
+            except Exception:
+                s = 0.0
+            if s < float(score_thresh):
+                continue
+
+            try:
+                x1, y1, x2, y2 = map(float, b)
+            except Exception:
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            # bbox center in pixels (origin top-left)
+            cx = 0.5 * (x1 + x2)
+            cy = 0.5 * (y1 + y2)
+
+            # offsets from image center, px → meters
+            dx_px = cx - (W / 2.0)
+            dy_px = cy - (H / 2.0)
+            dx_m = dx_px * meters_per_pixel
+            dy_m = -dy_px * meters_per_pixel   # image y grows down; north is +lat
+
+            # center of bbox in degrees
+            lon_c = float(lon) + dx_m * dlon_per_m
+            lat_c = float(lat) + dy_m * dlat_per_m
+
+            # half-sizes in meters
+            hw_m = 0.5 * (x2 - x1) * meters_per_pixel
+            hh_m = 0.5 * (y2 - y1) * meters_per_pixel
+
+            # corner offsets (east, north) in meters → degrees
+            corners_m = [
+                (+hw_m, +hh_m),
+                (-hw_m, +hh_m),
+                (-hw_m, -hh_m),
+                (+hw_m, -hh_m),
+                (+hw_m, +hh_m),  # close ring
+            ]
+            ring = [[lon_c + ex * dlon_per_m, lat_c + ny * dlat_per_m] for (ex, ny) in corners_m]
+
+            cls_id = int(classes[i]) if i < len(classes) else 0
+            cls_name = (
+                class_names[cls_id] if isinstance(class_names, (list, tuple))
+                and 0 <= cls_id < len(class_names) else f"class_{cls_id}"
+            )
+
+            anomalies["features"].append({
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [ring]},
+                "properties": {
+                    "image": img_path.name,
+                    "class_id": cls_id,
+                    "class_name": cls_name,
+                    "score": round(s * 100.0, 2),    # percent like your notebook
+                    "box_px": [x1, y1, x2, y2]
+                }
+            })
+
+    # write files
+    anom_gj = out_session / "anomalies.geojson"
+    imgs_gj = out_session / "images.geojson"
+    anom_gj.write_text(json.dumps(anomalies), encoding="utf-8")
+    imgs_gj.write_text(json.dumps(images_fc), encoding="utf-8")
+
+    return anom_gj, imgs_gj
+
+
+
 
 # ---------- tiny list helpers (datasets/models/sessions) ----------
 
@@ -662,7 +861,28 @@ async def api_test_run(
     class_names = (_read_model_meta(model_dir).get("class_names") or [])
     # ov_dir, th_dir, manifest = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
     ov_dir, th_dir, manifest_path = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
-    gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
+    # gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
+    try:
+        th_num = float(test_threshold) if str(test_threshold).strip() else 0.0
+    except Exception:
+        th_num = 0.0
+
+    # anom_gj, imgs_gj = _preds_to_geojson(
+    #     ds_dir, preds_dir, out_root, class_names, score_thresh=th_num
+    # )
+    # after you’ve created the session folder and saved overlays/ + preds/
+
+    session_dir = MEDIA_DIR / "sessions" / session
+    
+    anom_gj, imgs_gj = _preds_to_geojson(
+        images_dir=Path(ds_dir),
+        preds_dir=Path(preds_dir),
+        out_session=Path(session_dir),
+        class_names=class_names,
+        score_thresh=float(th_num or 0.0),
+        meters_per_pixel=0.05,   #ground sampling distance (GSD)
+    )
+
 
     if isinstance(manifest_path, (str, Path)):
         mp = Path(manifest_path)
@@ -680,21 +900,41 @@ async def api_test_run(
     
     assets = _session_assets(ses)
 
+    # --- persist image_input_type in metrics.json ---
+    try:
+        mpath = out_root / "metrics.json"   # session/<name>/metrics.json
+        import json, logging
+        metrics = {}
+        if mpath.exists():
+            metrics = json.loads(mpath.read_text(encoding="utf-8"))
+        # images_dir should be the directory containing the test inputs you ran on
+        metrics["image_input_type"] = _detect_image_input_type(ds_dir)
+        # (optional) persist the numeric threshold you just used if not set by predictor
+        metrics.setdefault("score_thresh_test", th_num)
+        mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.getLogger("pvrt.test").warning(f"metrics.json patch failed: {e}")
+
+
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
         "ok": True,
+        "session": session,
+        # keep old key for backward compatibility
+        "geojson": str(anom_gj),
+        "anomalies_geojson": f"/media/{anom_gj.relative_to(MEDIA_DIR)}",
+        "images_geojson":    f"/media/{imgs_gj.relative_to(MEDIA_DIR)}",
         "results_dir": str(preds_dir),
-        "overlays": str(ov_dir),
-        "thumbs": str(th_dir),
+        "overlays": f"/media/{ov_dir.relative_to(MEDIA_DIR)}",
+        "thumbs":   f"/media/{th_dir.relative_to(MEDIA_DIR)}",
         "manifest": manifest_items,
         "assets": assets,
-        "geojson": str(gj),
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),
         "used_thermal": bool(presp.get("used_thermal")),
         "media_root": f"/media/sessions/{out_root.name}",
-        "session":session,
     }
+
 
 
 # ================== SESSIONS (lightweight) ==================
@@ -716,7 +956,10 @@ async def api_session_summary(session: str):
     ses = base / session
     if not ses.exists():
         raise HTTPException(status_code=404, detail="Session not found")
-    gj = ses / "anomalies.geojson"
+
+    gj = ses / "anomalies.geojson"      # existing
+    imgs_gj = ses / "images.geojson"    # NEW
+
     manifest_path = ses / "manifest.json"
     manifest = []
     if manifest_path.exists():
@@ -724,14 +967,20 @@ async def api_session_summary(session: str):
             manifest = json.loads(manifest_path.read_text())
         except Exception:
             manifest = []
+
     return {
         "ok": True,
         "session": session,
+        # keep old key for backward compatibility (anomalies)
         "geojson_url": f"/media/{gj.relative_to(MEDIA_DIR)}" if gj.exists() else None,
+        # NEW: where image footprints live (if you created them)
+        "images_geojson_url": f"/media/{imgs_gj.relative_to(MEDIA_DIR)}" if imgs_gj.exists() else None,
         "assets": _session_assets(ses),
-        "manifest": manifest,
-        "tiler": "ok" if RIO_OK else "unavailable"
+        "manifest": manifest,   # still the parsed JSON (not a path)
+        "tiler": "ok" if RIO_OK else "unavailable",
     }
+
+
 
 
 @app.get("/api/results/{session}/metrics")

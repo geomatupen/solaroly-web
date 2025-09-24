@@ -243,7 +243,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
 
     layout      = ensure_results_layout(out)
     preds_dir   = layout["preds"]
-    overlays_dir= layout["overlay"]
+    overlays_dir= layout["overlays"]
 
     model, cfg, names, wpth = _build_model_4ch(wdir, score_thresh)
 
