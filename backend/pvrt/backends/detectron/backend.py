@@ -262,7 +262,7 @@ class DetectronBackend(Backend):
                         "val_bbox_AP50": round(ap50_pct, 4),    # percent
                         "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
                         "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
-                        "path": str(Path(out_dir) / "model_best.pth"),
+                        "path": str(Path(out_dir.name) / "model_best.pth"),
                     }
                 })
             return res
@@ -313,7 +313,7 @@ class DetectronBackend(Backend):
                     "val_bbox_AP50": None if final_ap50_pct is None else round(final_ap50_pct, 4),
                     "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
                     "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
-                    "path": str(Path(out_dir) / "model_final.pth"),
+                    "path": str(Path(out_dir.name) / "model_final.pth"),
                 }
             })
 

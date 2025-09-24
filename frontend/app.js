@@ -816,6 +816,7 @@ function deriveRunNameFromModelName(name) {
 // Fetch metrics + model meta for a session, then render
 async function loadResultsInfo(sessionName) {
   const infoEl = document.getElementById("resultsInfo");
+  const predictions_title = document.getElementById("predictionsTitle");
   if (infoEl) { infoEl.hidden = true; infoEl.innerHTML = ""; }
 
   let metrics = null, meta = null;
@@ -844,4 +845,5 @@ async function loadResultsInfo(sessionName) {
   }
 
   renderResultsInfo(metrics, meta);
+  predictions_title.innerHTML = "Predictions: "+ metrics.total_detections;
 }

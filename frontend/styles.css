@@ -202,25 +202,10 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   border-radius: 14px;
   padding: 12px;
   box-shadow: 0 6px 20px rgba(0,0,0,.06);
-  max-height: 35vh;         /* fixed max height */
-  overflow: auto;           /* scroll inside */
+  max-height: 36vh;         /* fixed max height */
   margin-bottom: 1rem;
+}
 
-  /* Small, subtle scrollbars (Firefox + WebKit) */
-  scrollbar-width: thin;                      
-  scrollbar-color: rgba(100,116,139,.6) transparent;
-}
-.results-info::-webkit-scrollbar{ width: 8px; height: 8px; }
-.results-info::-webkit-scrollbar-track{ background: transparent; } /* no white strip */
-.results-info::-webkit-scrollbar-thumb{
-  background-color: rgba(100,116,139,.6);
-  border-radius: 4px;
-  border: 2px solid transparent;             /* slimmer thumb */
-  background-clip: padding-box;
-}
-.results-info::-webkit-scrollbar-thumb:hover{
-  background-color: rgba(100,116,139,.85);
-}
 
 /* two cards side-by-side on wide screens, stacked on small */
 .results-info .info-grid{
@@ -255,7 +240,27 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   margin: 0;
   display: grid;
   gap: 8px;
+  max-height: 25vh;         /* fixed max height */
+  overflow: auto;           /* scroll inside */
+
+  /* Small, subtle scrollbars (Firefox + WebKit) */
+  scrollbar-width: thin;                      
+  scrollbar-color: rgba(100,116,139,.6) transparent;
 }
+
+.kv-list::-webkit-scrollbar{ width: 8px; height: 8px; }
+.kv-list::-webkit-scrollbar-track{ background: transparent; } /* no white strip */
+.kv-list::-webkit-scrollbar-thumb{
+  background-color: rgba(100,116,139,.6);
+  border-radius: 4px;
+  border: 2px solid transparent;             /* slimmer thumb */
+  background-clip: padding-box;
+}
+.kv-list::-webkit-scrollbar-thumb:hover{
+  background-color: rgba(100,116,139,.85);
+}
+
+
 .kv-list li{
   display: grid;
   grid-template-columns: 1fr auto;  /* key left, value right */
