@@ -839,5 +839,6 @@ async def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
 
 # -------------- Serve media & frontend --------------
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="web")
