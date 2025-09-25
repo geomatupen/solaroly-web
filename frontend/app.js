@@ -15,7 +15,8 @@ const api = {
 
 let MAP, baseLayers, overlayRegistry = {};
 let imagesLayerGroup = null;           // holds all image markers/overlays
-let imageMarkers = [];          // id -> L.Marker or L.ImageOverlay
+let imageMarkers = new Map();
+;          // id -> L.Marker or L.ImageOverlay
 let geojsonLayer = null;
 let imageMarkersLayer = null;
 let tileLayers = [];
@@ -105,25 +106,43 @@ function renderImagesList(){
   `).join('');
 }
 
-function computeLayerBounds(layer){
-  // Leaflet layer or group → LatLngBounds
-  let bounds = null;
+document.addEventListener('click', (e)=>{
+  const li = e.target.closest('#layerMenu li');
+  if (!li) return;
 
-  if (layer.getBounds) {
-    try { bounds = layer.getBounds(); } catch(_) {}
+  const menu = li.closest('#layerMenu');
+  const key  = menu?.dataset?.key;
+  const rec  = key ? overlayRegistry[key] : null;
+  if (!rec || !rec.layer) { closeLayerMenu(); return; }
+
+  const action = li.dataset.action;
+
+  if (action === 'zoom') {
+    const b = computeLayerBounds(rec.layer);
+    if (b && b.isValid && b.isValid()) {
+      MAP.fitBounds(b.pad(0.2));
+    }
+    closeLayerMenu();
+    return;
   }
-  if (!bounds && layer.getLatLng){
-    const ll = layer.getLatLng();
-    bounds = L.latLngBounds(ll, ll);
+
+  if (action === 'style') {
+    // Open your style modal and prefill from rec.style (fallbacks provided)
+    styleTarget = { name: key, info: rec };
+
+    const st = rec.style || {};
+    $('#stColor').value    = toHex(st.color || '#0ea5e9');
+    $('#stWidth').value    = st.weight ?? 1;
+    $('#stOpacity').value  = st.opacity ?? 1;
+    $('#fiColor').value    = toHex(st.fillColor || st.color || '#0ea5e9');
+    $('#fiOpacity').value  = st.fillOpacity ?? 0.25;
+
+    $('#styleModal').classList.remove('hidden');
+    closeLayerMenu();
+    return;
   }
-  if (!bounds && layer.eachLayer){
-    layer.eachLayer(l => {
-      const b = computeLayerBounds(l);
-      if (b) bounds = bounds ? bounds.extend(b) : b;
-    });
-  }
-  return bounds;
-}
+});
+
 
 function applyVectorColor(layer, color){
   // try to recolor vector layers
@@ -135,6 +154,30 @@ function applyVectorColor(layer, color){
   }
 }
 
+function applyStyleLive(){
+  if (!styleTarget || !styleTarget.info) return;
+
+  const st = {
+    color:     document.getElementById('stColor')?.value || '#0ea5e9',
+    weight:    parseFloat(document.getElementById('stWidth')?.value || '1'),
+    opacity:   parseFloat(document.getElementById('stOpacity')?.value || '1'),
+    fillColor: document.getElementById('fiColor')?.value || '#0ea5e9',
+    fillOpacity: parseFloat(document.getElementById('fiOpacity')?.value || '0.25'),
+  };
+
+  styleTarget.info.style = st;
+
+  if (styleTarget.info.type === 'geojson' && styleTarget.info.layer?.setStyle) {
+    styleTarget.info.layer.setStyle(st);
+    renderLegend();
+  } else if (styleTarget.info.type === 'raster') {
+    const op = Math.max(0, Math.min(1, st.opacity));
+    for (const l of tileLayers) l.setOpacity(op);
+  }
+}
+
+
+
 function closeLayerMenu(){
   const m = document.getElementById('layerMenu');
   if (m) m.remove();
@@ -142,57 +185,77 @@ function closeLayerMenu(){
 
 function openLayerMenu(btn){
   closeLayerMenu();
-  const key = btn.dataset.key;
+
+  const key = btn.dataset.key;                   // <-- layer registry key
   const rec = overlayRegistry[key];
   if (!rec || !rec.layer) return;
 
-  // Simple menu
   const menu = document.createElement('div');
   menu.id = 'layerMenu';
   menu.className = 'layerMenu';
-  // Only show "Style" for vectors (markers/anomalies). For rasters this won’t do much.
+  menu.dataset.key = key;                        // <-- store key on the menu
+
   menu.innerHTML = `
     <ul>
       <li data-action="zoom">Zoom to layer</li>
-      <li data-action="style">Style</li>
+      <li data-action="style">Style…</li>
     </ul>
   `;
+
   document.body.appendChild(menu);
 
-  // position under the button
   const r = btn.getBoundingClientRect();
   menu.style.left = `${Math.round(r.left)}px`;
   menu.style.top  = `${Math.round(r.bottom + 6)}px`;
-
-  // wire actions
-  menu.addEventListener('click', (e) => {
-    const li = e.target.closest('li');
-    if (!li) return;
-    const action = li.dataset.action;
-
-    if (action === 'zoom'){
-      const b = computeLayerBounds(rec.layer);
-      if (b && b.isValid()) MAP.fitBounds(b.pad(0.2));
-      closeLayerMenu();
-    }
-    if (action === 'style'){
-      // cycle through a few colors for vectors
-      const COLORS = ['#10b981','#f59e0b','#ef4444','#3b82f6','#a855f7'];
-      rec._styleIdx = (rec._styleIdx || 0) + 1;
-      const color = COLORS[ rec._styleIdx % COLORS.length ];
-      try { applyVectorColor(rec.layer, color); } catch(_){}
-      closeLayerMenu();
-    }
-  });
-
-  // dismiss on outside click / escape
-  const onDoc = (ev) => {
-    if (!menu.contains(ev.target) && ev.target !== btn) {
-      closeLayerMenu(); document.removeEventListener('mousedown', onDoc);
-    }
-  };
-  document.addEventListener('mousedown', onDoc);
 }
+
+// Close the menu when clicking anywhere outside it (but not on the ⋮ button)
+document.addEventListener('mousedown', (e)=>{
+  const m = document.getElementById('layerMenu');
+  if (!m) return;
+  if (!m.contains(e.target) && !e.target.closest('.layerRow .more')) {
+    closeLayerMenu();
+  }
+});
+
+
+document.addEventListener('click', (e)=>{
+  const li = e.target.closest('#layerMenu li');
+  if (!li) return;
+
+  const menu = li.closest('#layerMenu');
+  const key  = menu?.dataset?.key;
+  const rec  = key ? overlayRegistry[key] : null;
+  if (!rec || !rec.layer) { closeLayerMenu(); return; }
+
+  const action = li.dataset.action;
+
+  if (action === 'zoom') {
+    const b = computeLayerBounds(rec.layer);
+    if (b && b.isValid && b.isValid()) {
+      MAP.fitBounds(b.pad(0.2));
+    }
+    closeLayerMenu();
+    return;
+  }
+
+  if (action === 'style') {
+    // Open your style modal and prefill from rec.style (fallbacks provided)
+    styleTarget = { name: key, info: rec };
+
+    const st = rec.style || {};
+    $('#stColor').value    = toHex(st.color || '#0ea5e9');
+    $('#stWidth').value    = st.weight ?? 1;
+    $('#stOpacity').value  = st.opacity ?? 1;
+    $('#fiColor').value    = toHex(st.fillColor || st.color || '#0ea5e9');
+    $('#fiOpacity').value  = st.fillOpacity ?? 0.25;
+
+    $('#styleModal').classList.remove('hidden');
+    closeLayerMenu();
+    return;
+  }
+});
+
 
 
 function appendLog(line){
@@ -525,33 +588,55 @@ function initMap(){
 
   if (!imagesLayerGroup) imagesLayerGroup = L.layerGroup().addTo(MAP);
   imageMarkersLayer = L.layerGroup().addTo(MAP);
-  overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
+  // overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
   renderLegend();
   refreshLayersPanel();
 }
 
 function clearImageMarkers(){
-  imageMarkersLayer.clearLayers();
-  imageMarkers = [];
-}
-
-function installImageMarkers(gj){
   if (!imageMarkersLayer) imageMarkersLayer = L.layerGroup().addTo(MAP);
   imageMarkersLayer.clearLayers();
-
-  const markers = L.geoJSON(gj, {
-    pointToLayer: (f, latlng) => L.circleMarker(latlng, {
-      radius: 4, color: '#0ea5e9', weight: 1, fillOpacity: 0.6
-    }).bindPopup(
-      `<div class="mini"><b>Image:</b> ${escapeHtml(f?.properties?.image || '')}</div>`
-    )
-  });
-
-  markers.addTo(imageMarkersLayer);
-
-  // keep a registry entry so it shows in the Layers list
-  overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
+  imageMarkers = new Map();
 }
+
+
+function computeLayerBounds(layer){
+  // Works for GeoJSON/FeatureGroup/LayerGroup/Marker/Polyline/Polygon
+  if (layer && typeof layer.getBounds === 'function') {
+    try { return layer.getBounds(); } catch {}
+  }
+  let bounds = null;
+  if (layer && typeof layer.eachLayer === 'function') {
+    layer.eachLayer(child => {
+      const b = computeLayerBounds(child);
+      if (!b) return;
+      bounds = bounds ? bounds.extend(b) : b;
+    });
+    return bounds;
+  }
+  if (layer && typeof layer.getLatLng === 'function') {
+    const ll = layer.getLatLng();
+    return L.latLngBounds(ll, ll);
+  }
+  if (layer && typeof layer.getLatLngs === 'function') {
+    const lls = layer.getLatLngs().flat(Infinity);
+    if (lls.length) return L.latLngBounds(lls);
+  }
+  return bounds;
+}
+
+function toHex(c){
+  if (!c) return '#000000';
+  if (c[0] === '#') return c;
+  // Convert named/rgb(...) to hex
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.fillStyle = c;
+  const rgb = ctx.fillStyle;              // normalized css color
+  const m = rgb.match(/\d+/g);
+  if (!m) return '#000000';
+  return '#' + m.slice(0,3).map(x => (+x).toString(16).padStart(2,'0')).join('');
+}
+
 
 
 
@@ -737,6 +822,51 @@ async function applySessionToMap(sessionName){
   refreshLayersPanel();
 }
 
+// ---- Image markers (GeoJSON → Leaflet layer + registry) ----
+function installImageMarkers(gj) {
+  try {
+    if (!gj || gj.type !== 'FeatureCollection') return;
+
+    const key = 'Image markers';
+
+    // remove previous instance, if any
+    const prev = overlayRegistry[key];
+    if (prev && prev.layer) {
+      try { MAP.removeLayer(prev.layer); } catch (e) {}
+    }
+
+    // keep/restore previous style if user changed it via the Style modal
+    const style = (prev && prev.style) || {
+      color: '#0ea5e9',
+      weight: 1,
+      fillColor: '#0ea5e9',
+      fillOpacity: 0.6
+    };
+
+    const layer = L.geoJSON(gj, {
+      pointToLayer: (feat, latlng) =>
+        L.circleMarker(latlng, { radius: 4, ...style })
+          .bindPopup(`<div class="mini"><b>Image:</b> ${escapeHtml(feat?.properties?.image || '')}</div>`)
+    }).addTo(MAP);
+
+    overlayRegistry[key] = { layer, type: 'geojson', style };
+
+    // make sure it appears in the panel
+    if (typeof refreshLayersPanel === 'function') refreshLayersPanel();
+  } catch (err) {
+    console.error('installImageMarkers failed:', err);
+  }
+}
+
+// tiny utility (only if you don't already have one)
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, m => (
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])
+  ));
+}
+
+
 
 async function loadImagesCatalog(sessionName, imagesUrl){
   imageCatalog = [];
@@ -911,27 +1041,41 @@ function toHex(c){
 }
 $("#btnCloseStyle").addEventListener("click", ()=> $("#styleModal").classList.add("hidden"));
 $("#btnCancelStyle").addEventListener("click", ()=> $("#styleModal").classList.add("hidden"));
-$("#btnApplyStyle").addEventListener("click", ()=>{
-  if(!styleTarget) return;
-  const st = {
-    color: $("#stColor").value,
-    weight: parseFloat($("#stWidth").value || "1"),
-    opacity: parseFloat($("#stOpacity").value || "1"),
-    fillColor: $("#fiColor").value,
-    fillOpacity: parseFloat($("#fiOpacity").value || "0.25")
-  };
-  styleTarget.info.style = st;
-  if(styleTarget.info.type === "geojson"){
-    styleTarget.info.layer.setStyle(st);
-    renderLegend();
-  }else if(styleTarget.info.type === "raster"){
-    const op = Math.max(0, Math.min(1, st.opacity));
-    // tile layers share the same opacity
-    for(const l of tileLayers) l.setOpacity(op);
-  }
-  $("#styleModal").classList.add("hidden");
-  styleTarget = null;
+
+// $("#btnApplyStyle").addEventListener("click", ()=>{
+//   if(!styleTarget) return;
+//   const st = {
+//     color: $("#stColor").value,
+//     weight: parseFloat($("#stWidth").value || "1"),
+//     opacity: parseFloat($("#stOpacity").value || "1"),
+//     fillColor: $("#fiColor").value,
+//     fillOpacity: parseFloat($("#fiOpacity").value || "0.25")
+//   };
+//   styleTarget.info.style = st;
+
+//   if(styleTarget.info.type === "geojson"){
+//     styleTarget.info.layer.setStyle(st);   // works for “Anomalies” and now “Image markers”
+//     renderLegend();
+//   }else if(styleTarget.info.type === "raster"){
+//     const op = Math.max(0, Math.min(1, st.opacity));
+//     for(const l of tileLayers) l.setOpacity(op);
+//   }
+//   $("#styleModal").classList.add("hidden");
+//   styleTarget = null;
+// });
+
+const btnApply = document.getElementById('btnApplyStyle');
+if (btnApply) btnApply.style.display = 'none';  // hide the button
+
+// Live-apply on any input change
+['stColor','fiColor','stWidth','stOpacity','fiOpacity'].forEach(id=>{
+  const el = document.getElementById(id);
+  if (!el) return;
+  // apply on change & while dragging (range) / typing (color/text/number)
+  el.addEventListener('input', applyStyleLive);
+  el.addEventListener('change', applyStyleLive);
 });
+
 
 // ---------- user GeoJSON upload ----------
 $("#fileGeoJSON")?.addEventListener("change", async (e)=>{
