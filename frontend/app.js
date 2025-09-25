@@ -24,6 +24,14 @@ let styleTarget = null;
 let layerMenuState = { name: null, info: null };
 let testAbort = null;
 
+// catalog & runtime overlays for photos
+let imageCatalog = [];              // [{ id, name, url, bounds, on }]
+let imageOverlays = new Map();      // id -> L.ImageOverlay
+
+// fallback sizing if images.geojson has only a Point
+const DEFAULT_IMAGE_HALF_SIZE_M = 25; // ~25 m half-width/half-height (adjust if needed)
+
+
 // ---------- helpers ----------
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
@@ -31,6 +39,73 @@ function setHidden(el, hidden=true){ if(!el) return; hidden ? el.style.display =
 function setText(sel, txt){ const el=$(sel); if(el) el.textContent = txt; }
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m])); }
 function closeBtn(){ return `<button class="iconBtn alertClose" aria-label="Close">×</button>`; }
+
+// convert meters to degrees at a given latitude
+function metersToDeg(lat, meters){
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.cos(lat * Math.PI / 180);
+  return { dLat: meters / metersPerDegLat, dLon: meters / metersPerDegLon };
+}
+
+// remove all currently shown image overlays
+function clearImageOverlays(){
+  for (const ov of imageOverlays.values()){
+    try { imagesLayerGroup.removeLayer(ov); } catch(_){}
+  }
+  imageOverlays.clear();
+}
+
+// turn one image overlay on/off by id
+function toggleImageOverlay(id, on){
+  const rec = imageCatalog.find(x => x.id === id);
+  if (!rec) return;
+
+  let ov = imageOverlays.get(id);
+  if (on){
+    if (!ov){
+      ov = L.imageOverlay(rec.url, rec.bounds, { opacity: 0.85, interactive: false });
+      imageOverlays.set(id, ov);
+    }
+    ov.addTo(imagesLayerGroup);
+    rec.on = true;
+  } else {
+    if (ov){ try{ imagesLayerGroup.removeLayer(ov); }catch(_){ } }
+    rec.on = false;
+  }
+}
+
+// turn ALL images on/off (used by Show all / Hide all buttons)
+function setAllImageOverlays(on){
+  for (const rec of imageCatalog){
+    toggleImageOverlay(rec.id, on);
+    const sel = `.imgToggle[data-id="${CSS.escape(rec.id)}"]`;
+    const cb = document.querySelector(sel);
+    if (cb) cb.checked = on;
+  }
+}
+
+// build the sidebar list from imageCatalog
+function renderImagesList(){
+  const ul = document.getElementById('imagesList');
+  if (!ul) return;
+
+  if (!imageCatalog.length){
+    ul.innerHTML = `<li class="dim">No geolocated images in this session</li>`;
+    return;
+  }
+
+  ul.innerHTML = imageCatalog.map(rec => `
+    <li>
+      <label class="chk">
+        <input type="checkbox" class="imgToggle" data-id="${escapeHtml(rec.id)}">
+        <span>${escapeHtml(rec.name)}</span>
+      </label>
+      <button class="iconDots openImg" data-id="${escapeHtml(rec.id)}" title="Open image">🔍</button>
+    </li>
+  `).join('');
+}
+
+
 
 function appendLog(line){
   const pane = $("#logStream");
@@ -360,13 +435,9 @@ function initMap(){
   L.control.layers(baseLayers, {}, { position: "topleft" }).addTo(MAP);
   MAP.setView([0,0], 2);
 
-  if (!imagesLayerGroup) {
-    imagesLayerGroup = L.layerGroup().addTo(MAP);
-  }
+  if (!imagesLayerGroup) imagesLayerGroup = L.layerGroup().addTo(MAP);
   imageMarkersLayer = L.layerGroup().addTo(MAP);
-
   overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
-  refreshLayersPanel();
   renderLegend();
 }
 
@@ -391,44 +462,44 @@ function installImageMarkers(geojson){
 }
 
 
-async function applySessionToMap(sessionName){
-  // always get summary first
-  const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
-  if(!res.ok){ console.warn('session_summary failed'); return; }
-  const sum = await res.json();
+// async function applySessionToMap(sessionName){
+//   // always get summary first
+//   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
+//   if(!res.ok){ console.warn('session_summary failed'); return; }
+//   const sum = await res.json();
 
-  // Build safe fallbacks (in case backend omitted fields)
-  const sessRoot = `/media/sessions/${encodeURIComponent(sessionName)}/`;
-  const anomaliesUrl =
-    sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + "anomalies.geojson");
-  const imagesUrl =
-    sum.images_geojson || sum.images || sum.images_gj || (sessRoot + "images.geojson");
+//   // Build safe fallbacks (in case backend omitted fields)
+//   const sessRoot = `/media/sessions/${encodeURIComponent(sessionName)}/`;
+//   const anomaliesUrl =
+//     sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + "anomalies.geojson");
+//   const imagesUrl =
+//     sum.images_geojson || sum.images || sum.images_gj || (sessRoot + "images.geojson");
 
-  // 1) anomalies (polygons)
-  if (anomaliesUrl) {
-    try {
-      await loadGeoJSON(anomaliesUrl);
-    } catch (e) {
-      console.warn("anomalies_geojson fetch failed:", e);
-    }
-  }
+//   // 1) anomalies (polygons)
+//   if (anomaliesUrl) {
+//     try {
+//       await loadGeoJSON(anomaliesUrl);
+//     } catch (e) {
+//       console.warn("anomalies_geojson fetch failed:", e);
+//     }
+//   }
 
-  // 2) images (points -> markers list)
-  if (imagesUrl) {
-    try {
-      const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
-      installImageMarkers(gj);   // fills imageMarkers[] + adds to imageMarkersLayer
-    } catch (e) {
-      console.warn("images_geojson fetch failed:", e);
-      clearImageMarkers();
-    }
-  } else {
-    clearImageMarkers();
-  }
+//   // 2) images (points -> markers list)
+//   if (imagesUrl) {
+//     try {
+//       const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
+//       installImageMarkers(gj);   // fills imageMarkers[] + adds to imageMarkersLayer
+//     } catch (e) {
+//       console.warn("images_geojson fetch failed:", e);
+//       clearImageMarkers();
+//     }
+//   } else {
+//     clearImageMarkers();
+//   }
 
-  // 3) update sidebar after layers installed
-  refreshLayersPanel();
-}
+//   // 3) update sidebar after layers installed
+//   refreshLayersPanel();
+// }
 
 
 
@@ -548,6 +619,109 @@ function renderLegend(){
   `;
 }
 
+
+async function applySessionToMap(sessionName){
+  // always get the summary first (gives us URLs we can trust)
+  const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
+  if (!res.ok) { console.warn('session_summary failed'); return; }
+  const sum = await res.json();
+
+  // Resolve URLs with safe fallbacks
+  const sessRoot = `/media/sessions/${encodeURIComponent(sessionName)}/`;
+  const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + 'anomalies.geojson');
+  const imagesUrl    = sum.images_geojson    || sum.images      || (sessRoot + 'images.geojson');
+
+  // 1) polygons
+  if (anomaliesUrl){
+    try { await loadGeoJSON(anomaliesUrl); }
+    catch(e){ console.warn('anomalies fetch failed:', e); }
+  }
+
+  // 2) photos (catalog + sidebar)
+  await loadImagesCatalog(sessionName, imagesUrl);
+
+  // refresh the layer list after both loads
+  refreshLayersPanel();
+}
+
+
+async function loadImagesCatalog(sessionName, imagesUrl){
+  imageCatalog = [];
+  clearImageOverlays();
+
+  const listEl = document.getElementById('imagesList');
+  if (listEl) listEl.innerHTML = '<li class="dim">Loading…</li>';
+
+  if (!imagesUrl){
+    if (listEl) listEl.innerHTML = '<li class="dim">No geolocated images in this session</li>';
+    return;
+  }
+
+  try {
+    const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
+
+    // 2a) populate the “Image markers” layer
+    installImageMarkers(gj);
+
+    // 2b) build imageCatalog for actual image overlays
+    const feats = Array.isArray(gj?.features) ? gj.features : [];
+    for (const f of feats){
+      if (f?.geometry?.type !== 'Point') continue;
+
+      const [lng, lat] = f.geometry.coordinates || [];
+      if (typeof lat !== 'number' || typeof lng !== 'number') continue;
+
+      // filename is in properties.image (per your sample)
+      const file = f?.properties?.image;
+      if (!file) continue;
+
+      // prepared overlay JPG path (server writes JPG overlays now)
+      const stem = file.replace(/\.[^.]+$/, '');
+      const url  = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.jpg`;
+
+      // small footprint around point if we don’t have true bounds
+      const { dLat, dLon } = metersToDeg(lat, DEFAULT_IMAGE_HALF_SIZE_M);
+      const sw = L.latLng(lat - dLat, lng - dLon);
+      const ne = L.latLng(lat + dLat, lng + dLon);
+      const bounds = L.latLngBounds(sw, ne);
+
+      imageCatalog.push({ id: file, name: file, url, bounds, on: false });
+    }
+
+    renderImagesList();
+  } catch (e) {
+    console.warn('images_geojson parse failed:', e);
+    if (listEl) listEl.innerHTML = '<li class="err">Failed to load images</li>';
+  }
+}
+
+
+// Images panel interactions
+const imagesListEl = document.getElementById('imagesList');
+if (imagesListEl){
+  imagesListEl.addEventListener('change', (e)=>{
+    const t = e.target;
+    if (t && t.classList.contains('imgToggle')){
+      const id = t.getAttribute('data-id');
+      toggleImageOverlay(id, t.checked);
+    }
+  });
+  imagesListEl.addEventListener('click', (e)=>{
+    const btn = e.target.closest('.openImg');
+    if (!btn) return;
+    const id = btn.getAttribute('data-id');
+    const rec = imageCatalog.find(x => x.id === id);
+    if (rec?.url) window.open(rec.url, '_blank');
+  });
+}
+
+const btnShowAll = document.getElementById('btnShowAllImages');
+const btnHideAll = document.getElementById('btnHideAllImages');
+if (btnShowAll) btnShowAll.addEventListener('click', ()=> setAllImageOverlays(true));
+if (btnHideAll) btnHideAll.addEventListener('click', ()=> setAllImageOverlays(false));
+
+
+
 // ---------- layers panel + ⋮ menu ----------
 function refreshLayersPanel(){
   // ----- LAYERS (detections/tiles) -----
@@ -593,31 +767,6 @@ function refreshLayersPanel(){
       const rect = e.target.getBoundingClientRect();
       openLayerMenu(key, info, rect.left, rect.bottom + 6);
     });
-  }
-
-  // ----- IMAGES (per-image toggles) -----
-  const imagesUl = document.querySelector('#imagesList');
-  if (imagesUl) {
-    if (!imageMarkers.length) {
-      imagesUl.innerHTML = `<li><span class="layerName muted">No geolocated images in this session</span></li>`;
-    } else {
-      imagesUl.innerHTML = imageMarkers.map((im, idx) => `
-        <li>
-          <label>
-            <input type="checkbox" data-img="${idx}" ${im.shown ? 'checked' : ''}>
-            ${escapeHtml(im.name)}
-          </label>
-        </li>`).join('');
-
-      imagesUl.onchange = (e) => {
-        const idx = e.target?.dataset?.img;
-        if (idx === undefined) return;
-        const im = imageMarkers[Number(idx)];
-        im.shown = e.target.checked;
-        if (im.shown) im.marker.addTo(imageMarkersLayer);
-        else imageMarkersLayer.removeLayer(im.marker);
-      };
-    }
   }
 
   // Show/Hide all images buttons
