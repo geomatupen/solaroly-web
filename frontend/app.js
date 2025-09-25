@@ -105,6 +105,94 @@ function renderImagesList(){
   `).join('');
 }
 
+function computeLayerBounds(layer){
+  // Leaflet layer or group → LatLngBounds
+  let bounds = null;
+
+  if (layer.getBounds) {
+    try { bounds = layer.getBounds(); } catch(_) {}
+  }
+  if (!bounds && layer.getLatLng){
+    const ll = layer.getLatLng();
+    bounds = L.latLngBounds(ll, ll);
+  }
+  if (!bounds && layer.eachLayer){
+    layer.eachLayer(l => {
+      const b = computeLayerBounds(l);
+      if (b) bounds = bounds ? bounds.extend(b) : b;
+    });
+  }
+  return bounds;
+}
+
+function applyVectorColor(layer, color){
+  // try to recolor vector layers
+  if (layer.setStyle) {
+    layer.setStyle({ color, fillColor: color });
+  }
+  if (layer.eachLayer){
+    layer.eachLayer(l => applyVectorColor(l, color));
+  }
+}
+
+function closeLayerMenu(){
+  const m = document.getElementById('layerMenu');
+  if (m) m.remove();
+}
+
+function openLayerMenu(btn){
+  closeLayerMenu();
+  const key = btn.dataset.key;
+  const rec = overlayRegistry[key];
+  if (!rec || !rec.layer) return;
+
+  // Simple menu
+  const menu = document.createElement('div');
+  menu.id = 'layerMenu';
+  menu.className = 'layerMenu';
+  // Only show "Style" for vectors (markers/anomalies). For rasters this won’t do much.
+  menu.innerHTML = `
+    <ul>
+      <li data-action="zoom">Zoom to layer</li>
+      <li data-action="style">Style</li>
+    </ul>
+  `;
+  document.body.appendChild(menu);
+
+  // position under the button
+  const r = btn.getBoundingClientRect();
+  menu.style.left = `${Math.round(r.left)}px`;
+  menu.style.top  = `${Math.round(r.bottom + 6)}px`;
+
+  // wire actions
+  menu.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    const action = li.dataset.action;
+
+    if (action === 'zoom'){
+      const b = computeLayerBounds(rec.layer);
+      if (b && b.isValid()) MAP.fitBounds(b.pad(0.2));
+      closeLayerMenu();
+    }
+    if (action === 'style'){
+      // cycle through a few colors for vectors
+      const COLORS = ['#10b981','#f59e0b','#ef4444','#3b82f6','#a855f7'];
+      rec._styleIdx = (rec._styleIdx || 0) + 1;
+      const color = COLORS[ rec._styleIdx % COLORS.length ];
+      try { applyVectorColor(rec.layer, color); } catch(_){}
+      closeLayerMenu();
+    }
+  });
+
+  // dismiss on outside click / escape
+  const onDoc = (ev) => {
+    if (!menu.contains(ev.target) && ev.target !== btn) {
+      closeLayerMenu(); document.removeEventListener('mousedown', onDoc);
+    }
+  };
+  document.addEventListener('mousedown', onDoc);
+}
 
 
 function appendLog(line){
@@ -439,6 +527,7 @@ function initMap(){
   imageMarkersLayer = L.layerGroup().addTo(MAP);
   overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
   renderLegend();
+  refreshLayersPanel();
 }
 
 function clearImageMarkers(){
@@ -446,20 +535,24 @@ function clearImageMarkers(){
   imageMarkers = [];
 }
 
-function installImageMarkers(geojson){
-  clearImageMarkers();
-  // Build markers from GeoJSON points
-  L.geoJSON(geojson, {
-    pointToLayer: (f, latlng) => L.marker(latlng),
-    onEachFeature: (f, layer) => {
-      const name = f?.properties?.name || f?.properties?.file || 'image';
-      const url  = f?.properties?.overlay || f?.properties?.url;
-      if (url) layer.bindPopup(`<a href="${url}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`);
-      imageMarkers.push({ id: name, name, marker: layer, shown: true });
-      layer.addTo(imageMarkersLayer);
-    }
+function installImageMarkers(gj){
+  if (!imageMarkersLayer) imageMarkersLayer = L.layerGroup().addTo(MAP);
+  imageMarkersLayer.clearLayers();
+
+  const markers = L.geoJSON(gj, {
+    pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+      radius: 4, color: '#0ea5e9', weight: 1, fillOpacity: 0.6
+    }).bindPopup(
+      `<div class="mini"><b>Image:</b> ${escapeHtml(f?.properties?.image || '')}</div>`
+    )
   });
+
+  markers.addTo(imageMarkersLayer);
+
+  // keep a registry entry so it shows in the Layers list
+  overlayRegistry["Image markers"] = { layer: imageMarkersLayer, type: "markers" };
 }
+
 
 
 // async function applySessionToMap(sessionName){
@@ -724,55 +817,46 @@ if (btnHideAll) btnHideAll.addEventListener('click', ()=> setAllImageOverlays(fa
 
 // ---------- layers panel + ⋮ menu ----------
 function refreshLayersPanel(){
-  // ----- LAYERS (detections/tiles) -----
-  const layersUl = document.querySelector('#layersList');
-  if (layersUl) {
-    const items = [];
+  const list = document.getElementById('layersList');   // your main layers UL
+  if (!list) return;
 
-    // Build entries from overlayRegistry wrappers
-    Object.entries(overlayRegistry || {}).forEach(([name, info]) => {
-      const layer = info?.layer || info;               // unwrap if needed
-      if (!layer || typeof layer.addTo !== 'function') return;
+  // Build Layers list from overlayRegistry
+  const entries = Object.entries(overlayRegistry);
+  entries.sort(([a],[b]) => a.localeCompare(b));
 
-      const on = MAP.hasLayer(layer);
-      items.push(`
-        <li>
-          <label>
-            <input type="checkbox" data-layer="${escapeHtml(name)}" ${on ? 'checked' : ''}>
-            ${escapeHtml(name)}
-          </label>
-          <button class="iconDots" data-menu="${escapeHtml(name)}" title="⋮">⋮</button>
-        </li>`);
-    });
+  list.innerHTML = entries.map(([key, rec]) => `
+    <li>
+      <label class="chk">
+        <input type="checkbox" class="layerToggle" data-key="${escapeHtml(key)}" ${MAP.hasLayer(rec.layer) ? 'checked' : ''}>
+        <span>${escapeHtml(key)}</span>
+      </label>
+      <button class="iconDots layerMenuBtn" data-key="${escapeHtml(key)}" title="Layer menu">⋯</button>
+    </li>
+  `).join('');
 
-    layersUl.innerHTML = items.join('');
+  // Delegate: toggles + menu
+  list.addEventListener('change', (e) => {
+    const cb = e.target.closest('.layerToggle');
+    if (!cb) return;
+    const key = cb.dataset.key;
+    const rec = overlayRegistry[key];
+    if (!rec || !rec.layer) return;
+    if (cb.checked) {
+      rec.layer.addTo(MAP);
+    } else {
+      MAP.removeLayer(rec.layer);
+    }
+  });
 
-    // toggle visibility
-    layersUl.addEventListener('change', (e) => {
-      const key = e.target?.dataset?.layer;
-      if (!key) return;
-      const info = overlayRegistry[key];
-      const layer = info?.layer || info;
-      if (!layer) return;
-      if (e.target.checked) { layer.addTo(MAP); }
-      else { MAP.removeLayer(layer); }
-    });
+  list.addEventListener('click', (e) => {
+    const btn = e.target.closest('.layerMenuBtn');
+    if (!btn) return;
+    openLayerMenu(btn);
+  });
 
-    // open small ⋮ menu (zoom/style)
-    layersUl.addEventListener('click', (e) => {
-      const key = e.target?.dataset?.menu;
-      if (!key) return;
-      const info = overlayRegistry[key];
-      if (!info) return;
-      const rect = e.target.getBoundingClientRect();
-      openLayerMenu(key, info, rect.left, rect.bottom + 6);
-    });
-  }
-
-  // Show/Hide all images buttons
-  document.getElementById('btnShowAllImages')?.addEventListener('click', () => setAllImages(true), { once: true });
-  document.getElementById('btnHideAllImages')?.addEventListener('click', () => setAllImages(false), { once: true });
+  // Note: the Images sidebar list is managed by renderImagesList() — not here.
 }
+
 
 
 function setAllImages(show){
@@ -789,36 +873,36 @@ function setAllImages(show){
 }
 
 
-function openLayerMenu(name, info, x, y){
-  const menu = $("#layerMenu");
-  layerMenuState = { name, info };
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  menu.classList.remove("hidden");
-}
-window.addEventListener("click", ()=> $("#layerMenu").classList.add("hidden"));
-$("#layerMenu [data-act='zoom']").addEventListener("click", ()=>{
-  const { info } = layerMenuState;
-  if(!info) return;
-  try{
-    const b = info.layer.getBounds ? info.layer.getBounds() : null;
-    if(b && b.isValid()) MAP.fitBounds(b, {padding:[20,20]});
-  }catch(_){}
-  $("#layerMenu").classList.add("hidden");
-});
-$("#layerMenu [data-act='style']").addEventListener("click", ()=>{
-  const { name, info } = layerMenuState;
-  if(!info) return;
-  styleTarget = { name, info };
-  const st = info.style || { color:"#ff5722", opacity:1, weight:1, fillColor:"#ff5722", fillOpacity:0.25 };
-  $("#stColor").value = toHex(st.color);
-  $("#stWidth").value = st.weight ?? 1;
-  $("#stOpacity").value = st.opacity ?? 1;
-  $("#fiColor").value = toHex(st.fillColor || st.color || "#ff5722");
-  $("#fiOpacity").value = st.fillOpacity ?? 0.25;
-  $("#styleModal").classList.remove("hidden");
-  $("#layerMenu").classList.add("hidden");
-});
+// function openLayerMenu(name, info, x, y){
+//   const menu = $("#layerMenu");
+//   layerMenuState = { name, info };
+//   menu.style.left = `${x}px`;
+//   menu.style.top = `${y}px`;
+//   menu.classList.remove("hidden");
+// }
+// window.addEventListener("click", ()=> $("#layerMenu").classList.add("hidden"));
+// $("#layerMenu [data-act='zoom']").addEventListener("click", ()=>{
+//   const { info } = layerMenuState;
+//   if(!info) return;
+//   try{
+//     const b = info.layer.getBounds ? info.layer.getBounds() : null;
+//     if(b && b.isValid()) MAP.fitBounds(b, {padding:[20,20]});
+//   }catch(_){}
+//   $("#layerMenu").classList.add("hidden");
+// });
+// $("#layerMenu [data-act='style']").addEventListener("click", ()=>{
+//   const { name, info } = layerMenuState;
+//   if(!info) return;
+//   styleTarget = { name, info };
+//   const st = info.style || { color:"#ff5722", opacity:1, weight:1, fillColor:"#ff5722", fillOpacity:0.25 };
+//   $("#stColor").value = toHex(st.color);
+//   $("#stWidth").value = st.weight ?? 1;
+//   $("#stOpacity").value = st.opacity ?? 1;
+//   $("#fiColor").value = toHex(st.fillColor || st.color || "#ff5722");
+//   $("#fiOpacity").value = st.fillOpacity ?? 0.25;
+//   $("#styleModal").classList.remove("hidden");
+//   $("#layerMenu").classList.add("hidden");
+// });
 function toHex(c){
   if(!c) return "#ff5722";
   const ctx = document.createElement("canvas").getContext("2d");
