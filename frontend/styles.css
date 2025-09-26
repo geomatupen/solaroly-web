@@ -332,5 +332,50 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 .layerMenu li{ padding:8px 12px; cursor:pointer; }
 .layerMenu li:hover{ background: rgba(148,163,184,.15); }
 
+/* ---- Popup table: compact + striped rows ---- */
+.leaflet-popup-content .propTable{
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: .67rem;
+  line-height: 1.25;
+  border: none;
+  background: transparent;
+}
 
+/* stripe the whole row so cell rules don't override */
+.leaflet-popup-content .propTable tbody tr:nth-child(odd){
+  background: rgba(148,163,184,.16);
+}
 
+/* subtle hover (darker than base stripe) */
+.leaflet-popup-content .propTable tbody tr:hover{
+  background: rgba(148,163,184,.22);
+}
+
+.leaflet-popup-content .propTable th,
+.leaflet-popup-content .propTable td{
+  padding: 6px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(148,163,184,.25);
+  background: transparent;            /* let row stripe show */
+}
+
+.leaflet-popup-content .propTable tr:last-child th,
+.leaflet-popup-content .propTable tr:last-child td{
+  border-bottom: 0;
+}
+
+.leaflet-popup-content .propTable th{
+  width: 40%;
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.leaflet-popup-content .propTable td{
+  color: var(--text);
+  word-break: break-word;
+}

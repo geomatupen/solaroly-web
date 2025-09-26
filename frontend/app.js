@@ -680,6 +680,29 @@ function toHex(c){
 // }
 
 
+function propsTable(props = {}) {
+  const rows = Object.entries(props).map(([k, v]) => {
+    const val = (v == null) ? "" : (typeof v === "string" ? v : JSON.stringify(v));
+    return `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(val)}</td></tr>`;
+  }).join("");
+  return `<table class="propTable">${rows}</table>`;
+}
+
+function featurePopupHTML(f) {
+  const props = f?.properties || {};
+  // optional preview if overlay/thumb URL exists
+  const previewURL = props.overlay || props.thumb || props.url;
+  const title = props.image || props.file || props.name || "Feature";
+  return `
+    <div class="popupWrap">
+      <div class="popupTitle"><b>${escapeHtml(title)}</b></div>
+      ${previewURL ? `<div class="popupPreview" style="margin:.5rem 0">
+        <img src="${previewURL}" style="max-width:240px;max-height:180px;border:1px solid var(--border);border-radius:6px;">
+      </div>` : ``}
+      ${propsTable(props)}
+    </div>
+  `;
+}
 
 
 
@@ -699,6 +722,9 @@ async function loadGeoJSON(url){
         return L.marker(latlng).bindPopup(`<div><b>${escapeHtml(f.properties.name||"image")}</b><br>${f.properties.url?`<a href="${f.properties.url}" target="_blank">open image</a>`:""}</div>`);
       }
       return L.circleMarker(latlng, { radius: 4, color: "#3388ff", fillColor:"#3388ff", fillOpacity:0.8 });
+    },
+    onEachFeature: (feature, layer) => {
+      try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
     }
   }).addTo(MAP);
 
