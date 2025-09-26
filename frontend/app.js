@@ -900,7 +900,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
 
       // prepared overlay JPG path (server writes JPG overlays now)
       const stem = file.replace(/\.[^.]+$/, '');
-      const url  = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.jpg`;
+      const url  = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
 
       // small footprint around point if we don’t have true bounds
       const { dLat, dLon } = metersToDeg(lat, DEFAULT_IMAGE_HALF_SIZE_M);

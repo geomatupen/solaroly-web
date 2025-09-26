@@ -221,13 +221,12 @@ def _coerce_pred_json(p: Path) -> dict:
 
 def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
-    Single-folder version:
-      - Only use/create <out_root>/overlays (JPG)
-      - Reuse existing JPG overlays if predictor already wrote them there
-      - Else draw fallback rectangles from preds JSON and save JPG
-      - Also create thumbs/ and a manifest.json
+    Produce /overlays (prefer pre-rendered overlays if present) and /thumbs under out_root,
+    plus a manifest JSON mapping original file name -> generated URLs.
+
+    No EXIF reading/writing here. Overlays are PNG for speed.
     """
-    import json, logging
+    import logging
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
 
@@ -236,37 +235,66 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
     thumbs   = out_root / "thumbs";   thumbs.mkdir(parents=True, exist_ok=True)
     manifest = out_root / "manifest.json"
 
+    # We standardize on "overlays/" only. If you previously created "overlay/",
+    # we DO NOT read from it anymore to avoid duplicate dirs.
+    # If you still want a fallback copy-from, point colored_src to "overlays".
+    colored_src = overlays
+    use_colored = colored_src.exists() and any(colored_src.glob("*.png"))
+    if use_colored:
+        logger.info(f"UI:INFO:post: using existing overlays from {colored_src}")
+    else:
+        logger.info("UI:INFO:post: no pre-rendered overlays found - drawing from preds JSON")
+
+    # simple, vivid RGB palette
     def _palette_rgb():
         return [
             (255, 0, 0), (0, 170, 255), (0, 200, 0), (255, 0, 200),
             (255, 165, 0), (128, 0, 255), (0, 255, 255), (255, 255, 0),
         ]
 
+    def _is_image(p: Path) -> bool:
+        return p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
+    def _coerce_pred_json(p: Path) -> dict:
+        try:
+            
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {"boxes": [], "scores": [], "classes": [], "file": p.stem}
+
     mapper: Dict[str, Dict[str, str]] = {}
+
+    preds_json_dir = preds_dir / "preds"
 
     for img in sorted(images_dir.iterdir()):
         if not _is_image(img):
             continue
 
         stem = img.stem
-        ov   = overlays / f"{stem}.jpg"   # single format
-        th   = thumbs   / f"{stem}.jpg"
+        ov   = overlays / f"{stem}.png"
+        th   = thumbs   / f"{stem}.png"
 
-        # If predictor already wrote an overlay JPG here, reuse it
-        if not ov.exists():
-            # Fallback: read preds and draw
-            pred_json = preds_dir / "preds" / f"{stem}.json"
+        im_for_thumb = None
+
+        if use_colored and (colored_src / f"{stem}.png").exists():
+            # Already rendered overlay exists — reuse it
+            try:
+                # ensure in-place file exists (we point colored_src==overlays, so this is a no-op)
+                im_for_thumb = Image.open(colored_src / f"{stem}.png").convert("RGB")
+            except Exception:
+                im_for_thumb = None
+
+        if im_for_thumb is None:
+            # Draw overlay from JSON preds (fast; no EXIF)
+            pred_json = preds_json_dir / f"{stem}.json"
             jj = _coerce_pred_json(pred_json) if pred_json.exists() else {
                 "boxes": [], "scores": [], "classes": [], "file": img.name
             }
 
             try:
-                src = Image.open(img)
-                exif = src.info.get("exif", None)
-                base = src.convert("RGB")
+                base = Image.open(img).convert("RGB")
             except Exception:
                 base = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
-                exif = None
 
             draw = ImageDraw.Draw(base)
             W, H = base.size
@@ -276,9 +304,10 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
             scores  = jj.get("scores", []) or []
             classes = jj.get("classes", []) or []
 
+            # thickness + font based on image size
             thickness = max(1, int(round(min(W, H) * 0.003)))
             try:
-                font = ImageFont.truetype("arial.ttf", size=max(10, int(min(W, H) * 0.018)))
+                font = ImageFont.load_default()  # no TTF to keep it fast
             except Exception:
                 font = ImageFont.load_default()
 
@@ -298,6 +327,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 color  = pal[cls_id % len(pal)]
                 draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
 
+                # simple label background
                 try:
                     bbox = draw.textbbox((0, 0), label, font=font)
                     tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -311,44 +341,36 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 left = x1
                 draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color)
                 tx, ty = left + pad, top + pad
+                # thin black shadow
                 for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
                     draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
                 draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
 
-            # Save fallback as JPG (preserve EXIF if available)
+            # Save overlay (PNG, fast)
             try:
-                if exif:
-                    base.save(ov, format="JPEG", quality=90, exif=exif)
-                else:
-                    base.save(ov, format="JPEG", quality=90)
+                base.save(ov, format="PNG", optimize=True)
             except Exception:
-                # if JPEG somehow fails, still ensure a file exists
-                base.save(ov, format="JPEG", quality=85)
-
+                # fallback: ensure file exists
+                Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8)).save(ov, format="PNG", optimize=True)
             im_for_thumb = base
-        else:
-            # open existing overlay for thumbnail
-            try:
-                im_for_thumb = Image.open(ov).convert("RGB")
-            except Exception:
-                im_for_thumb = Image.new("RGB", (256, 256), (0, 0, 0))
 
-        # Thumbnail (JPG)
+        # Thumb from overlay
         try:
             w, h = im_for_thumb.size
-            tw, thh = max(96, w // 6), max(96, h // 6)
+            tw = max(96, w // 6); thh = max(96, h // 6)
             im_thumb = im_for_thumb.resize((tw, thh))
-            im_thumb.save(th, format="JPEG", quality=85)
+            im_thumb.save(th, format="PNG", optimize=True)
         except Exception:
-            Image.new("RGB", (96, 96), (0, 0, 0)).save(th, format="JPEG", quality=85)
+            Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
 
         mapper[img.name] = {
-            "overlays": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
+            "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
             "thumb":   f"/media/{th.relative_to(MEDIA_DIR).as_posix()}" if str(th).startswith(str(MEDIA_DIR)) else th.name,
         }
 
     manifest.write_text(json.dumps(mapper, indent=2), encoding="utf-8")
     return overlays, thumbs, manifest
+
 
 
 
@@ -381,41 +403,49 @@ def _dms_to_deg(dms_tuple):
     s = _to_float_ratio(dms_tuple[2])
     return d + m/60.0 + s/3600.0
 
-def get_image_gps(image_path):
-    """
-    Return (lat, lon) in WGS84 from EXIF, or (None, None) if missing.
-    Works with JPG/TIFF. PNG rarely has EXIF.
-    """
+def _read_exif_latlon(img_path: Path):
     try:
-        img = Image.open(image_path)
-        exif = getattr(img, "_getexif", lambda: None)()
+        img = Image.open(img_path)
+        exif = img._getexif()
         if not exif:
             return None, None
+        # Build GPS dictionary
+        gps_tag = next((k for k, v in ExifTags.TAGS.items() if v == "GPSInfo"), None)
+        if gps_tag not in exif:
+            return None, None
+        gps = exif[gps_tag]
 
-        gps = {}
-        for k, v in exif.items():
-            tag = TAGS.get(k)
-            if tag == "GPSInfo":
-                for t in v:
-                    sub = GPSTAGS.get(t)
-                    gps[sub] = v[t]
+        # Map GPS sub-tags
+        inv = {v: k for k, v in ExifTags.GPSTAGS.items()}
+        lat = gps.get(inv.get("GPSLatitude"));  lat_ref = gps.get(inv.get("GPSLatitudeRef"))
+        lon = gps.get(inv.get("GPSLongitude")); lon_ref = gps.get(inv.get("GPSLongitudeRef"))
+        if not (lat and lon and lat_ref and lon_ref):
+            return None, None
 
-        def _to_float(x):
-            # EXIF rationals can be tuples (num, den)
+        def _to_float(x):  # rational or float
             return x[0] / x[1] if isinstance(x, tuple) else float(x)
 
-        def _dms_to_dd(dms, ref):
-            deg = _to_float(dms[0]); minu = _to_float(dms[1]); sec = _to_float(dms[2])
-            dd = deg + minu/60.0 + sec/3600.0
+        def dms_to_dd(dms, ref):
+            d = _to_float(dms[0]); m = _to_float(dms[1]); s = _to_float(dms[2])
+            dd = d + m/60.0 + s/3600.0
             return -dd if ref in ("S", "W") else dd
 
-        lat = gps.get("GPSLatitude");  lat_ref = gps.get("GPSLatitudeRef")
-        lon = gps.get("GPSLongitude"); lon_ref = gps.get("GPSLongitudeRef")
-        if lat and lon and lat_ref and lon_ref:
-            return _dms_to_dd(lat, lat_ref.strip()), _dms_to_dd(lon, lon_ref.strip())
+        return dms_to_dd(lat, lat_ref), dms_to_dd(lon, lon_ref)
     except Exception:
-        pass
-    return None, None
+        return None, None
+
+def _scan_exif_latlon(images_dir: Path) -> dict[str, tuple[float, float]]:
+    idx = {}
+    for p in images_dir.iterdir():
+        if not p.is_file():
+            continue
+        low = p.suffix.lower()
+        if low not in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
+            continue
+        lat, lon = _read_exif_latlon(p)
+        if lat is not None and lon is not None:
+            idx[p.name] = (lat, lon)
+    return idx
 
 
 def _detect_image_input_type(images_dir: Path) -> str:
@@ -450,134 +480,166 @@ def _coerce_pred_json(p):
     except Exception:
         return {"boxes": [], "scores": [], "classes": []}
 
+def _scan_image_sizes(images_dir: Path) -> dict[str, tuple[int, int]]:
+    """Return {'filename': (width, height), ...} without touching EXIF."""
+    out: dict[str, tuple[int, int]] = {}
+    for p in images_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"):
+            continue
+        try:
+            from PIL import Image
+            with Image.open(p) as im:
+                w, h = im.size
+            out[p.name] = (int(w), int(h))
+        except Exception:
+            pass
+    return out
+
+
 def _preds_to_geojson(
     images_dir: Path,
     preds_dir: Path,
     out_session: Path,
-    class_names,
-    score_thresh: float = 0.5,
-    meters_per_pixel: float = 0.10,   # << your notebook default (10cm/px). Adjust as needed.
-):
+    class_names: List[str],
+    score_thresh: float = 0.0,
+    meters_per_pixel: float = 0.05,
+    exif_index: Optional[Dict[str, Tuple[float, float]]] = None,  # {'file': (lat, lon)}
+) -> Tuple[Path, Path]:
     """
-    Build polygon GeoJSON for detections using EXIF (lat,lon) as the image center.
-    Geometry is Polygon in EPSG:4326. Also writes image centers to images.geojson.
-    Returns (anomalies_geojson_path, images_geojson_path).
+    Build:
+      - images.geojson: points at image GPS with useful props (image name, overlay, thumb if available)
+      - anomalies.geojson: bbox polygons converted to WGS84 using center-based pixel→meter→degree math
     """
+    from shapely.geometry import Polygon, mapping
 
-    anomalies = {"type": "FeatureCollection", "features": []}
-    images_fc = {"type": "FeatureCollection", "features": []}
-
-    preds_dir = Path(preds_dir)
+    out_session = Path(out_session)
     out_session.mkdir(parents=True, exist_ok=True)
 
-    # walk images and match to preds
-    for img_path in sorted(Path(images_dir).iterdir()):
-        if not img_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
-            continue
+    # 1) GPS (lat,lon) for originals
+    gps_index = exif_index or _scan_exif_latlon(images_dir)  # {'file.jpg': (lat,lon)}
 
-        # EXIF WGS84
-        lat, lon = get_image_gps(str(img_path))
-        # record image center (if present) to images.geojson
-        if lat is not None and lon is not None:
-            images_fc["features"].append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "properties": {"image": img_path.name}
-            })
+    # 2) Image sizes (w,h) for center-based conversion
+    sizes_index = _scan_image_sizes(images_dir)              # {'file.jpg': (w,h)}
 
-        # load predictions for this image
-        stem = img_path.stem
-        pred_json = preds_dir / "preds" / f"{stem}.json"
-        jj = _coerce_pred_json(pred_json) if pred_json.exists() else {"boxes": [], "scores": [], "classes": []}
-        boxes, scores, classes = jj["boxes"], jj["scores"], jj["classes"]
-
-        # image size (for pixel→meter offsets)
+    # 3) (optional) overlay/thumb URLs from manifest.json (written by _draw_overlays)
+    manifest_map: Dict[str, Dict[str, str]] = {}
+    mpath = out_session / "manifest.json"
+    if mpath.exists():
         try:
-            from PIL import Image
-            with Image.open(str(img_path)) as im:
-                W, H = im.size
+            manifest_map = json.loads(mpath.read_text(encoding="utf-8"))
         except Exception:
-            W = H = None
+            manifest_map = {}
 
-        if not boxes or W is None or H is None:
+    # ---------------- images.geojson (points for sidebar/catalog) ----------------
+    imgs_fc = {"type": "FeatureCollection", "features": []}
+    for fname, (lat, lon) in gps_index.items():
+        props = {}
+        if isinstance(manifest_map.get(fname), dict):
+            entry = manifest_map[fname]
+            if "overlay" in entry: props["image"] = Path(entry["overlay"]).name
+            if "thumb"   in entry: props["thumb"]   = entry["thumb"]
+            if "w" in entry and "h" in entry:
+                props["w"] = int(entry["w"]); props["h"] = int(entry["h"])
+        elif fname in sizes_index:
+            w, h = sizes_index[fname]
+            props["w"] = int(w); props["h"] = int(h)
+
+        imgs_fc["features"].append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": props
+        })
+
+    imgs_path = out_session / "images.geojson"
+    imgs_path.write_text(json.dumps(imgs_fc, indent=2), encoding="utf-8")
+
+    # ---------------- anomalies.geojson (bbox → polygon using image center) ----------------
+    anom_fc = {"type": "FeatureCollection", "features": []}
+
+    preds_json_dir = Path(preds_dir) / "preds"
+    for jpath in sorted(preds_json_dir.glob("*.json")):
+        try:
+            jd = json.loads(jpath.read_text(encoding="utf-8"))
+        except Exception:
             continue
 
-        # Need EXIF center to place polygons on the map
-        if lat is None or lon is None:
-            # No EXIF → skip georeferenced polygons for this image
+        boxes   = jd.get("boxes", []) or []
+        scores  = jd.get("scores", []) or []
+        classes = jd.get("classes", []) or []
+        srcfile = jd.get("file") or (jpath.stem + ".png")
+
+        # Resolve GPS & size for this source image (try exact, then by stem with common extensions)
+        latlon = gps_index.get(srcfile)
+        wh     = sizes_index.get(srcfile)
+
+        if not latlon or not wh:
+            stem = Path(srcfile).stem
+            for ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
+                latlon = latlon or gps_index.get(stem + ext)
+                wh     = wh     or sizes_index.get(stem + ext)
+                if latlon and wh:
+                    break
+
+        if not latlon or not wh:
+            # no GPS or no (w,h): we can't georeference these detections
             continue
 
-        # meters → degrees scaling at this latitude
-        dlon_per_m, dlat_per_m = _meters_to_deg(lat)
+        lat, lon = latlon
+        w, h = wh
+
+        # Degrees per meter at this latitude
+        deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat)
+        # Degrees per pixel in lon/lat
+        px_dlon = meters_per_pixel * deg_per_m_lon
+        px_dlat = meters_per_pixel * deg_per_m_lat
+
+        # Convert each box using CENTER-based deltas (matches your notebook)
+        cx = w / 2.0
+        cy = h / 2.0
 
         for i, b in enumerate(boxes):
-            try:
-                s = float(scores[i]) if i < len(scores) else 0.0
-            except Exception:
-                s = 0.0
-            if s < float(score_thresh):
+            sc = float(scores[i]) if i < len(scores) else 0.0
+            if sc < score_thresh:
                 continue
-
-            try:
-                x1, y1, x2, y2 = map(float, b)
-            except Exception:
-                continue
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            # bbox center in pixels (origin top-left)
-            cx = 0.5 * (x1 + x2)
-            cy = 0.5 * (y1 + y2)
-
-            # offsets from image center, px → meters
-            dx_px = cx - (W / 2.0)
-            dy_px = cy - (H / 2.0)
-            dx_m = dx_px * meters_per_pixel
-            dy_m = -dy_px * meters_per_pixel   # image y grows down; north is +lat
-
-            # center of bbox in degrees
-            lon_c = float(lon) + dx_m * dlon_per_m
-            lat_c = float(lat) + dy_m * dlat_per_m
-
-            # half-sizes in meters
-            hw_m = 0.5 * (x2 - x1) * meters_per_pixel
-            hh_m = 0.5 * (y2 - y1) * meters_per_pixel
-
-            # corner offsets (east, north) in meters → degrees
-            corners_m = [
-                (+hw_m, +hh_m),
-                (-hw_m, +hh_m),
-                (-hw_m, -hh_m),
-                (+hw_m, -hh_m),
-                (+hw_m, +hh_m),  # close ring
-            ]
-            ring = [[lon_c + ex * dlon_per_m, lat_c + ny * dlat_per_m] for (ex, ny) in corners_m]
-
             cls_id = int(classes[i]) if i < len(classes) else 0
-            cls_name = (
-                class_names[cls_id] if isinstance(class_names, (list, tuple))
-                and 0 <= cls_id < len(class_names) else f"class_{cls_id}"
-            )
+            cname  = class_names[cls_id] if 0 <= cls_id < len(class_names) else f"cls_{cls_id}"
 
-            anomalies["features"].append({
+            x0, y0, x1, y1 = map(float, b)
+
+            # pixel deltas from image center → degrees
+            dx0 = (x0 - cx) * px_dlon
+            dx1 = (x1 - cx) * px_dlon
+            dy0 = (y0 - cy) * px_dlat
+            dy1 = (y1 - cy) * px_dlat
+
+            # Note: latitude increases northwards (y up). Image y grows down → subtract for lat.
+            lon0 = lon + dx0; lon1 = lon + dx1
+            lat0 = lat - dy0; lat1 = lat - dy1
+
+            poly = Polygon([
+                (lon0, lat0), (lon0, lat1),
+                (lon1, lat1), (lon1, lat0), (lon0, lat0)
+            ])
+
+            anom_fc["features"].append({
                 "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [ring]},
+                "geometry": mapping(poly),
                 "properties": {
-                    "image": img_path.name,
-                    "class_id": cls_id,
-                    "class_name": cls_name,
-                    "score": round(s * 100.0, 2),    # percent like your notebook
-                    "box_px": [x1, y1, x2, y2]
+                    "class": cls_id,
+                    "classname": cname,
+                    "score": round(sc * 100.0, 2),
+                    "image": srcfile,
                 }
             })
 
-    # write files
-    anom_gj = out_session / "anomalies.geojson"
-    imgs_gj = out_session / "images.geojson"
-    anom_gj.write_text(json.dumps(anomalies), encoding="utf-8")
-    imgs_gj.write_text(json.dumps(images_fc), encoding="utf-8")
+    anom_path = out_session / "anomalies.geojson"
+    anom_path.write_text(json.dumps(anom_fc, indent=2), encoding="utf-8")
 
-    return anom_gj, imgs_gj
+    return anom_path, imgs_path
+
+
 
 
 
@@ -867,73 +929,112 @@ async def api_test_run(
     except Exception:
         th_num = 0.0
 
-    # anom_gj, imgs_gj = _preds_to_geojson(
-    #     ds_dir, preds_dir, out_root, class_names, score_thresh=th_num
-    # )
-    # after you’ve created the session folder and saved overlays/ + preds/
+    # Build EXIF(GPS) + image-size indices once, then merge into manifest.json
+    gps_index   = _scan_exif_latlon(ds_dir)       # {'file.jpg': (lat, lon)}
+    sizes_index = _scan_image_sizes(ds_dir)       # {'file.jpg': (w, h)}
 
-    session_dir = MEDIA_DIR / "sessions" / session
-    
-    anom_gj, imgs_gj = _preds_to_geojson(
-        images_dir=Path(ds_dir),
-        preds_dir=Path(preds_dir),
-        out_session=Path(session_dir),
-        class_names=class_names,
-        score_thresh=float(th_num or 0.0),
-        meters_per_pixel=0.05,   #ground sampling distance (GSD)
-    )
+    # Load the manifest produced by _draw_overlays and enrich it
+    try:
+        manifest_obj = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except Exception:
+        manifest_obj = {}
+
+    # manifest_obj is {"orig_filename": {"overlay": "...", "thumb": "..."}, ...}
+    for fname, entry in list(manifest_obj.items()):
+        if isinstance(entry, dict):
+            # add lat/lon if available
+            if fname in gps_index:
+                lat, lon = gps_index[fname]
+                entry["lat"] = float(lat)
+                entry["lon"] = float(lon)
+            # add w/h if available
+            if fname in sizes_index:
+                w, h = sizes_index[fname]
+                entry["w"] = int(w)
+                entry["h"] = int(h)
+
+    # Write back as the single source of truth
+    Path(manifest_path).write_text(json.dumps(manifest_obj, indent=2), encoding="utf-8")
+
+    # Re-read the enriched manifest and derive exif_index from it
+    try:
+        manifest_obj = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except Exception:
+        manifest_obj = {}
+
+    exif_from_manifest = {}
+    for fname, entry in manifest_obj.items():
+        if isinstance(entry, dict) and "lat" in entry and "lon" in entry:
+            exif_from_manifest[fname] = (float(entry["lat"]), float(entry["lon"]))
+
+        # anom_gj, imgs_gj = _preds_to_geojson(
+        #     ds_dir, preds_dir, out_root, class_names, score_thresh=th_num
+        # )
+        # after you’ve created the session folder and saved overlays/ + preds/
+
+        session_dir = MEDIA_DIR / "sessions" / session
+        
+        anom_gj, imgs_gj = _preds_to_geojson(
+            images_dir=Path(ds_dir),
+            preds_dir=Path(preds_dir),
+            out_session=Path(session_dir),
+            class_names=class_names,
+            score_thresh=float(th_num or 0.0),
+            meters_per_pixel=0.05,   #ground sampling distance (GSD)
+            exif_index=exif_from_manifest,
+        )
 
 
-    if isinstance(manifest_path, (str, Path)):
-        mp = Path(manifest_path)
-        if mp.suffix.lower() == ".json" and mp.exists():
-            try:
-                manifest_items = json.loads(mp.read_text(encoding="utf-8"))
-            except Exception:
+        if isinstance(manifest_path, (str, Path)):
+            mp = Path(manifest_path)
+            if mp.suffix.lower() == ".json" and mp.exists():
+                try:
+                    manifest_items = json.loads(mp.read_text(encoding="utf-8"))
+                except Exception:
+                    manifest_items = []
+            else:
                 manifest_items = []
+        elif isinstance(manifest_path, list):
+            manifest_items = manifest_path
         else:
             manifest_items = []
-    elif isinstance(manifest_path, list):
-        manifest_items = manifest_path
-    else:
-        manifest_items = []
-    
-    assets = _session_assets(ses)
+        
+        assets = _session_assets(ses)
 
-    # --- persist image_input_type in metrics.json ---
-    try:
-        mpath = out_root / "metrics.json"   # session/<name>/metrics.json
-        import json, logging
-        metrics = {}
-        if mpath.exists():
-            metrics = json.loads(mpath.read_text(encoding="utf-8"))
-        # images_dir should be the directory containing the test inputs you ran on
-        metrics["image_input_type"] = _detect_image_input_type(ds_dir)
-        # (optional) persist the numeric threshold you just used if not set by predictor
-        metrics.setdefault("score_thresh_test", th_num)
-        mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    except Exception as e:
-        logging.getLogger("pvrt.test").warning(f"metrics.json patch failed: {e}")
+        # --- persist image_input_type in metrics.json ---
+        try:
+            mpath = out_root / "metrics.json"   # session/<name>/metrics.json
+            import logging
+            metrics = {}
+            if mpath.exists():
+                metrics = json.loads(mpath.read_text(encoding="utf-8"))
+            # images_dir should be the directory containing the test inputs you ran on
+            metrics["image_input_type"] = _detect_image_input_type(ds_dir)
+            # (optional) persist the numeric threshold you just used if not set by predictor
+            metrics.setdefault("score_thresh_test", th_num)
+            mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        except Exception as e:
+            logging.getLogger("pvrt.test").warning(f"metrics.json patch failed: {e}")
 
 
-    logger.info(f"UI:OK:test: complete. results={preds_dir}")
-    return {
-        "ok": True,
-        "session": session,
-        # keep old key for backward compatibility
-        "geojson": str(anom_gj),
-        "anomalies_geojson": f"/media/{anom_gj.relative_to(MEDIA_DIR)}",
-        "images_geojson":    f"/media/{imgs_gj.relative_to(MEDIA_DIR)}",
-        "results_dir": str(preds_dir),
-        "overlays": f"/media/{ov_dir.relative_to(MEDIA_DIR)}",
-        "thumbs":   f"/media/{th_dir.relative_to(MEDIA_DIR)}",
-        "manifest": manifest_items,
-        "assets": assets,
-        "backend": presp.get("used_backend"),
-        "model_mode": presp.get("model_mode"),
-        "used_thermal": bool(presp.get("used_thermal")),
-        "media_root": f"/media/sessions/{out_root.name}",
-    }
+        logger.info(f"UI:OK:test: complete. results={preds_dir}")
+        return {
+            "ok": True,
+            "session": session,
+            # keep old key for backward compatibility
+            "geojson": str(anom_gj),
+            "anomalies_geojson": f"/media/{anom_gj.relative_to(MEDIA_DIR)}",
+            "images_geojson":    f"/media/{imgs_gj.relative_to(MEDIA_DIR)}",
+            "results_dir": str(preds_dir),
+            "overlays": f"/media/{ov_dir.relative_to(MEDIA_DIR)}",
+            "thumbs":   f"/media/{th_dir.relative_to(MEDIA_DIR)}",
+            "manifest": manifest_items,
+            "assets": assets,
+            "backend": presp.get("used_backend"),
+            "model_mode": presp.get("model_mode"),
+            "used_thermal": bool(presp.get("used_thermal")),
+            "media_root": f"/media/sessions/{out_root.name}",
+        }
 
 
 

@@ -11,7 +11,7 @@ from detectron2.engine import DefaultPredictor
 from detectron2 import model_zoo
 
 # helpers
-from ....core.results import ensure_results_layout, write_pred_json, write_metrics_json, save_overlay_jpg
+from ....core.results import ensure_results_layout, write_pred_json, write_metrics_json, save_overlay_png, save_overlay_jpg
 
 _LOGGER = "pvrt.test"
 def _log() -> logging.Logger:
@@ -195,8 +195,8 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
 
         write_pred_json(preds_dir, p.stem, boxes, scores, classes, extra={"file": p.name})
         overlay = _draw_overlay(bgr, boxes, scores, classes, names)
-        # save_overlay_png(overlay_dir, p.stem, overlay)   # PNG only, drawn BEFORE save
-        save_overlay_jpg(overlay_dir, p.stem, overlay, exif_source=images_dir)
+        save_overlay_png(overlay_dir, p.stem, overlay)   # PNG only, drawn BEFORE save
+        # save_overlay_jpg(overlay_dir, p.stem, overlay, exif_source=images_dir)
 
         log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")
 
