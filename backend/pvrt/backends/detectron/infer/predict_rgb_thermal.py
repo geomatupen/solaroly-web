@@ -11,6 +11,12 @@ from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.modeling import build_model
 from detectron2 import model_zoo
 
+
+import rasterio
+from rasterio.enums import Resampling
+from rasterio.crs import CRS as _RIO_CRS
+RIO_OK_TH = True
+
 # widen model to 4ch and extend pixel stats
 from ..utils.model_patch import make_cfg_4ch, patch_first_conv_to_4ch
 from ....core.io import load_model_meta, input_mode_from_meta
@@ -61,6 +67,71 @@ def _find_thermal(rgb: Path) -> Path | None:
                  rgb.with_name(rgb.stem+"_thermal.tiff")):
         if cand.exists(): return cand
     return None
+
+def _read_rgb_and_thermal_from_path(p: Path):
+    """
+    Returns (bgr_u8, thermal_raw_or_u8_or_None).
+
+    Priority:
+      1) If file is GeoTIFF and has >=4 bands, read RGB from bands 1..3 and thermal from band 4.
+      2) Else, read RGB via OpenCV and thermal from sidecar files (_thermal.*) as before.
+    """
+    # 1) In-band thermal (GeoTIFF)
+    if _RIO_OK_TH and p.suffix.lower() in (".tif", ".tiff"):
+        try:
+            with rasterio.open(p) as ds:
+                nb = ds.count
+
+                # Build RGB (favor bands 1,2,3 if available; fall back to single-band gray → 3ch)
+                rgb_bands = [b for b in (1, 2, 3) if b <= nb]
+                if len(rgb_bands) >= 1:
+                    arr = ds.read(rgb_bands)                 # C,H,W
+                    arr = arr.astype("float32")
+                    arr = arr.transpose(1, 2, 0)             # H,W,C
+
+                    # Robust 2–98% stretch per channel → uint8
+                    out = np.empty_like(arr, dtype=np.uint8)
+                    if out.ndim == 2:
+                        arr = arr[..., None]; out = np.empty((*arr.shape[:2], 1), dtype=np.uint8)
+                    for c in range(arr.shape[2]):
+                        band = arr[..., c]
+                        vals = band.reshape(-1)
+                        if vals.size == 0:
+                            out[..., c] = 0; continue
+                        lo = np.percentile(vals, 2.0); hi = np.percentile(vals, 98.0)
+                        if hi <= lo: hi = lo + 1.0
+                        x = (band - lo) * (255.0/(hi-lo))
+                        out[..., c] = np.clip(x, 0, 255).astype(np.uint8)
+                    if out.shape[2] == 1:
+                        out = np.repeat(out, 3, axis=2)
+                    # Detectron code expects BGR
+                    bgr = out[..., ::-1].copy()
+                else:
+                    bgr = None
+
+                # Band-4 thermal if present
+                therm = None
+                if nb >= 4:
+                    therm = ds.read(4)   # raw numeric array (any dtype); normalized later
+
+                if bgr is not None:
+                    return bgr, therm
+        except Exception:
+            # fall through to sidecar
+            pass
+
+    # 2) Sidecar thermal (your current behavior)
+    bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
+    therm = None
+    th_path = _find_thermal(p)
+    if th_path is not None:
+        timg = cv2.imread(str(th_path), cv2.IMREAD_UNCHANGED)
+        if timg is not None:
+            if timg.ndim == 3:
+                timg = cv2.cvtColor(timg, cv2.COLOR_BGR2GRAY)
+            therm = timg
+    return bgr, therm
+
 
 def _normalize_thermal(arr: np.ndarray) -> np.ndarray:
     th = arr.astype(np.float32)
@@ -211,6 +282,10 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
     names = [str(x) for x in meta.get("class_names", [f"cls_{i}" for i in range(int(getattr(cfg.MODEL.ROI_HEADS,'NUM_CLASSES',0) or 0))])]
     return model, cfg, names, wpth
 
+
+
+
+
 def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, **_) -> Path:
     """
     RGB+Thermal inference (sidecar <stem>_thermal.tif[f]).
@@ -264,28 +339,24 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
 
     total, with_dets = 0, 0
     for i, p in enumerate(imgs, 1):
-        bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
+    # --- unified reader that supports in-band (band-4) thermal for GeoTIFFs ---
+        bgr, therm = _read_rgb_and_thermal_from_path(p)
+
         if bgr is None:
             write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"read_failed"})
             log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (read_failed)")
             continue
 
-        th_path = _find_thermal(p)
-        if th_path is None:
-            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"no_thermal_sidecar"})
-            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (no_thermal_sidecar)")
-            continue
-
-        therm = cv2.imread(str(th_path), cv2.IMREAD_UNCHANGED)
         if therm is None:
-            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"thermal_read_failed"})
-            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (thermal_read_failed)")
+            # no band-4 and no sidecar → skip (same behavior as before, but reason is generic)
+            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"no_thermal_source"})
+            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (no_thermal_source)")
             continue
 
-        H,W = bgr.shape[:2]
-        th  = _normalize_thermal(therm)
-        if th.shape[:2] != (H,W):
-            th = cv2.resize(th, (W,H), interpolation=cv2.INTER_LINEAR)
+        H, W = bgr.shape[:2]
+        th   = _normalize_thermal(therm)
+        if th.shape[:2] != (H, W):
+            th = cv2.resize(th, (W, H), interpolation=cv2.INTER_LINEAR)
 
         # feed 4ch tensor
         ch4    = np.dstack([bgr.astype(np.float32), (th*255.0)]).astype(np.float32)

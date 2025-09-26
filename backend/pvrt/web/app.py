@@ -204,6 +204,187 @@ def _save_images_as_dataset(files: List[UploadFile], preferred_base: str | None 
             (ds_dir / Path(f.filename).name).write_bytes(f.file.read())
     return ds_dir
 
+# --- ADD: small GeoTIFF helpers ---
+def _iter_geotiffs(dirpath: Path):
+    for p in sorted(dirpath.rglob("*")):
+        if p.is_file() and p.suffix.lower() in (".tif", ".tiff"):
+            yield p
+
+def _count_top_level_images(d: Path) -> int:
+    """Count images directly under d (non-recursive)."""
+    if not d.exists() or not d.is_dir():
+        return 0
+    return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
+
+
+
+# --- ADD: split a GeoTIFF into GeoTIFF tiles (preserve CRS/transform) ---
+def _tile_tif_to_dir(tif_path: Path, tiles_dir: Path, tile_size: int = 1024, stride: int | None = None) -> list[Path]:
+    import rasterio
+    from rasterio.windows import Window, transform as win_transform
+
+    stride = stride or tile_size
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    with rasterio.open(tif_path) as src:
+        W, H = src.width, src.height
+        for y0 in range(0, H, stride):
+            for x0 in range(0, W, stride):
+                w = min(tile_size, W - x0)
+                h = min(tile_size, H - y0)
+                if w <= 1 or h <= 1:
+                    continue
+
+                window = Window(x0, y0, w, h)
+                t_tile = win_transform(window, src.transform)
+                profile = src.profile.copy()
+                profile.update({
+                    "height": h, "width": w,
+                    "transform": t_tile,
+                    "driver": "GTiff"
+                })
+                outp = tiles_dir / f"{tif_path.stem}_{y0}_{x0}.tif"
+                with rasterio.open(outp, "w", **profile) as dst:
+                    for b in range(1, src.count + 1):
+                        dst.write(src.read(b, window=window), b)
+                written.append(outp)
+    return written
+
+# --- ADD: stitch per-tile JSON predictions into one anomalies.geojson (WGS84) ---
+def _build_anomalies_geojson_from_tiles(
+    tiles_dir: Path,
+    preds_dir: Path,
+    tif_path: Path,
+    out_session: Path,
+    class_names: list[str],
+    score_thresh: float = 0.0,
+) -> Path:
+    import json
+    import rasterio
+    from shapely.geometry import Polygon, mapping
+    from rasterio.warp import transform_bounds, transform as rio_transform
+
+    out_session.mkdir(parents=True, exist_ok=True)
+
+    # index tile tifs by stem (so preds/xxx.json → tiles/xxx.tif)
+    tile_index = {p.stem: p for p in tiles_dir.glob("*.tif")}
+    feats = []
+
+    preds_json_dir = Path(preds_dir) / "preds"
+    for j in sorted(preds_json_dir.glob("*.json")):
+        try:
+            jd = json.loads(j.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        boxes   = jd.get("boxes",   []) or []
+        scores  = jd.get("scores",  []) or []
+        classes = jd.get("classes", []) or []
+        # file name that predictor wrote (should match tile stem)
+        fname   = (jd.get("file") or (j.stem + ".tif"))
+        stem    = Path(fname).stem
+
+        tpath = tile_index.get(stem)
+        if not tpath or not tpath.exists():
+            continue
+
+        with rasterio.open(tpath) as ds:
+            tfm = ds.transform
+            crs = ds.crs
+
+            # pixel→map using tile's affine
+            def px_to_map(x, y):
+                X = tfm.c + x*tfm.a + y*tfm.b
+                Y = tfm.f + x*tfm.d + y*tfm.e
+                return (X, Y)
+
+            for b, s, c in zip(boxes, scores, classes):
+                try:
+                    if float(s) < float(score_thresh):
+                        continue
+                except Exception:
+                    pass
+
+                x1, y1, x2, y2 = map(float, b)
+                ring_native = [
+                    px_to_map(x1, y1), px_to_map(x2, y1),
+                    px_to_map(x2, y2), px_to_map(x1, y2),
+                    px_to_map(x1, y1)
+                ]
+                xs, ys = zip(*ring_native)
+
+                try:
+                    lon, lat = rio_transform(crs, "EPSG:4326", list(xs), list(ys))
+                    poly = Polygon(zip(lon, lat))
+                except Exception:
+                    poly = Polygon(ring_native)  # fallback (native CRS)
+
+                cid = int(c)
+                props = {
+                    "score": float(s),
+                    "class_id": cid,
+                    "class_name": (class_names[cid] if 0 <= cid < len(class_names) else f"class_{cid}"),
+                    "tile": fname,
+                    "source": tif_path.name,
+                }
+                feats.append({"type": "Feature", "geometry": mapping(poly), "properties": props})
+
+    # write anomalies.geojson
+    fc = {"type": "FeatureCollection", "features": feats}
+    out_gj = out_session / "anomalies.geojson"
+    out_gj.write_text(json.dumps(fc), encoding="utf-8")
+
+    # also write a tiny images.geojson with the raster center point (for your sidebar)
+    try:
+        with rasterio.open(tif_path) as ds:
+            left, bottom, right, top = transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21)
+            cx, cy = (left + right) / 2, (bottom + top) / 2
+    except Exception:
+        cx, cy = 0.0, 0.0
+    images_fc = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [cx, cy]},
+            "properties": {"image": tif_path.name}
+        }]
+    }
+    (out_session / "images.geojson").write_text(json.dumps(images_fc), encoding="utf-8")
+
+    return out_gj
+
+
+# --- ADD (helper near others): quick PNG thumb for a GeoTIFF ---
+def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> Path:
+    import rasterio
+    from PIL import Image
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+    out = thumbs_dir / (tif_path.stem + ".png")
+    try:
+        with rasterio.open(tif_path) as ds:
+            bsel = [b for b in (1,2,3) if b <= ds.count] or [1]
+            arr = ds.read(bsel)
+            arr = arr.astype("float32").transpose(1,2,0)
+            # normalize each band 2–98%
+            for c in range(arr.shape[2]):
+                a = arr[..., c]
+                lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+                if hi <= lo: hi = lo + 1
+                arr[..., c] = np.clip((a - lo) * (255/(hi-lo)), 0, 255)
+            if arr.shape[2] == 1:
+                arr = np.repeat(arr, 3, axis=2)
+            h, w = arr.shape[:2]
+            scale = min(1.0, max_px / max(h, w))
+            im = Image.fromarray(arr.astype("uint8"))
+            if scale < 1.0:
+                im = im.resize((int(w*scale), int(h*scale)), Image.BILINEAR)
+            im.save(out, format="PNG", optimize=True)
+    except Exception:
+        from PIL import Image
+        Image.new("RGB", (256,256), (40,40,40)).save(out, "PNG", optimize=True)
+    return out
+
+
 # ----------------- overlays & geojson -----------------
 # Keep these simple and library-light; they operate on predictor JSON files.
 
@@ -843,25 +1024,96 @@ async def api_test_upload_underscore(
     result_name: str = Form(""),
 ):
     """
-    Alias for upload using underscore path expected by the UI.
+    Upload handler for testing:
+      - If uploading non-zip images → single dataset folder (unchanged).
+      - If uploading TIF(s) (direct or inside a zip) → ONE DATASET PER TIF (folder name ≈ tif stem).
     """
-    # Reuse the same logic as your existing upload handler.
+    logger = logging.getLogger("pvrt.test")
+
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
+
     base = _safe_name(result_name) or _safe_name(files[0].filename or "upload")
     created: List[str] = []
-    zips = [f for f in files if (f.filename or "").lower().endswith(".zip")]
-    imgs = [f for f in files if Path(f.filename or "").suffix.lower() in IMAGE_EXTS]
-    if zips:
-        ds_dir = _save_zip_as_dataset(zips[0], preferred_base=base); created.append(ds_dir.name)
-        for z in zips[1:]:
-            dsz = _save_zip_as_dataset(z); created.append(dsz.name)
-    elif imgs:
-        ds_dir = _save_images_as_dataset(imgs, preferred_base=base); created.append(ds_dir.name)
+
+    # Partition the upload
+    zip_files  = [f for f in files if (f.filename or "").lower().endswith(".zip")]
+    other_files = [f for f in files if f not in zip_files]
+
+    # ----------- handle zips -----------
+    for zf in zip_files:
+        # extract to a temporary staging dir under data/test/<temp>
+        staging = _unique_dataset_dir(_safe_name(Path(zf.filename or "archive.zip").stem) or "zip")
+        staging.mkdir(parents=True, exist_ok=True)
+        buf = zf.file.read()
+        try:
+            with zipfile.ZipFile(io.BytesIO(buf)) as z:
+                z.extractall(staging)
+        except Exception as e:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Bad ZIP '{zf.filename}': {e}")
+
+        # flatten one folder if needed
+        kids = list(staging.iterdir())
+        if len(kids) == 1 and kids[0].is_dir():
+            inner = kids[0]
+            for p in inner.iterdir():
+                shutil.move(str(p), str(staging))
+            inner.rmdir()
+
+        # split: every TIF becomes its own dataset; non-TIF images coalesce into one images dataset
+        tifs = list(_iter_geotiffs(staging))
+        non_tif_imgs = [p for p in staging.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS and p.suffix.lower() not in (".tif",".tiff")]
+
+        # 2a) make one dataset per TIF
+        for tif in tifs:
+            name = _safe_name(tif.stem) or "tif"
+            ds_dir = _unique_dataset_dir(name)
+            ds_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(tif), str(ds_dir / tif.name))
+            created.append(ds_dir.name)
+
+        # 2b) if there are regular images, keep them together (old behavior)
+        if non_tif_imgs:
+            name = _safe_name(base) or "images"
+            ds_dir = _unique_dataset_dir(name)
+            ds_dir.mkdir(parents=True, exist_ok=True)
+            for p in non_tif_imgs:
+                shutil.move(str(p), str(ds_dir / p.name))
+            created.append(ds_dir.name)
+
+        # clean staging
+        shutil.rmtree(staging, ignore_errors=True)
+
+    # ----------- handle direct files (non-zip) -----------
+    if other_files:
+        # separate TIF vs regular images
+        direct_tifs = [f for f in other_files if Path(f.filename or "").suffix.lower() in (".tif",".tiff")]
+        direct_imgs = [f for f in other_files if Path(f.filename or "").suffix.lower() in IMAGE_EXTS and Path(f.filename or "").suffix.lower() not in (".tif",".tiff")]
+
+        # 3a) one dataset per TIF
+        for f in direct_tifs:
+            stem = _safe_name(Path(f.filename or "image.tif").stem) or "tif"
+            ds_dir = _unique_dataset_dir(stem)
+            ds_dir.mkdir(parents=True, exist_ok=True)
+            (ds_dir / Path(f.filename).name).write_bytes(f.file.read())
+            created.append(ds_dir.name)
+
+        # 3b) regular images together
+        if direct_imgs:
+            name = _safe_name(base) or "images"
+            ds_dir = _unique_dataset_dir(name)
+            ds_dir.mkdir(parents=True, exist_ok=True)
+            for f in direct_imgs:
+                (ds_dir / Path(f.filename).name).write_bytes(f.file.read())
+            created.append(ds_dir.name)
+
     if not created:
         return {"ok": False, "created": []}
+
     logger.info(f"UI:OK:test: Created datasets: {', '.join(created)}")
     return {"ok": True, "created": created}
+
 
 
 # ================== TEST: run ==================
@@ -902,11 +1154,35 @@ async def api_test_run(
         scan_split_decode_thermal(ds_dir)
         logger.info("thermal images decoded")
 
+    # --- ADD: decide whether this dataset is a single GeoTIFF ---
+    input_type = _detect_image_input_type(ds_dir)  # you already have this helper: returns 'tif' or 'images'
+
+    # Default run directory is the original dataset
+    run_images_dir = ds_dir
+    tiles_dir = None
+    tif_src = None
+
+    if input_type == "tif":
+        # pick the one GeoTIFF in the dataset folder
+        tifs = [p for p in ds_dir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
+        if not tifs:
+            raise HTTPException(status_code=400, detail="No GeoTIFF found in dataset.")
+
+        tif_src = tifs[0]
+        tiles_dir = out_root / "tiles"     # keep tiles inside the session folder
+        _tile_tif_to_dir(tif_src, tiles_dir, tile_size=1024, stride=1024)
+
+        # inference will run on *tiles_dir* (unchanged backend config)
+        run_images_dir = tiles_dir
+        thumb_path = _save_tif_thumbnail(tif_src, out_root / "thumbs")
+
+    
+
     def _do_predict():
         with redirect_std_to_logger():
             return predict_entry(
                 weights_dir=model_dir,
-                images_dir=ds_dir,
+                images_dir=run_images_dir,
                 out_dir=out_root,
                 use_thermal_request=use_thermal,
                 forced_backend=forced_backend,
@@ -974,15 +1250,28 @@ async def api_test_run(
 
         session_dir = MEDIA_DIR / "sessions" / session
         
-        anom_gj, imgs_gj = _preds_to_geojson(
-            images_dir=Path(ds_dir),
-            preds_dir=Path(preds_dir),
-            out_session=Path(session_dir),
-            class_names=class_names,
-            score_thresh=float(th_num or 0.0),
-            meters_per_pixel=0.05,   #ground sampling distance (GSD)
-            exif_index=exif_from_manifest,
-        )
+        if input_type == "tif":
+            # --- THIS is where the merged GeoJSON is produced after tile inference ---
+            anom_gj = _build_anomalies_geojson_from_tiles(
+                tiles_dir=tiles_dir,
+                preds_dir=preds_dir,
+                tif_path=tif_src,
+                out_session=session_dir,
+                class_names=class_names,
+                score_thresh=th_num,
+            )
+            imgs_gj = session_dir / "images.geojson"  # written by the stitcher
+        else:
+            # your existing images→geojson path
+            anom_gj, imgs_gj = _preds_to_geojson(
+                images_dir=Path(ds_dir),
+                preds_dir=Path(preds_dir),
+                out_session=Path(session_dir),
+                class_names=class_names,
+                score_thresh=float(th_num or 0.0),
+                meters_per_pixel=0.05,   #ground sampling distance (GSD)
+                exif_index=exif_from_manifest,
+            )      
 
 
         if isinstance(manifest_path, (str, Path)):
