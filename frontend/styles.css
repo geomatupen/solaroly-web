@@ -101,12 +101,12 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 /* Modal */
 .modal{ position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:1000; }
 .modal.hidden{ display:none; }
-.modalContent{ background:#0b1117; border:1px solid var(--border); border-radius:12px; min-width:320px; max-width:90vw; }
+.modalContent{ background:#0b1117; border:1px solid var(--border); border-radius:12px; min-width:300px; max-width:90vw; }
 .modalContent.wide{ min-width:60vw; }
 .modalHeader{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid var(--border); }
 .modalBody{
   padding:12px;
-  display:flex;
+  display:block;
   align-items:center;      /* vertical center */
   justify-content:center;  /* horizontal center */
 }
@@ -331,15 +331,21 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 
 
 .layerMenu{
-  position: fixed; z-index: 9999;
-  background: var(--surface);
+  position: fixed;
+  z-index: 1000;
+  /* background: var(--surface); */
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 10px 30px rgba(0,0,0,.15);
+  min-width: 220px;           /* ensures predictable left-opening */
+  max-width: 300px;           /* prevent overly wide content */
+  background-color:rgb(18 26 34);
+  font-size: .87rem;
 }
-.layerMenu ul{ list-style:none; margin:0; padding:6px; }
-.layerMenu li{ padding:8px 12px; cursor:pointer; }
+.layerMenu ul{ list-style: none; margin: 0; padding: 6px; }
+.layerMenu li{ padding: 8px 12px; cursor: pointer; white-space: nowrap; }
 .layerMenu li:hover{ background: rgba(148,163,184,.15); }
+
 
 /* ---- Popup table: compact + striped rows ---- */
 .leaflet-popup-content .propTable{
@@ -403,10 +409,89 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 .switch { display:flex; align-items:center; gap:6px; font-size:12px; }
 
 
-#stCatList .catRow{ display:flex; align-items:center; gap:8px; margin:6px 0; }
-#stCatList .catName{ font-size:12px; color:#cdd6df; }
-.legendHeader .legendTitle{ font-weight:600; margin-bottom:6px; }
-.legendBody .legendItem{ display:flex; align-items:center; gap:8px; margin:4px 0; }
-.legendBody .swatch{ width:14px; height:14px; border-radius:3px; border:1px solid rgba(255,255,255,.25); display:inline-block; }
-.dim{ color:#9aa6b2; }
-.hidden{ display:none; }
+
+
+
+/* ===== Right-side drawer for #styleModal (non-blocking) ===== */
+
+/* The overlay container: don't block clicks to the map */
+#styleModal {
+  position: fixed;
+  inset: 0;                 /* stretch, but... */
+  background: transparent;  /* no backdrop */
+  pointer-events: none;     /* let clicks pass through outside the panel */
+  z-index: 500;             /* above map UI, below any true modal you might have */
+}
+
+/* The actual panel */
+#styleModal .modalContent {
+  position: absolute;
+  right: 12px;
+  top: 72px;                /* adjust if your header size differs */
+  width: 300px;             /* small vertical panel */
+  max-height: calc(100vh - 96px);
+  pointer-events: auto;     /* panel is interactive */
+  background: var(--panelBg, #0f172a);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.35);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;          /* compact */
+}
+
+/* Header/footer + body scroll */
+#styleModal .modalHeader { padding: 10px 12px; }
+#styleModal .modalHeader h3 { font-size: 14px; margin: 0; }
+#styleModal .modalHeader .iconBtn { width: 26px; height: 26px; font-size: 16px; }
+
+#styleModal .modalBody {
+  padding: 10px 12px;
+  overflow: auto;
+  max-height: calc(100vh - 146px); /* panel max minus header/footer */
+}
+
+#styleModal .modalFooter {
+  padding: 8px 12px;
+  gap: 6px;
+}
+#styleModal .modalFooter button {
+  font-size: 12px; padding: 5px 8px; border-radius: 6px;
+}
+
+/* Hide the legacy whole-layer block (we use only Category Styler) */
+#styleModal .formGrid { display: none !important; }
+
+/* ===== Category Styler layout (compact) ===== */
+
+/* "Color by" row at top */
+#stColorByBlock{
+  display:flex; align-items:center; gap:8px;
+  margin: 6px 0 8px;
+}
+#stColorByBlock label{ font-size:12px; opacity:.85; }
+#stColorByBlock select{ height:26px; font-size:13px; padding:2px 8px; border-radius:6px; }
+
+#stCatList{ margin-top: 4px; }
+#stCatList .catRow{ margin: 15px 0; }
+#stCatList .catName{
+  font-weight:700; margin-bottom:4px; font-size:13px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+
+/* Controls: one line; wrap to two lines on narrow viewport */
+#stCatList .catControls{ display:flex; flex-wrap:wrap; gap:6px 10px; }
+#stCatList .catControls .ctrl{ display:flex; align-items:center; gap:6px; }
+#stCatList .catControls .ctrl label{ font-size:12px; opacity:.85; min-width:52px; }
+
+#stCatList input[type="color"]{ width:32px; height:22px; padding:0; border-radius:4px; }
+#stCatList input[type="number"]{ width:64px; height:24px; font-size:13px; padding:2px 6px; }
+
+/* On very small screens, let each control take ~50% so it becomes two rows */
+@media (max-width: 540px){
+  #styleModal .modalContent { right: 8px; top: 64px; width: 92vw; }
+  #stCatList .catControls .ctrl { flex: 1 1 calc(50% - 10px); }
+}
+
+/* Keep it hidden when you add .hidden in JS */
+#styleModal.hidden { display: none; }

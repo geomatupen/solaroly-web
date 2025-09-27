@@ -119,42 +119,42 @@ function renderImagesList(){
   `).join('');
 }
 
-document.addEventListener('click', (e)=>{
-  const li = e.target.closest('#layerMenu li');
-  if (!li) return;
+// document.addEventListener('click', (e)=>{
+//   const li = e.target.closest('#layerMenu li');
+//   if (!li) return;
 
-  const menu = li.closest('#layerMenu');
-  const key  = menu?.dataset?.key;
-  const rec  = key ? overlayRegistry[key] : null;
-  if (!rec || !rec.layer) { closeLayerMenu(); return; }
+//   const menu = li.closest('#layerMenu');
+//   const key  = menu?.dataset?.key;
+//   const rec  = key ? overlayRegistry[key] : null;
+//   if (!rec || !rec.layer) { closeLayerMenu(); return; }
 
-  const action = li.dataset.action;
+//   const action = li.dataset.action;
 
-  if (action === 'zoom') {
-    const b = computeLayerBounds(rec.layer);
-    if (b && b.isValid && b.isValid()) {
-      MAP.fitBounds(b.pad(0.2));
-    }
-    closeLayerMenu();
-    return;
-  }
+//   if (action === 'zoom') {
+//     const b = computeLayerBounds(rec.layer);
+//     if (b && b.isValid && b.isValid()) {
+//       MAP.fitBounds(b.pad(0.2));
+//     }
+//     closeLayerMenu();
+//     return;
+//   }
 
-  if (action === 'style') {
-    // Open your style modal and prefill from rec.style (fallbacks provided)
-    styleTarget = { name: key, info: rec };
+//   if (action === 'style') {
+//     // Open your style modal and prefill from rec.style (fallbacks provided)
+//     styleTarget = { name: key, info: rec };
 
-    const st = rec.style || {};
-    $('#stColor').value    = toHex(st.color || '#0ea5e9');
-    $('#stWidth').value    = st.weight ?? 1;
-    $('#stOpacity').value  = st.opacity ?? 1;
-    $('#fiColor').value    = toHex(st.fillColor || st.color || '#0ea5e9');
-    $('#fiOpacity').value  = st.fillOpacity ?? 0.25;
+//     const st = rec.style || {};
+//     $('#stColor').value    = toHex(st.color || '#0ea5e9');
+//     $('#stWidth').value    = st.weight ?? 1;
+//     $('#stOpacity').value  = st.opacity ?? 1;
+//     $('#fiColor').value    = toHex(st.fillColor || st.color || '#0ea5e9');
+//     $('#fiOpacity').value  = st.fillOpacity ?? 0.25;
 
-    $('#styleModal').classList.remove('hidden');
-    closeLayerMenu();
-    return;
-  }
-});
+//     $('#styleModal').classList.remove('hidden');
+//     closeLayerMenu();
+//     return;
+//   }
+// });
 
 
 function applyVectorColor(layer, color){
@@ -199,14 +199,14 @@ function closeLayerMenu(){
 function openLayerMenu(btn){
   closeLayerMenu();
 
-  const key = btn.dataset.key;                   // <-- layer registry key
+  const key = btn.dataset.key;
   const rec = overlayRegistry[key];
   if (!rec || !rec.layer) return;
 
   const menu = document.createElement('div');
   menu.id = 'layerMenu';
   menu.className = 'layerMenu';
-  menu.dataset.key = key;                        // <-- store key on the menu
+  menu.dataset.key = key;
 
   menu.innerHTML = `
     <ul>
@@ -217,10 +217,31 @@ function openLayerMenu(btn){
 
   document.body.appendChild(menu);
 
-  const r = btn.getBoundingClientRect();
-  menu.style.left = `${Math.round(r.left)}px`;
+  // --- position: prefer opening to the LEFT of the button ---
+  const r  = btn.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const pad = 8;                          // viewport padding
+  const mw = menu.offsetWidth || 220;     // menu width (fallback)
+
+  const leftSpace  = r.left - pad;
+  const rightSpace = vw - r.right - pad;
+
+  let left;
+  if (leftSpace >= mw) {
+    // enough room on the left → align menu's right edge with button's right
+    left = Math.round(r.right - mw);
+  } else if (rightSpace >= mw) {
+    // not enough left, open to the right
+    left = Math.round(r.left);
+  } else {
+    // clamp inside viewport if both sides are tight
+    left = Math.max(pad, Math.min(Math.round(r.right - mw), vw - mw - pad));
+  }
+
+  menu.style.left = `${left}px`;
   menu.style.top  = `${Math.round(r.bottom + 6)}px`;
 }
+
 
 // Close the menu when clicking anywhere outside it (but not on the ⋮ button)
 document.addEventListener('mousedown', (e)=>{
@@ -253,58 +274,74 @@ document.addEventListener('click', (e)=>{
   }
 
   if (action === 'style') {
-    // Open your style modal and prefill from rec.style (fallbacks provided)
-    styleTarget = { name: key, info: rec };
+  if (action === 'style') {
+  styleTarget = { name: key, info: rec };
 
-    const st = rec.style || {};
-    $('#stColor').value    = toHex(st.color || '#0ea5e9');
-    $('#stWidth').value    = st.weight ?? 1;
-    $('#stOpacity').value  = st.opacity ?? 1;
-    $('#fiColor').value    = toHex(st.fillColor || st.color || '#0ea5e9');
-    $('#fiOpacity').value  = st.fillOpacity ?? 0.25;
+  const stSelBlk = document.getElementById('stColorByBlock');
+  const stSel    = document.getElementById('stColorBy');
+  const stCat    = document.getElementById('stCatList');
 
-    // === Categorical styling controls (Anomalies layer only) ===
-    if (styleTarget.name === "Anomalies" && styleTarget.info?.data){
-      const stSelBlk = document.getElementById('stColorByBlock');
-      const stSel    = document.getElementById('stColorBy');
-      const stCat    = document.getElementById('stCatList');
-
-      if (stSelBlk && stSel && stCat){
-        stSelBlk.classList.remove('hidden');
-        stCat.classList.remove('hidden');
-
-        // build property list
-        const props = new Set(['class_name','class_id','score']);
-        try{
-          const f0 = styleTarget.info.data.features.find(f => f?.properties) || null;
-          if (f0) Object.keys(f0.properties).forEach(k => props.add(k));
-        }catch(_){}
-        const currentProp = styleTarget.info.categorical?.prop || 'class_name';
-        stSel.innerHTML = "";
-        Array.from(props).forEach(k=>{
-          const opt = document.createElement('option');
-          opt.value = k; opt.textContent = k;
-          if (k === currentProp) opt.selected = true;
-          stSel.appendChild(opt);
-        });
-
-        rebuildCategoryEditors(currentProp);        // draw per-class color pickers
-        stSel.onchange = () => rebuildCategoryEditors(stSel.value);
-      }
-    } else {
-      const stSelBlk = document.getElementById('stColorByBlock');
-      const stCat    = document.getElementById('stCatList');
-      if (stSelBlk) stSelBlk.classList.add('hidden');
-      if (stCat)    stCat.classList.add('hidden');
-    }
-
-
-
-
-    $('#styleModal').classList.remove('hidden');
+  // Only Anomalies supports styling
+  if (key !== "Anomalies" || !rec?.data){
+    stSelBlk.classList.add('hidden');
+    stCat.classList.remove('hidden');
+    stCat.innerHTML = `<div class="muted">Styling not available for this layer.</div>`;
+    document.getElementById('styleModal').classList.remove('hidden');
     closeLayerMenu();
     return;
   }
+
+  // Show Category UI
+  stSelBlk.classList.remove('hidden');
+  stCat.classList.remove('hidden');
+
+  // Build property list (with "None")
+  const props = new Set(['class_name','class_id','score']);
+  try{
+    const f0 = rec.data.features.find(f => f?.properties) || null;
+    if (f0) Object.keys(f0.properties).forEach(k => props.add(k));
+  }catch(_){}
+
+  // Helper: pick a sensible default
+  const CATEGORY_NONE = '__none__';
+  function pickDefaultProp(){
+    const tryProps = ['class_name','class_id','score', ...props];
+    for (const p of tryProps){
+      if (!p || p === CATEGORY_NONE) continue;
+      const u = uniqueValuesFromGJ(rec.data, p);
+      if (u.length >= 1 && u.length <= 10) return p;
+    }
+    return CATEGORY_NONE;
+  }
+
+  const currentProp = rec.categorical?.prop ?? pickDefaultProp();
+
+  // Fill dropdown
+  stSel.innerHTML = '';
+  const optNone = document.createElement('option');
+  optNone.value = CATEGORY_NONE; optNone.textContent = 'None';
+  stSel.appendChild(optNone);
+  Array.from(props).forEach(k=>{
+    const o = document.createElement('option');
+    o.value = k; o.textContent = k;
+    if (k === currentProp) o.selected = true;
+    stSel.appendChild(o);
+  });
+
+  // Build editor for selected prop
+  const choose = (val)=>{
+    rebuildCategoryEditors(val);
+  };
+  choose(currentProp);
+  stSel.onchange = ()=> choose(stSel.value);
+
+  document.getElementById('styleModal').classList.remove('hidden');
+  closeLayerMenu();
+  return;
+}
+
+}
+
 });
 
 
@@ -412,6 +449,18 @@ async function loadSessions(selectLatest=true){
     sel1.value = latest; sel2.value = latest;
   }
 }
+
+function toggleBaseStyleDisabled(disabled){
+  ["stColor","stWidth","stOpacity","fiColor","fiOpacity"].forEach(id=>{
+    const el = document.getElementById(id);
+    if (el){
+      el.disabled = !!disabled;
+      el.classList.toggle("disabled", !!disabled);
+    }
+  });
+}
+
+
 
 // ---------- upload modal ----------
 function openUploadModal(){ $("#uploadModal").classList.remove("hidden"); }
@@ -707,67 +756,129 @@ function toHex(c){
   return '#' + m.slice(0,3).map(x => (+x).toString(16).padStart(2,'0')).join('');
 }
 
-function styleForAnomalyFeature(f, fallback){
-  const rec = overlayRegistry["Anomalies"];
-  const cat = rec?.categorical;
-  if (cat && f?.properties){
-    const v = String(f.properties[cat.prop] ?? '');
-    const c = cat.mapping[v];
-    if (c){
-      return { color: c, weight: 1, opacity: 1, fillColor: c, fillOpacity: 0.25 };
-    }
-  }
-  return fallback || { color: "#ff5722", weight: 1, opacity: 1, fillColor: "#ff5722", fillOpacity: 0.25 };
-}
+
+
 
 function rebuildCategoryEditors(prop){
-  const rec = overlayRegistry["Anomalies"];
-  const stCat = document.getElementById('stCatList');
-  if (!rec || !rec.data || !stCat) return;
+  const rec  = overlayRegistry["Anomalies"];
+  const host = document.getElementById("stCatList");
+  if (!rec || !rec.data || !host) return;
 
-  const values = uniqueValuesFromGJ(rec.data, prop);
-  stCat.innerHTML = "";
+  const CATEGORY_NONE = '__none__';
+  const ALL_KEY = '__ALL__';
 
-  if (!values.length || values.length > 10){
-    rec.categorical = null;
-    if (rec.layer?.setStyle) rec.layer.setStyle(rec.style || {});
+  // Build list of unique values for the chosen prop
+  let values = [];
+  if (prop && prop !== CATEGORY_NONE){
+    values = uniqueValuesFromGJ(rec.data, prop);
+  }
+
+  // Auto-fallback to "None" if invalid or too many categories
+  const useNone = (!prop || prop === CATEGORY_NONE || values.length === 0 || values.length > 10);
+  host.innerHTML = "";
+
+  const base = rec.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
+  const prev = (rec.categorical && (rec.categorical.prop === prop || (useNone && rec.categorical.prop === CATEGORY_NONE)))
+               ? (rec.categorical.classes || {}) : {};
+  const classes = {};
+
+  if (useNone){
+    // Single "All features" row acts as whole-layer style
+    const s = prev[ALL_KEY] || {
+      strokeColor: base.color, strokeWidth: base.weight, strokeOpacity: base.opacity,
+      fillColor: base.fillColor, fillOpacity: base.fillOpacity,
+    };
+    classes[ALL_KEY] = {...s};
+
+    const row = document.createElement("div");
+    row.className = "catRow";
+    row.innerHTML = `
+      <div class="catName">All features</div>
+      <div class="catControls">
+        <div class="ctrl"><label>Stroke</label><input type="color"  class="cStroke" value="${toHex(s.strokeColor)}"></div>
+        <div class="ctrl"><label>Width</label> <input type="number" class="cW"  min="0" step="0.5" value="${s.strokeWidth}"></div>
+        <div class="ctrl"><label>Opacity</label><input type="number" class="cSO" min="0" max="1" step="0.05" value="${s.strokeOpacity}"></div>
+        <div class="ctrl"><label>Fill</label>  <input type="color"  class="cFill"  value="${toHex(s.fillColor)}"></div>
+        <div class="ctrl"><label>Opacity</label><input type="number" class="cFO" min="0" max="1" step="0.05" value="${s.fillOpacity}"></div>
+      </div>`;
+    host.appendChild(row);
+
+    const iStroke = row.querySelector(".cStroke");
+    const iW      = row.querySelector(".cW");
+    const iSO     = row.querySelector(".cSO");
+    const iFill   = row.querySelector(".cFill");
+    const iFO     = row.querySelector(".cFO");
+
+    const apply = ()=>{
+      classes[ALL_KEY] = {
+        strokeColor: iStroke.value,
+        strokeWidth: parseFloat(iW.value || "1"),
+        strokeOpacity: Math.max(0, Math.min(1, parseFloat(iSO.value || "1"))),
+        fillColor: iFill.value,
+        fillOpacity: Math.max(0, Math.min(1, parseFloat(iFO.value || "0.25"))),
+      };
+      rec.categorical = { prop: CATEGORY_NONE, classes, values:[ALL_KEY] };
+      if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+      renderLegend();
+    };
+    [iStroke, iW, iSO, iFill, iFO].forEach(inp => inp.addEventListener("input", apply));
+
+    // commit
+    rec.categorical = { prop: CATEGORY_NONE, classes, values:[ALL_KEY] };
+    if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
     renderLegend();
-    if (values.length > 10){
-      const div = document.createElement('div');
-      div.className = 'muted';
-      div.textContent = `Too many unique values (${values.length}). Using single style.`;
-      stCat.appendChild(div);
-    }
     return;
   }
 
-  const palette = ['#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#a6cee3','#b2df8a','#fb9a99','#fdbf6f','#cab2d6'];
-  const prev = (rec.categorical && rec.categorical.prop === prop) ? rec.categorical.mapping : {};
-  const mapping = {};
-  values.forEach((v,i)=> mapping[v] = prev[v] || palette[i % palette.length]);
+  // Real categories (<=10)
+  values.forEach((v)=>{
+    const s = prev[v] || {
+      strokeColor: base.color, strokeWidth: base.weight, strokeOpacity: base.opacity,
+      fillColor: base.fillColor, fillOpacity: base.fillOpacity,
+    };
+    classes[v] = {...s};
 
-  values.forEach(v=>{
-    const row = document.createElement('div'); row.className = 'catRow';
+    const row = document.createElement("div");
+    row.className = "catRow";
     row.innerHTML = `
-      <input type="color" class="catColor" value="${toHex(mapping[v])}" data-val="${v}">
-      <span class="catName">${escapeHtml(v)}</span>
-    `;
-    stCat.appendChild(row);
-  });
+      <div class="catName">${escapeHtml(v)}</div>
+      <div class="catControls">
+        <div class="ctrl"><label>Stroke</label><input type="color"  class="cStroke" value="${toHex(s.strokeColor)}"></div>
+        <div class="ctrl"><label>Width</label> <input type="number" class="cW"  min="0" step="0.5" value="${s.strokeWidth}"></div>
+        <div class="ctrl"><label>Opacity</label><input type="number" class="cSO" min="0" max="1" step="0.05" value="${s.strokeOpacity}"></div>
+        <div class="ctrl"><label>Fill</label>  <input type="color"  class="cFill"  value="${toHex(s.fillColor)}"></div>
+        <div class="ctrl"><label>Opacity</label><input type="number" class="cFO" min="0" max="1" step="0.05" value="${s.fillOpacity}"></div>
+      </div>`;
+    host.appendChild(row);
 
-  stCat.querySelectorAll('.catColor').forEach(inp=>{
-    inp.addEventListener('input', ()=>{
-      mapping[inp.dataset.val] = inp.value;
-      rec.categorical = { prop, mapping, values };
+    const iStroke = row.querySelector(".cStroke");
+    const iW      = row.querySelector(".cW");
+    const iSO     = row.querySelector(".cSO");
+    const iFill   = row.querySelector(".cFill");
+    const iFO     = row.querySelector(".cFO");
+
+    const apply = ()=>{
+      classes[v] = {
+        strokeColor: iStroke.value,
+        strokeWidth: parseFloat(iW.value || "1"),
+        strokeOpacity: Math.max(0, Math.min(1, parseFloat(iSO.value || "1"))),
+        fillColor: iFill.value,
+        fillOpacity: Math.max(0, Math.min(1, parseFloat(iFO.value || "0.25"))),
+      };
+      rec.categorical = { prop, classes, values };
       if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
       renderLegend();
-    });
+    };
+    [iStroke, iW, iSO, iFill, iFO].forEach(inp => inp.addEventListener("input", apply));
   });
 
-  rec.categorical = { prop, mapping, values };
+  rec.categorical = { prop, classes, values };
   if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
   renderLegend();
 }
+
+
+
 
 
 
@@ -892,15 +1003,40 @@ async function loadGeoJSON(url){
 function styleForAnomalyFeature(f, fallback){
   const rec = overlayRegistry["Anomalies"];
   const cat = rec?.categorical;
-  if (cat && f?.properties){
-    const v = String(f.properties[cat.prop] ?? '');
-    const c = cat.mapping[v];
-    if (c){
-      return { color: c, weight: 1, opacity: 1, fillColor: c, fillOpacity: 0.25 };
+  if (!cat) return fallback || rec?.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
+
+  const CATEGORY_NONE = '__none__';
+  const ALL_KEY = '__ALL__';
+
+  if (cat.prop === CATEGORY_NONE){
+    const s = cat.classes?.[ALL_KEY];
+    if (s){
+      return {
+        color: s.strokeColor ?? "#ff5722",
+        weight: s.strokeWidth ?? 1,
+        opacity: s.strokeOpacity ?? 1,
+        fillColor: s.fillColor ?? s.strokeColor ?? "#ff5722",
+        fillOpacity: s.fillOpacity ?? 0.25,
+      };
     }
+    return fallback || rec?.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
   }
-  return fallback;
+
+  const key = String(f?.properties?.[cat.prop] ?? "");
+  const s = cat.classes?.[key];
+  if (s){
+    return {
+      color: s.strokeColor ?? "#ff5722",
+      weight: s.strokeWidth ?? 1,
+      opacity: s.strokeOpacity ?? 1,
+      fillColor: s.fillColor ?? s.strokeColor ?? "#ff5722",
+      fillOpacity: s.fillOpacity ?? 0.25,
+    };
+  }
+  return fallback || rec?.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
 }
+
+
 
 function applyCategoricalStyling(prop='class_name'){
   const rec = overlayRegistry["Anomalies"];
@@ -932,6 +1068,7 @@ function uniquePropValues(gj, prop){
   return Array.from(s).sort((a,b)=> String(a).localeCompare(String(b)));
 }
 
+
 function renderLegend(){
   const el = document.getElementById('legend');
   if (!el) return;
@@ -942,23 +1079,28 @@ function renderLegend(){
 
   const title = document.createElement('div');
   title.className = 'legendHeader';
-  const by = rec.categorical?.prop ? ` — <span class="dim">by <b>${escapeHtml(rec.categorical.prop)}</b></span>` : '';
+  const by = rec.categorical?.prop && rec.categorical.prop !== '__none__'
+    ? ` — <span class="dim">by <b>${escapeHtml(rec.categorical.prop)}</b></span>` : '';
   title.innerHTML = `<div class="legendTitle">Anomalies${by}</div>`;
   el.appendChild(title);
 
-  const body = document.createElement('div');
-  body.className = 'legendBody';
-  el.appendChild(body);
+  const body = document.createElement('div'); body.className = 'legendBody'; el.appendChild(body);
 
   if (rec.categorical){
-    const { values, mapping } = rec.categorical;
-    body.innerHTML = values.map(v=>{
-      const c = mapping[v];
-      return `<div class="legendItem"><span class="swatch" style="background:${c}"></span> ${escapeHtml(v)}</div>`;
-    }).join('');
-  } else {
-    const st = rec.style || { fillColor:'#ff5722' };
-    body.innerHTML = `<div class="legendItem"><span class="swatch" style="background:${st.fillColor}"></span> Anomaly</div>`;
+    const { prop, classes, values } = rec.categorical;
+    if (prop === '__none__'){
+      const s = classes?.['__ALL__'] || {};
+      const fill = s.fillColor || s.strokeColor || '#ff5722';
+      const stroke = s.strokeColor || '#202020';
+      body.innerHTML = `<div class="legendItem"><span class="swatch" style="background:${fill}; border:2px solid ${stroke}"></span> All features</div>`;
+    } else {
+      body.innerHTML = values.map(v=>{
+        const s = classes?.[v] || {};
+        const fill = s.fillColor || s.strokeColor || '#ff5722';
+        const stroke = s.strokeColor || '#202020';
+        return `<div class="legendItem"><span class="swatch" style="background:${fill}; border:2px solid ${stroke}"></span> ${escapeHtml(v)}</div>`;
+      }).join('');
+    }
   }
 }
 
