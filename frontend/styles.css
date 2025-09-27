@@ -65,7 +65,7 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 
 /* Results grid: thumbs now ~half the previous size */
 .grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(100px, 1fr)); gap:10px; }
-.thumb{ background:#0b1117; border:1px solid var(--border); border-radius:10px; overflow:hidden; cursor:pointer; }
+.thumb{ background:#0b1117; border:1px solid var(--border); border-radius:10px; overflow:hidden; cursor:pointer;     max-height: 160px;}
 .thumb img{ display:block; width:100%; height:auto; }
 .thumb .meta{ padding:6px 8px; color:#cdd6df; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
@@ -213,6 +213,15 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   box-shadow: 0 6px 20px rgba(0,0,0,.06);
   max-height: 36vh;         /* fixed max height */
   margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+@media (max-width: 900px){ 
+  .results-info{
+    overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, .6) transparent;
+  }
 }
 
 
