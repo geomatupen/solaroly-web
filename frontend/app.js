@@ -825,6 +825,10 @@ function renderLegend(){
 
 
 async function applySessionToMap(sessionName){
+  // clear previous tile layers (if any)
+  for (const tl of tileLayers){ try{ MAP.removeLayer(tl); }catch(_){} }
+  tileLayers = [];
+
   // always get the summary first (gives us URLs we can trust)
   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
   if (!res.ok) { console.warn('session_summary failed'); return; }
@@ -835,7 +839,7 @@ async function applySessionToMap(sessionName){
   const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + 'anomalies.geojson');
   const imagesUrl    = sum.images_geojson    || sum.images      || (sessRoot + 'images.geojson');
 
-  // 1) polygons
+  // 1) polygons (anomalies)
   if (anomaliesUrl){
     try { await loadGeoJSON(anomaliesUrl); }
     catch(e){ console.warn('anomalies fetch failed:', e); }
@@ -844,9 +848,55 @@ async function applySessionToMap(sessionName){
   // 2) photos (catalog + sidebar)
   await loadImagesCatalog(sessionName, imagesUrl);
 
-  // refresh the layer list after both loads
+  // 3) raster tiles from ORIGINAL GeoTIFF (no copy into media/)
+  try{
+    const tr = await (await fetch(`/api/session_tiles?session=${encodeURIComponent(sessionName)}`, { cache:'no-store' })).json();
+    if (tr?.ok && Array.isArray(tr.layers) && tr.layers.length){
+      installTileLayers(tr.layers);    // install + auto-fit to first layer
+    }
+  }catch(e){
+    console.warn('session_tiles fetch failed:', e);
+  }
+
+  // 4) refresh UI
   refreshLayersPanel();
 }
+
+
+function installTileLayers(layers){
+  // remove any old layers (defensive; applySessionToMap already does it)
+  for (const tl of tileLayers){ try{ MAP.removeLayer(tl); }catch(_){} }
+  tileLayers = [];
+
+  let firstBounds = null;
+
+  layers.forEach((Ldef, i)=>{
+    const lyr = L.tileLayer(Ldef.template, {
+      minZoom: Ldef.minzoom ?? 0,
+      maxZoom: Ldef.maxzoom ?? 22
+    });
+
+    // add to map and registry; turn on the first by default
+    if (i === 0) { lyr.addTo(MAP); }
+
+    tileLayers.push(lyr);
+    const name = `Raster: ${Ldef.name || `TIF ${i+1}`}`;
+    overlayRegistry[name] = { layer: lyr, type: "raster", style: { opacity: 1 } };
+
+    // remember bounds of first layer to fit map
+    if (!firstBounds && Array.isArray(Ldef.bounds) && Ldef.bounds.length === 2){
+      // backend returns [[south, west],[north, east]]
+      const sw = L.latLng(Ldef.bounds[0][0], Ldef.bounds[0][1]);
+      const ne = L.latLng(Ldef.bounds[1][0], Ldef.bounds[1][1]);
+      firstBounds = L.latLngBounds(sw, ne);
+    }
+  });
+
+  if (firstBounds){
+    try{ MAP.fitBounds(firstBounds, { padding:[20,20] }); }catch(_){}
+  }
+}
+
 
 // ---- Image markers (GeoJSON → Leaflet layer + registry) ----
 function installImageMarkers(gj) {

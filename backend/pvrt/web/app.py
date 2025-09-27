@@ -216,19 +216,136 @@ def _count_top_level_images(d: Path) -> int:
         return 0
     return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
 
+def _render_tif_overlay_preview(
+    tif_path,                 # source GeoTIFF (RGB or single-band)
+    anomalies_geojson_path,   # EPSG:4326 polygons
+    out_png_path,             # where to save the preview PNG (under overlays/)
+    max_px=2000,              # max side for downsampled image
+    line_thickness=2
+):
+    """
+    Downsample the TIF to <= max_px on the long side, draw anomalies from anomalies_geojson_path
+    (WGS84) onto the preview (in source CRS), and save a single PNG for the Results page.
+    """
+    import json
+    from pathlib import Path
+    import numpy as np, cv2, rasterio
+    from rasterio.enums import Resampling
+    from affine import Affine
+    from pyproj import Transformer
 
-
-# --- ADD: split a GeoTIFF into GeoTIFF tiles (preserve CRS/transform) ---
-def _tile_tif_to_dir(tif_path: Path, tiles_dir: Path, tile_size: int = 1024, stride: int | None = None) -> list[Path]:
-    import rasterio
-    from rasterio.windows import Window, transform as win_transform
-
-    stride = stride or tile_size
-    tiles_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
+    tif_path = Path(tif_path); out_png_path = Path(out_png_path)
+    out_png_path.parent.mkdir(parents=True, exist_ok=True)
 
     with rasterio.open(tif_path) as src:
         W, H = src.width, src.height
+        # target preview size
+        scale = max(W, H) / float(max_px) if max(W, H) > max_px else 1.0
+        out_w = int(round(W / scale)); out_h = int(round(H / scale))
+
+        # --- Read bands robustly and always end with 3 channels ---
+        cnt = src.count
+        if cnt >= 3:
+            arr = src.read(indexes=[1, 2, 3],
+                           out_shape=(3, out_h, out_w),
+                           resampling=Resampling.bilinear)
+        elif cnt == 2:
+            a12 = src.read(indexes=[1, 2],
+                           out_shape=(2, out_h, out_w),
+                           resampling=Resampling.bilinear)
+            a3 = np.zeros((1, out_h, out_w), dtype=a12.dtype)
+            arr = np.concatenate([a12, a3], axis=0)
+        else:
+            a1 = src.read(indexes=1,
+                          out_shape=(out_h, out_w),
+                          resampling=Resampling.bilinear)
+            arr = np.stack([a1, a1, a1], axis=0)  # (3,H,W)
+
+        # robust 2–98% stretch → uint8
+        arr = arr.astype("float32")
+        for c in range(3):
+            a = arr[c]
+            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+            if hi <= lo: hi = lo + 1
+            arr[c] = np.clip((a - lo) * (255.0/(hi-lo)), 0, 255)
+
+        # (H,W,3) uint8, C-contiguous for OpenCV
+        rgb = arr.transpose(1, 2, 0).astype(np.uint8)
+        rgb = np.ascontiguousarray(rgb)
+
+        # Transform of the downsampled image (map↔pixel)
+        ds_transform = src.transform * Affine.scale(W/out_w, H/out_h)
+        inv_ds = ~ds_transform
+        tf_wgs_to_src = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+
+    # --- Draw polygons ---
+    with open(anomalies_geojson_path, "r", encoding="utf-8") as f:
+        gj = json.load(f)
+
+    def _draw_ring(ring_lonlat):
+        if not ring_lonlat:
+            return
+        lon = [pt[0] for pt in ring_lonlat]
+        lat = [pt[1] for pt in ring_lonlat]
+        X, Y = tf_wgs_to_src.transform(lon, lat)  # to source CRS
+        pts = []
+        for x, y in zip(X, Y):
+            col, row = inv_ds * (x, y)
+            pts.append([int(round(col)), int(round(row))])
+        if len(pts) >= 2:
+            pts_np = np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
+            # draw in-place; rgb is contiguous uint8 (H,W,3)
+            cv2.polylines(rgb, [pts_np], isClosed=True, color=(255, 0, 0), thickness=line_thickness)
+
+    feats = gj.get("features", [])
+    for feat in feats:
+        geom = (feat or {}).get("geometry") or {}
+        gtype = geom.get("type")
+        if gtype == "Polygon":
+            for ring in geom.get("coordinates", []):
+                _draw_ring(ring)
+        elif gtype == "MultiPolygon":
+            for rings in geom.get("coordinates", []):
+                for ring in rings:
+                    _draw_ring(ring)
+        # ignore other geometry types
+
+    cv2.imwrite(str(out_png_path), rgb)
+    return out_png_path
+
+
+
+# --- ADD: split a GeoTIFF into GeoTIFF tiles (preserve CRS/transform) ---
+def _tile_tif_to_dir(tif_path, tiles_dir, tile_size=1024, stride=None):
+    """
+    Split a GeoTIFF into GeoTIFF tiles preserving CRS/transform; return list of tile paths.
+    Logs CRS for source and a few sample tiles for verification.
+    """
+    import logging, rasterio
+    from rasterio.windows import Window
+    from rasterio.windows import transform as win_transform
+    from pathlib import Path
+
+    def _crs_id(crs):
+        try:
+            if crs is None:
+                return "None"
+            epsg = crs.to_epsg()
+            return f"EPSG:{epsg}" if epsg else crs.to_string()
+        except Exception:
+            return str(crs)
+
+    logger = logging.getLogger("pvrt")
+    tiles_dir = Path(tiles_dir)
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+
+    stride = stride or tile_size
+    written = []
+
+    with rasterio.open(tif_path) as src:
+        logger.info(f"Tiler: source='{Path(tif_path).name}' CRS={_crs_id(src.crs)} size={src.width}x{src.height}")
+        W, H = src.width, src.height
+
         for y0 in range(0, H, stride):
             for x0 in range(0, W, stride):
                 w = min(tile_size, W - x0)
@@ -238,51 +355,108 @@ def _tile_tif_to_dir(tif_path: Path, tiles_dir: Path, tile_size: int = 1024, str
 
                 window = Window(x0, y0, w, h)
                 t_tile = win_transform(window, src.transform)
+
                 profile = src.profile.copy()
                 profile.update({
-                    "height": h, "width": w,
+                    "height": h,
+                    "width":  w,
                     "transform": t_tile,
-                    "driver": "GTiff"
+                    "driver": "GTiff",
                 })
-                outp = tiles_dir / f"{tif_path.stem}_{y0}_{x0}.tif"
+                # ensure every tile carries a CRS
+                profile["crs"] = src.crs
+
+                outp = tiles_dir / f"{Path(tif_path).stem}_{y0}_{x0}.tif"
                 with rasterio.open(outp, "w", **profile) as dst:
                     for b in range(1, src.count + 1):
                         dst.write(src.read(b, window=window), b)
                 written.append(outp)
+
+                # Log a few tiles to verify CRS & transform persisted
+                if (x0, y0) in [(0, 0), (tile_size, 0), (0, tile_size)]:
+                    with rasterio.open(outp) as chk:
+                        logger.info(
+                            f"Tiler: wrote '{outp.name}' CRS={_crs_id(chk.crs)} transform={chk.transform}"
+                        )
+
     return written
+
 
 # --- ADD: stitch per-tile JSON predictions into one anomalies.geojson (WGS84) ---
 def _build_anomalies_geojson_from_tiles(
-    tiles_dir: Path,
-    preds_dir: Path,
-    tif_path: Path,
-    out_session: Path,
-    class_names: list[str],
-    score_thresh: float = 0.0,
-) -> Path:
-    import json
+    tiles_dir,            # folder that contains the tile GeoTIFFs
+    preds_dir,            # session results dir, contains "preds/*.json"
+    tif_path,             # original source GeoTIFF
+    out_session,          # /media/sessions/<session>
+    class_names,          # list of class names
+    score_thresh=0.0,
+):
+    """
+    Build ONE merged anomalies.geojson in EPSG:4326 from per-tile predictions.
+    Prefers per-instance mask polygons in pixel space (jd['polygons']); falls back to bboxes.
+    Clips results to the source TIF footprint. Also writes images.geojson center point.
+    Returns (anomalies_geojson_path, images_geojson_path).
+    """
+    import json, logging
+    from pathlib import Path
     import rasterio
-    from shapely.geometry import Polygon, mapping
-    from rasterio.warp import transform_bounds, transform as rio_transform
+    from shapely.geometry import Polygon, mapping, box as shp_box
+    from pyproj import Transformer
 
+    def _crs_id(crs):
+        try:
+            if crs is None:
+                return "None"
+            epsg = crs.to_epsg()
+            return f"EPSG:{epsg}" if epsg else crs.to_string()
+        except Exception:
+            return str(crs)
+
+    logger = logging.getLogger("pvrt")
+    tiles_dir   = Path(tiles_dir)
+    preds_dir   = Path(preds_dir)
+    tif_path    = Path(tif_path)
+    out_session = Path(out_session)
     out_session.mkdir(parents=True, exist_ok=True)
 
-    # index tile tifs by stem (so preds/xxx.json → tiles/xxx.tif)
-    tile_index = {p.stem: p for p in tiles_dir.glob("*.tif")}
-    feats = []
+    # -- index tiles (support .tif and .tiff) --
+    tile_paths = list(tiles_dir.glob("*.tif")) + list(tiles_dir.glob("*.tiff"))
+    tile_index = {p.stem: p for p in tile_paths}
 
-    preds_json_dir = Path(preds_dir) / "preds"
-    for j in sorted(preds_json_dir.glob("*.json")):
+    # -- source CRS + footprint (WGS84) for clipping / fallback --
+    src_crs = None
+    tif_footprint_wgs84 = None
+    try:
+        with rasterio.open(tif_path) as src_ds:
+            src_crs = src_ds.crs
+            b = src_ds.bounds
+            logger.info(f"Stitcher: source='{tif_path.name}' CRS={_crs_id(src_crs)} bounds={b}")
+            tf_src_to_wgs = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+            xs = [b.left, b.right, b.right, b.left]
+            ys = [b.bottom, b.bottom, b.top,  b.top]
+            lon, lat = tf_src_to_wgs.transform(xs, ys)
+            left, right = min(lon), max(lon)
+            bottom, top = min(lat), max(lat)
+        tif_footprint_wgs84 = shp_box(left, bottom, right, top)
+    except Exception as e:
+        logger.warning(f"Stitcher: failed to read source CRS/bounds for '{tif_path.name}': {e}")
+
+    feats = []
+    preds_json_dir = preds_dir / "preds"
+
+    for jpath in sorted(preds_json_dir.glob("*.json")):
         try:
-            jd = json.loads(j.read_text(encoding="utf-8"))
+            jd = json.loads(jpath.read_text(encoding="utf-8"))
         except Exception:
             continue
-        boxes   = jd.get("boxes",   []) or []
-        scores  = jd.get("scores",  []) or []
-        classes = jd.get("classes", []) or []
-        # file name that predictor wrote (should match tile stem)
-        fname   = (jd.get("file") or (j.stem + ".tif"))
-        stem    = Path(fname).stem
+
+        polygons_px = jd.get("polygons") or []
+        boxes       = jd.get("boxes",   []) or []
+        scores      = jd.get("scores",  []) or []
+        classes     = jd.get("classes", []) or []
+
+        fname = jd.get("file") or (jpath.stem + ".tif")
+        stem  = Path(fname).stem
 
         tpath = tile_index.get(stem)
         if not tpath or not tpath.exists():
@@ -290,68 +464,122 @@ def _build_anomalies_geojson_from_tiles(
 
         with rasterio.open(tpath) as ds:
             tfm = ds.transform
-            crs = ds.crs
+            crs = ds.crs or src_crs    # tiles sometimes lose CRS — fallback to source
+            tf_tile_to_wgs = Transformer.from_crs(crs, "EPSG:4326", always_xy=True) if crs else None
 
-            # pixel→map using tile's affine
-            def px_to_map(x, y):
-                X = tfm.c + x*tfm.a + y*tfm.b
-                Y = tfm.f + x*tfm.d + y*tfm.e
+            # pixel (col,x; row,y) → map coords using Affine (NOTE: no +0.5, matches your notebook)
+            def px_to_map(col, row):
+                X, Y = (tfm * (col, row))
                 return (X, Y)
 
-            for b, s, c in zip(boxes, scores, classes):
-                try:
-                    if float(s) < float(score_thresh):
-                        continue
-                except Exception:
-                    pass
+            N = max(len(scores), len(classes), len(boxes), len(polygons_px))
+            for i in range(N):
+                sc = float(scores[i]) if i < len(scores) else 0.0
+                if sc < float(score_thresh):
+                    continue
+                cid = int(classes[i]) if i < len(classes) else 0
 
-                x1, y1, x2, y2 = map(float, b)
-                ring_native = [
-                    px_to_map(x1, y1), px_to_map(x2, y1),
-                    px_to_map(x2, y2), px_to_map(x1, y2),
-                    px_to_map(x1, y1)
-                ]
+                # Prefer precise mask polygon
+                if i < len(polygons_px) and polygons_px[i] and len(polygons_px[i]) >= 3:
+                    pts = polygons_px[i]  # [[x,y], ...] in pixel space
+                    ring_native = [px_to_map(float(x), float(y)) for (x, y) in pts]
+                    if ring_native[0] != ring_native[-1]:
+                        ring_native.append(ring_native[0])
+                else:
+                    if i >= len(boxes) or len(boxes[i]) != 4:
+                        continue
+                    x1, y1, x2, y2 = map(float, boxes[i])
+                    ring_native = [
+                        px_to_map(x1, y1),
+                        px_to_map(x2, y1),
+                        px_to_map(x2, y2),
+                        px_to_map(x1, y2),
+                        px_to_map(x1, y1),
+                    ]
+
                 xs, ys = zip(*ring_native)
 
-                try:
-                    lon, lat = rio_transform(crs, "EPSG:4326", list(xs), list(ys))
-                    poly = Polygon(zip(lon, lat))
-                except Exception:
-                    poly = Polygon(ring_native)  # fallback (native CRS)
+                # Reproject to EPSG:4326 via pyproj (axis-safe across rasterio versions)
+                poly = None
+                if tf_tile_to_wgs is not None:
+                    try:
+                        lon, lat = tf_tile_to_wgs.transform(list(xs), list(ys))
+                        if (-180 <= min(lon) <= 180 and -90 <= min(lat) <= 90):
+                            poly = Polygon(zip(lon, lat))
+                    except Exception:
+                        poly = None
 
-                cid = int(c)
-                props = {
-                    "score": float(s),
-                    "class_id": cid,
-                    "class_name": (class_names[cid] if 0 <= cid < len(class_names) else f"class_{cid}"),
-                    "tile": fname,
-                    "source": tif_path.name,
-                }
-                feats.append({"type": "Feature", "geometry": mapping(poly), "properties": props})
+                if poly is None:
+                    # last resort: keep native coords only if they already look like degrees
+                    if max(abs(min(xs)), abs(max(xs))) <= 180 and max(abs(min(ys)), abs(max(ys))) <= 90:
+                        poly = Polygon(ring_native)
+                    else:
+                        continue
 
-    # write anomalies.geojson
-    fc = {"type": "FeatureCollection", "features": feats}
-    out_gj = out_session / "anomalies.geojson"
-    out_gj.write_text(json.dumps(fc), encoding="utf-8")
+                # Clip to source footprint
+                if tif_footprint_wgs84 is not None and poly.is_valid:
+                    poly = poly.intersection(tif_footprint_wgs84)
 
-    # also write a tiny images.geojson with the raster center point (for your sidebar)
+                if not poly.is_valid or poly.is_empty or poly.area <= 0:
+                    continue
+
+                cname = class_names[cid] if isinstance(class_names, (list, tuple)) and 0 <= cid < len(class_names) else f"class_{cid}"
+                feats.append({
+                    "type": "Feature",
+                    "geometry": mapping(poly),
+                    "properties": {
+                        "score": sc,
+                        "class_id": cid,
+                        "class_name": cname,
+                        "tile": Path(fname).name,
+                        "source": tif_path.name,
+                    }
+                })
+
+    # --- write anomalies.geojson ---
+    anom_fc = {"type": "FeatureCollection", "features": feats}
+    anom_path = out_session / "anomalies.geojson"
+    anom_path.write_text(json.dumps(anom_fc, indent=2), encoding="utf-8")
+
+    # --- write images.geojson (center point in WGS84) ---
     try:
-        with rasterio.open(tif_path) as ds:
-            left, bottom, right, top = transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21)
-            cx, cy = (left + right) / 2, (bottom + top) / 2
+        with rasterio.open(tif_path) as src_ds:
+            b = src_ds.bounds
+            tf_src_to_wgs = Transformer.from_crs(src_ds.crs, "EPSG:4326", always_xy=True)
+            lon, lat = tf_src_to_wgs.transform([b.left, b.right], [b.bottom, b.top])
+        cx = (min(lon) + max(lon)) / 2.0
+        cy = (min(lat) + max(lat)) / 2.0
     except Exception:
-        cx, cy = 0.0, 0.0
-    images_fc = {
+        # fallback: union tile bounds
+        try:
+            xs = []; ys = []
+            tf_src_to_wgs = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True) if src_crs else None
+            for t in tile_paths:
+                with rasterio.open(t) as ds2:
+                    bb = ds2.bounds
+                    if tf_src_to_wgs:
+                        tlon, tlat = tf_src_to_wgs.transform([bb.left, bb.right], [bb.bottom, bb.top])
+                        xs += [min(tlon), max(tlon)]
+                        ys += [min(tlat), max(tlat)]
+            cx = (min(xs) + max(xs)) / 2.0 if xs else 0.0
+            cy = (min(ys) + max(ys)) / 2.0 if ys else 0.0
+        except Exception:
+            cx, cy = 0.0, 0.0
+
+    imgs_fc = {
         "type": "FeatureCollection",
         "features": [{
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [cx, cy]},
-            "properties": {"image": tif_path.name}
+            "properties": {"image": Path(tif_path).name}
         }]
     }
-    (out_session / "images.geojson").write_text(json.dumps(images_fc), encoding="utf-8")
+    imgs_path = out_session / "images.geojson"
+    imgs_path.write_text(json.dumps(imgs_fc, indent=2), encoding="utf-8")
+    return anom_path, imgs_path
 
-    return out_gj
+
+
 
 
 # --- ADD (helper near others): quick PNG thumb for a GeoTIFF ---
@@ -1157,6 +1385,8 @@ async def api_test_run(
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
     input_type = _detect_image_input_type(ds_dir)  # you already have this helper: returns 'tif' or 'images'
 
+    
+
     # Default run directory is the original dataset
     run_images_dir = ds_dir
     tiles_dir = None
@@ -1176,7 +1406,7 @@ async def api_test_run(
         run_images_dir = tiles_dir
         thumb_path = _save_tif_thumbnail(tif_src, out_root / "thumbs")
 
-    
+    logging.getLogger("pvrt").info(f"TestRun: image_input_type={input_type} ds='{ds_dir.name}' tiles='{tiles_dir if input_type=='tif' else '-'}'")
 
     def _do_predict():
         with redirect_std_to_logger():
@@ -1233,6 +1463,7 @@ async def api_test_run(
     Path(manifest_path).write_text(json.dumps(manifest_obj, indent=2), encoding="utf-8")
 
     # Re-read the enriched manifest and derive exif_index from it
+        # Re-read manifest and derive EXIF index
     try:
         manifest_obj = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
@@ -1243,87 +1474,117 @@ async def api_test_run(
         if isinstance(entry, dict) and "lat" in entry and "lon" in entry:
             exif_from_manifest[fname] = (float(entry["lat"]), float(entry["lon"]))
 
-        # anom_gj, imgs_gj = _preds_to_geojson(
-        #     ds_dir, preds_dir, out_root, class_names, score_thresh=th_num
-        # )
-        # after you’ve created the session folder and saved overlays/ + preds/
+    # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
+    session_dir = MEDIA_DIR / "sessions" / session
+    if input_type == "tif":
+        anom_gj, imgs_gj = _build_anomalies_geojson_from_tiles(
+            tiles_dir=tiles_dir,
+            preds_dir=preds_dir,
+            tif_path=tif_src,
+            out_session=session_dir,
+            class_names=class_names,
+            score_thresh=th_num,
+        )
 
-        session_dir = MEDIA_DIR / "sessions" / session
-        
-        if input_type == "tif":
-            # --- THIS is where the merged GeoJSON is produced after tile inference ---
-            anom_gj = _build_anomalies_geojson_from_tiles(
-                tiles_dir=tiles_dir,
-                preds_dir=preds_dir,
-                tif_path=tif_src,
-                out_session=session_dir,
-                class_names=class_names,
-                score_thresh=th_num,
-            )
-            imgs_gj = session_dir / "images.geojson"  # written by the stitcher
-        else:
-            # your existing images→geojson path
-            anom_gj, imgs_gj = _preds_to_geojson(
-                images_dir=Path(ds_dir),
-                preds_dir=Path(preds_dir),
-                out_session=Path(session_dir),
-                class_names=class_names,
-                score_thresh=float(th_num or 0.0),
-                meters_per_pixel=0.05,   #ground sampling distance (GSD)
-                exif_index=exif_from_manifest,
-            )      
+        # Render downsampled overlay PNG for results grid
+        ov_dir = out_root / "overlays"; ov_dir.mkdir(parents=True, exist_ok=True)
+        overlay_png = ov_dir / f"{tif_src.stem}_overlay.png"
+        _render_tif_overlay_preview(
+            tif_path=tif_src,
+            anomalies_geojson_path=anom_gj,   # <-- use the path we just got
+            out_png_path=overlay_png,
+            max_px=2000,
+            line_thickness=2,
+        )
 
+        # Small thumb from overlay
+        th_dir = out_root / "thumbs"; th_dir.mkdir(parents=True, exist_ok=True)
+        thumb_png = th_dir / f"{tif_src.stem}_overlay_thumb.png"
+        try:
+            import cv2
+            im = cv2.imread(str(overlay_png), cv2.IMREAD_COLOR)
+            if im is not None:
+                h, w = im.shape[:2]
+                scale = 512 / float(max(h, w))
+                if scale < 1.0:
+                    im = cv2.resize(im, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+                cv2.imwrite(str(thumb_png), im)
+        except Exception:
+            pass
 
-        if isinstance(manifest_path, (str, Path)):
+        # Update manifest entry for this TIF so results grid shows overlay/thumb
+        try:
+            m = {}
             mp = Path(manifest_path)
-            if mp.suffix.lower() == ".json" and mp.exists():
-                try:
-                    manifest_items = json.loads(mp.read_text(encoding="utf-8"))
-                except Exception:
-                    manifest_items = []
-            else:
+            if mp.exists():
+                m = json.loads(mp.read_text(encoding="utf-8"))
+            m[tif_src.name] = {
+                "overlay": f"/media/{overlay_png.relative_to(MEDIA_DIR)}",
+                "thumb":   f"/media/{thumb_png.relative_to(MEDIA_DIR)}",
+            }
+            mp.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    else:
+        anom_gj, imgs_gj = _preds_to_geojson(
+            images_dir=Path(ds_dir),
+            preds_dir=Path(preds_dir),
+            out_session=session_dir,
+            class_names=class_names,
+            score_thresh=float(th_num or 0.0),
+            meters_per_pixel=0.05,
+            exif_index=exif_from_manifest,
+        )
+
+    # Collect assets for UI
+    if isinstance(manifest_path, (str, Path)):
+        mp = Path(manifest_path)
+        if mp.suffix.lower() == ".json" and mp.exists():
+            try:
+                manifest_items = json.loads(mp.read_text(encoding="utf-8"))
+            except Exception:
                 manifest_items = []
-        elif isinstance(manifest_path, list):
-            manifest_items = manifest_path
         else:
             manifest_items = []
-        
-        assets = _session_assets(ses)
+    elif isinstance(manifest_path, list):
+        manifest_items = manifest_path
+    else:
+        manifest_items = []
 
-        # --- persist image_input_type in metrics.json ---
-        try:
-            mpath = out_root / "metrics.json"   # session/<name>/metrics.json
-            import logging
-            metrics = {}
-            if mpath.exists():
-                metrics = json.loads(mpath.read_text(encoding="utf-8"))
-            # images_dir should be the directory containing the test inputs you ran on
-            metrics["image_input_type"] = _detect_image_input_type(ds_dir)
-            # (optional) persist the numeric threshold you just used if not set by predictor
-            metrics.setdefault("score_thresh_test", th_num)
-            mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-        except Exception as e:
-            logging.getLogger("pvrt.test").warning(f"metrics.json patch failed: {e}")
+    assets = _session_assets(ses)
 
+    # Persist a couple of run metrics
+    try:
+        mpath = out_root / "metrics.json"
+        metrics = {}
+        if mpath.exists():
+            metrics = json.loads(mpath.read_text(encoding="utf-8"))
+        metrics["image_input_type"] = _detect_image_input_type(ds_dir)
+        metrics["tif_sources"] = [str(tif_src)]   
+        metrics.setdefault("score_thresh_test", th_num)
+        mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.getLogger("pvrt.test").warning(f"metrics.json patch failed: {e}")
 
-        logger.info(f"UI:OK:test: complete. results={preds_dir}")
-        return {
-            "ok": True,
-            "session": session,
-            # keep old key for backward compatibility
-            "geojson": str(anom_gj),
-            "anomalies_geojson": f"/media/{anom_gj.relative_to(MEDIA_DIR)}",
-            "images_geojson":    f"/media/{imgs_gj.relative_to(MEDIA_DIR)}",
-            "results_dir": str(preds_dir),
-            "overlays": f"/media/{ov_dir.relative_to(MEDIA_DIR)}",
-            "thumbs":   f"/media/{th_dir.relative_to(MEDIA_DIR)}",
-            "manifest": manifest_items,
-            "assets": assets,
-            "backend": presp.get("used_backend"),
-            "model_mode": presp.get("model_mode"),
-            "used_thermal": bool(presp.get("used_thermal")),
-            "media_root": f"/media/sessions/{out_root.name}",
-        }
+    logger.info(f"UI:OK:test: complete. results={preds_dir}")
+    return {
+        "ok": True,
+        "session": session,
+        "geojson": str(anom_gj),  # backward-compat
+        "anomalies_geojson": f"/media/{anom_gj.relative_to(MEDIA_DIR)}",
+        "images_geojson":    f"/media/{imgs_gj.relative_to(MEDIA_DIR)}",
+        "results_dir": str(preds_dir),
+        "overlays": f"/media/{ov_dir.relative_to(MEDIA_DIR)}",
+        "thumbs":   f"/media/{th_dir.relative_to(MEDIA_DIR)}",
+        "manifest": manifest_items,
+        "assets": assets,
+        "backend": presp.get("used_backend"),
+        "model_mode": presp.get("model_mode"),
+        "used_thermal": bool(presp.get("used_thermal")),
+        "media_root": f"/media/sessions/{out_root.name}",
+    }
+
 
 
 
@@ -1390,13 +1651,42 @@ def api_model_meta(run_name: str):
 
 
 # -------------- Simple dynamic tiler for TIFF (XYZ) --------------
+# -------------- Simple dynamic tiler for TIFF (XYZ) --------------
 _TILER_INDEX: Dict[str, List[Path]] = {}
 
 def _session_tifs(session: str) -> List[Path]:
-    ses = MEDIA_DIR / session
+    """
+    Return the list of *original* tif paths for this session.
+    Prefer absolute paths stored in metrics.json ("tif_sources"),
+    fall back to any tifs that happened to be copied under the session dir.
+    """
+    ses = MEDIA_DIR / "sessions" / session
     if not ses.exists():
         return []
-    return [p for p in (ses / "images").glob("*") if p.suffix.lower() in (".tif", ".tiff")]
+
+    tifs: List[Path] = []
+
+    # 1) Prefer absolute sources recorded by api_test_run
+    mpath = ses / "metrics.json"
+    if mpath.exists():
+        try:
+            metr = json.loads(mpath.read_text(encoding="utf-8"))
+            srcs = metr.get("tif_sources") or []
+            for s in srcs:
+                p = Path(s)
+                if p.exists():
+                    tifs.append(p)
+        except Exception:
+            pass
+
+    # 2) Fallback: anything under this session (if you ever copy files here)
+    if not tifs:
+        imgdir = ses / "images"
+        if imgdir.exists():
+            tifs = [p for p in imgdir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
+
+    return tifs
+
 
 @app.get("/api/session_tiles")
 async def api_session_tiles(session: str):
