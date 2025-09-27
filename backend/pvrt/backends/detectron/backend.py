@@ -340,11 +340,7 @@ class DetectronBackend(Backend):
 
     def predict(self, cfg_in: PredictConfig) -> Path:
         """
-        Test with thermal only if:
-        - user requested thermal, AND
-        - images have thermal sidecars, AND
-        - the model was trained with thermal (meta: input_mode == 'rgbt')
-        Otherwise, fallback to RGB predictor.
+        Backend obeys the decision made by the web bridge (cfg_in.use_thermal).
         """
         images_dir = Path(cfg_in.images_dir)
         out_dir    = Path(cfg_in.out_dir)
@@ -354,44 +350,16 @@ class DetectronBackend(Backend):
         meta = load_model_meta(weights)
         model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
 
-        # final score threshold (cfg_in wins; else meta; else 0.5)
-        score_thresh = (
-            float(cfg_in.score_thresh)
-            if cfg_in.score_thresh is not None
-            else float(meta.get("score_thresh_test", 0.5))
-        )
+        score_thresh = float(cfg_in.score_thresh) if cfg_in.score_thresh is not None else float(meta.get("score_thresh_test", 0.5))
 
-        # break the conditions out so we can log a precise reason
-        request_thermal   = bool(cfg_in.use_thermal)
-        data_has_thermal  = has_thermal_for_images(images_dir)
-        model_is_rgbt     = model_mode in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}
+        if cfg_in.use_thermal:
+            log.info(f"UI:INFO:test: backend=detectron | selected=rgbt | score_thresh={score_thresh:.3f}")
+            return predict_folder_rgbt(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
 
-        if request_thermal and data_has_thermal and model_is_rgbt:
-            # log.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt")
-            log.info("UI:INFO:test: backend=detectron | selected=rgbt | score_thresh={score_thresh:.3f}")
-            return predict_folder_rgbt(
-                images_dir=images_dir,
-                weights_dir=weights,
-                out_dir=out_dir,
-                score_thresh=score_thresh,
-            )
+        log.info(f"UI:INFO:test: backend=detectron | selected=rgb | score_thresh={score_thresh:.3f}")
+        return predict_folder_rgb(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
 
-        # --- fallback to RGB; compute a clear reason for the mini-log ---
-        if not request_thermal:
-            reason = "request_false"
-        elif not data_has_thermal:
-            reason = "no_thermal_in_dataset"
-        else:
-            reason = f"model_mode={model_mode!r}"  # model not trained for thermal
 
-        log.warning(f"UI:WARN:test: decision: FALLBACK to RGB (reason={reason})")
-        log.info("UI:INFO:test: backend=detectron | selected=rgb")
-        return predict_folder_rgb(
-            images_dir=images_dir,
-            weights_dir=weights,
-            out_dir=out_dir,
-            score_thresh=score_thresh, 
-        )
 
 
     def read_meta(self, weights_dir: Path) -> dict:

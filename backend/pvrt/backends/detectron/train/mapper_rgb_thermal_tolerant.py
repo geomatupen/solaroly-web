@@ -67,6 +67,8 @@ class RGBThermalDatasetMapper:
     """
 
     def __init__(self, cfg, is_train: bool = True):
+        self.cfg = cfg  
+        self.is_train = is_train
         self.is_train = bool(is_train)
         self.image_format = getattr(cfg.INPUT, "FORMAT", "BGR")
         self.mask_format = getattr(cfg.INPUT, "MASK_FORMAT", "polygon")
@@ -132,8 +134,15 @@ class RGBThermalDatasetMapper:
         th  = tfm.apply_image(th) # same transform to thermal
 
         # 3) Photometric jitter: RGB only (train)
+        # if getattr(self, "is_train", False):
+        #     rgb = T.AugmentationList(build_rgb_photometric_augs())(T.AugInput(rgb)).image
+        # 3) Photometric jitter: RGB only (train)
         if getattr(self, "is_train", False):
-            rgb = T.AugmentationList(build_rgb_photometric_augs())(T.AugInput(rgb)).image
+            _rgb_photo = T.AugmentationList(build_rgb_photometric_augs())
+            _ain = T.AugInput(rgb)
+            _rgb_photo(_ain)     # applies in-place; returns TransformList (ignored)
+            rgb = _ain.image
+
 
         # 4) Annotations -> Instances (use ONLY the geometric transform)
         if "annotations" in d:

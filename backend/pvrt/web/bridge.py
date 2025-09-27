@@ -23,39 +23,18 @@ _log_test = logging.getLogger("pvrt.test")   # mini-log (SSE panel)
 _log_full = logging.getLogger("pvrt")        # full logs tab
 
 
-def _select_infer_mode(
-    use_thermal_request: bool,
-    images_dir: Path,
-    model_mode: str,
-) -> tuple[bool, str | None]:
-    """
-    Decide whether to run RGB or RGB+Thermal.
-
-    Returns:
-      (use_thermal, reason)
-      - use_thermal: True - rgbt, False - rgb
-      - reason: non-empty only when falling back to rgb
-    """
-    data_has_thermal = has_thermal_for_images(images_dir)
-    model_is_rgbt = model_mode in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}
-
+def _select_infer_mode(use_thermal_request: bool, data_has_thermal: bool, model_mode: str):
+    model_is_rgbt = model_mode in {"rgbt","rgb+thermal","thermal","rgb_thermal","4ch"}
     if use_thermal_request and data_has_thermal and model_is_rgbt:
-        # OK to use thermal
-        _log_test.info(
-            "UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt"
-        )
+        _log_test.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt")
         return True, None
-
-    # Fallback reasons (kept simple & explicit)
-    if not use_thermal_request:
-        reason = "request_false"
-    elif not data_has_thermal:
-        reason = "no_thermal_in_dataset"
-    else:
-        reason = f"model_mode={model_mode!r}"  # model not trained for thermal
-
-    _log_test.warning(f"UI:WARN:test: decision: FALLBACK to RGB (reason={reason})")
+    # fallback reason
+    if not use_thermal_request: reason = "request_false"
+    elif not data_has_thermal:  reason = "no_thermal_in_dataset"
+    else:                       reason = f"model_mode={model_mode!r}"
+    _log_test.warning(f"UI:INFO:test: decision: FALLBACK to RGB (reason={reason})")
     return False, reason
+
 
 
 def train_entry(
@@ -85,7 +64,7 @@ def train_entry(
     thermal_ok = bool(use_thermal_request and has_thermal_for_images(train_dir))
     _log_full.info(
         f"UI:INFO:train: decision: use_thermal_request={use_thermal_request}, "
-        f"data_has_thermal={thermal_ok} - {'rgbt' if thermal_ok else 'rgb'}"
+        f"data_has_thermal={thermal_ok} - {'rgbt' if thermal_ok else 'rgb'}, learning rate = {base_lr}"
     )
 
     backend_impl = get_backend(backend)
@@ -113,58 +92,31 @@ def predict_entry(
     use_thermal_request: bool,
     forced_backend: Optional[BackendName] = None,
     score_thresh_frontend: Optional[float] = None,
+    data_has_thermal_override: Optional[bool] = None,   # <-- keep this
 ) -> dict:
-    """
-    Decide whether to run RGBT or RGB inference:
-
-      Use thermal ONLY if:
-        - user requested thermal, AND
-        - images have thermal sidecars, AND
-        - the model was trained with thermal (meta: input_mode == 'rgbt')
-
-    Returns a dict with:
-      - results_dir: Path
-      - used_backend: str
-      - model_mode: 'rgb' | 'rgbt'
-      - used_thermal: bool
-    """
-    weights_dir = Path(weights_dir)
-    images_dir = Path(images_dir)
-    out_dir = Path(out_dir)
-
-    # Read model meta to discover backend + input_mode
     meta = load_model_meta(weights_dir)
     model_mode = input_mode_from_meta(meta, default="rgb")
+    backend_name = (forced_backend or meta.get("backend") or "detectron").strip().lower()
+    backend_impl = get_backend(backend_name)
 
-    # Pick backend: prefer the one that trained the model; allow override
-    backend_name = (forced_backend or meta.get("backend") or "detectron").strip().lower()  # type: ignore
-    backend_impl = get_backend(backend_name)  # raises KeyError if unknown
-
-    # Thermal decision for prediction (with clear mini-log line)
-    use_thermal, _reason = _select_infer_mode(use_thermal_request, images_dir, model_mode)
-
-    # Resolve score threshold: prefer frontend; else meta; else 0.5
-    if score_thresh_frontend is not None:
-        chosen_thresh = float(score_thresh_frontend)
-        source = "frontend"
+    if data_has_thermal_override is not None:
+        data_has_thermal = bool(data_has_thermal_override)
     else:
-        chosen_thresh = float(meta.get("score_thresh_test", 0.5))
-        source = "meta"
+        from ..core.io import has_thermal_for_images
+        data_has_thermal = has_thermal_for_images(images_dir)
 
-    _log_test.info(
-        f"UI:INFO:test: threshold={chosen_thresh:.3f} (source={source})"
-    )
+    use_thermal, _ = _select_infer_mode(use_thermal_request, data_has_thermal, model_mode)
 
-    # (Optional) backend selection info (helps when override is used)
-    if forced_backend and forced_backend != meta.get("backend"):
-        _log_full.info(f"UI:INFO:test: backend override: forced={forced_backend} meta={meta.get('backend')} - using {backend_name}")
+    chosen_thresh = float(score_thresh_frontend) if score_thresh_frontend is not None else float(meta.get("score_thresh_test", 0.5))
+    _log_test.info(f"UI:INFO:test: Use thermal in bridge.py={use_thermal_request} , data hase thermal = {data_has_thermal}, model_mode = {model_mode})")
+    _log_test.info(f"UI:INFO:test: threshold={chosen_thresh:.3f} (source={'frontend' if score_thresh_frontend is not None else 'meta'})")
 
     results_dir = backend_impl.predict(
         PredictConfig(
             images_dir=images_dir,
             out_dir=out_dir,
             weights_dir=weights_dir,
-            use_thermal=use_thermal,
+            use_thermal=use_thermal,       # backend obeys this boolean
             score_thresh=chosen_thresh,
         )
     )
@@ -175,3 +127,5 @@ def predict_entry(
         "used_thermal": use_thermal,
         "score_thresh": chosen_thresh,
     }
+
+

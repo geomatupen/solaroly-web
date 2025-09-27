@@ -202,6 +202,17 @@ def _load_metrics(ses) -> Dict[str, Any]:
         return {}
 
 
+def _tif_band_count(p: Path) -> int:
+    if not RIO_OK:
+        return 0
+    try:
+        import rasterio
+        with rasterio.open(p) as ds:
+            return int(ds.count)
+    except Exception:
+        return 0
+
+
 def _save_zip_as_dataset(zip_file: UploadFile, preferred_base: str | None = None) -> Path:
     base = _safe_name(preferred_base or Path(zip_file.filename or "dataset.zip").stem) or "dataset"
     ds_dir = _unique_dataset_dir(base)
@@ -239,11 +250,11 @@ def _iter_geotiffs(dirpath: Path):
         if p.is_file() and p.suffix.lower() in (".tif", ".tiff"):
             yield p
 
-def _count_top_level_images(d: Path) -> int:
-    """Count images directly under d (non-recursive)."""
-    if not d.exists() or not d.is_dir():
-        return 0
-    return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
+# def _count_top_level_images(d: Path) -> int:
+#     """Count images directly under d (non-recursive)."""
+#     if not d.exists() or not d.is_dir():
+#         return 0
+#     return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
 
 def _render_tif_overlay_preview(
     tif_path,                 # source GeoTIFF (RGB or single-band)
@@ -645,17 +656,17 @@ def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> 
 # ----------------- overlays & geojson -----------------
 # Keep these simple and library-light; they operate on predictor JSON files.
 
-def _coerce_pred_json(p: Path) -> dict:
-    try:
-        j = json.loads(p.read_text(encoding="utf-8"))
-        # normalize keys used by front-end (boxes: [x1,y1,x2,y2], scores, classes)
-        j.setdefault("boxes", [])
-        j.setdefault("scores", [])
-        j.setdefault("classes", [])
-        j.setdefault("file", p.stem)
-        return j
-    except Exception:
-        return {"file": p.stem, "boxes": [], "scores": [], "classes": []}
+# def _coerce_pred_json(p: Path) -> dict:
+#     try:
+#         j = json.loads(p.read_text(encoding="utf-8"))
+#         # normalize keys used by front-end (boxes: [x1,y1,x2,y2], scores, classes)
+#         j.setdefault("boxes", [])
+#         j.setdefault("scores", [])
+#         j.setdefault("classes", [])
+#         j.setdefault("file", p.stem)
+#         return j
+#     except Exception:
+#         return {"file": p.stem, "boxes": [], "scores": [], "classes": []}
 
 def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
@@ -1406,11 +1417,6 @@ async def api_test_run(
     out_root = MEDIA_DIR / "sessions" / session
     out_root.mkdir(parents=True, exist_ok=True)
 
-    if use_thermal:
-        ensure_dirp_init()
-        scan_split_decode_thermal(ds_dir)
-        logger.info("thermal images decoded")
-
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
     input_type = _detect_image_input_type(ds_dir)  # you already have this helper: returns 'tif' or 'images'
 
@@ -1420,33 +1426,68 @@ async def api_test_run(
     run_images_dir = ds_dir
     tiles_dir = None
     tif_src = None
+    tif_has_thermal = False  # only meaningful for 'tif'
 
-    if input_type == "tif":
-        # pick the one GeoTIFF in the dataset folder
+    if input_type == "images":
+        # Thermal decode ONLY for per-image RJPEG workflow
+        if use_thermal:
+            ensure_dirp_init()
+            scan_split_decode_thermal(ds_dir)
+            logger.info("thermal images decoded (images pipeline)")
+    else:
+        # input_type == "tif"
         tifs = [p for p in ds_dir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
         if not tifs:
             raise HTTPException(status_code=400, detail="No GeoTIFF found in dataset.")
-
         tif_src = tifs[0]
-        tiles_dir = out_root / "tiles"     # keep tiles inside the session folder
-        _tile_tif_to_dir(tif_src, tiles_dir, tile_size=1024, stride=1024)
 
-        # inference will run on *tiles_dir* (unchanged backend config)
+        # Tile the GeoTIFF; inference runs on *tiles_dir*
+        tiles_dir = out_root / "tiles"
+        _tile_tif_to_dir(tif_src, tiles_dir, tile_size=1024, stride=1024)
         run_images_dir = tiles_dir
+
+        # small preview (optional)
         thumb_path = _save_tif_thumbnail(tif_src, out_root / "thumbs")
 
-    logging.getLogger("pvrt").info(f"TestRun: image_input_type={input_type} ds='{ds_dir.name}' tiles='{tiles_dir if input_type=='tif' else '-'}'")
+        # Discover if the TIF has band-4 thermal (no DIRP step for mosaics)
+        try:
+            tif_has_thermal = (_tif_band_count(tif_src) >= 4)
+        except Exception:
+            tif_has_thermal = False
+        logger.info(f"UI:OK:test: Tif has thermal = {tif_has_thermal}")
+
+
+    logging.getLogger("pvrt").info(
+        f"TestRun: image_input_type={input_type} ds='{ds_dir.name}' tiles='{tiles_dir if input_type=='tif' else '-'}'"
+    )
+
+    # --- Effective thermal request & override for TIFF runs ---
+    meta = _read_model_meta(model_dir)
+    model_mode = (meta.get("input_mode") or "rgb").strip().lower()
+    model_is_rgbt = model_mode in {"rgbt","rgb+thermal","rgb_thermal","thermal","4ch"}
+
+    # If user ticked OR (TIF has band-4 AND model supports thermal) -> request thermal
+    use_thermal_effective = bool(use_thermal or (input_type == "tif" and tif_has_thermal and model_is_rgbt))
+    data_has_thermal_override = (tif_has_thermal if input_type == "tif" else None)
+
+    logging.getLogger("pvrt.test").info(
+        f"UI:INFO:test: will_request={'rgbt' if use_thermal_effective else 'rgb'}; "
+        f"override={data_has_thermal_override}"
+    )
 
     def _do_predict():
         with redirect_std_to_logger():
             return predict_entry(
                 weights_dir=model_dir,
-                images_dir=run_images_dir,
+                images_dir=run_images_dir,                 # tiles dir for tif
                 out_dir=out_root,
-                use_thermal_request=use_thermal,
+                use_thermal_request=use_thermal_effective,   # <-- use effective flag
                 forced_backend=forced_backend,
                 score_thresh_frontend=test_threshold,
+                data_has_thermal_override=data_has_thermal_override,  # <-- tell bridge TIF has band-4
             )
+
+
 
     try:
         presp = await asyncio.to_thread(_do_predict)  # <-- offload

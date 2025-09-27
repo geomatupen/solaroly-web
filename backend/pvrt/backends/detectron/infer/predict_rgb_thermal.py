@@ -77,7 +77,7 @@ def _read_rgb_and_thermal_from_path(p: Path):
       2) Else, read RGB via OpenCV and thermal from sidecar files (_thermal.*) as before.
     """
     # 1) In-band thermal (GeoTIFF)
-    if _RIO_OK_TH and p.suffix.lower() in (".tif", ".tiff"):
+    if RIO_OK_TH and p.suffix.lower() in (".tif", ".tiff"):
         try:
             with rasterio.open(p) as ds:
                 nb = ds.count
@@ -259,29 +259,44 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
     cfg.MODEL.DEVICE  = device
 
     try:
-        nc = int(getattr(cfg.MODEL.ROI_HEADS,"NUM_CLASSES",0) or 0)
+        nc = int(getattr(cfg.MODEL.ROI_HEADS, "NUM_CLASSES", 0) or 0)
     except Exception:
         nc = 0
-    m_nc = int(meta.get("num_classes",0) or 0)
+    m_nc = int(meta.get("num_classes", 0) or 0)
     if nc <= 0 and m_nc > 0:
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = m_nc
 
     thr = meta.get("score_thresh_test")
     if thr is not None:
-        try: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
-        except: pass
+        try:
+            cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
+        except Exception:
+            pass
 
-    # build and widen to 4ch
+    # --- IMPORTANT: make cfg 4ch BEFORE build_model ---
+    make_cfg_4ch(cfg)  # extend PIXEL_MEAN/STD to 4ch (B,G,R,T)
+
+    # build then widen conv1 to 4ch
     model = build_model(cfg)
     model.eval().to(device)
-    make_cfg_4ch(cfg)                     # extend PIXEL_MEAN/STD to 4ch
-    patch_first_conv_to_4ch(model)  # widen conv1
+
+    # ensure model pixel stats are 4-channel tensors on the right device
+    try:
+        pm = torch.as_tensor(cfg.MODEL.PIXEL_MEAN, dtype=torch.float32, device=device).view(-1, 1, 1)
+        ps = torch.as_tensor(cfg.MODEL.PIXEL_STD,  dtype=torch.float32, device=device).view(-1, 1, 1)
+        model.pixel_mean = pm
+        model.pixel_std  = ps
+    except Exception:
+        pass
+
+    patch_first_conv_to_4ch(model)
     DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
 
-    # class names
-    names = [str(x) for x in meta.get("class_names", [f"cls_{i}" for i in range(int(getattr(cfg.MODEL.ROI_HEADS,'NUM_CLASSES',0) or 0))])]
+    names = [str(x) for x in meta.get(
+        "class_names",
+        [f"cls_{i}" for i in range(int(getattr(cfg.MODEL.ROI_HEADS, "NUM_CLASSES", 0) or 0))]
+    )]
     return model, cfg, names, wpth
-
 
 
 
@@ -335,21 +350,19 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
 
     log.info("UI:OK:test: Testing started (RGB+Thermal)")
     log.info(f"UI:INFO:test: Images={n} | Device={cfg.MODEL.DEVICE} | Thr={getattr(cfg.MODEL.ROI_HEADS,'SCORE_THRESH_TEST',None)} | WeightsMD5={w_md5}")
-    # log.info(f"UI:INFO:test: Using model: {wdir}")
 
     total, with_dets = 0, 0
     for i, p in enumerate(imgs, 1):
-    # --- unified reader that supports in-band (band-4) thermal for GeoTIFFs ---
+        # unified reader: GeoTIFF band-4 thermal OR sidecar *_thermal.tif
         bgr, therm = _read_rgb_and_thermal_from_path(p)
 
         if bgr is None:
-            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"read_failed"})
+            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason": "read_failed"})
             log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (read_failed)")
             continue
 
         if therm is None:
-            # no band-4 and no sidecar → skip (same behavior as before, but reason is generic)
-            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason":"no_thermal_source"})
+            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason": "no_thermal_source"})
             log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (no_thermal_source)")
             continue
 
@@ -358,9 +371,9 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
         if th.shape[:2] != (H, W):
             th = cv2.resize(th, (W, H), interpolation=cv2.INTER_LINEAR)
 
-        # feed 4ch tensor
-        ch4    = np.dstack([bgr.astype(np.float32), (th*255.0)]).astype(np.float32)
-        tensor = torch.as_tensor(ch4.transpose(2,0,1)).to(cfg.MODEL.DEVICE)
+        ch4    = np.dstack([bgr.astype(np.float32), (th * 255.0)]).astype(np.float32)  # BGRT
+        tensor = torch.as_tensor(ch4.transpose(2, 0, 1)).to(cfg.MODEL.DEVICE)
+
         with torch.no_grad():
             outs = model([{"image": tensor, "height": H, "width": W}])
         inst = outs[0].get("instances", None)
@@ -373,17 +386,15 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
             scores  = inst.scores.numpy().tolist()
             classes = inst.pred_classes.numpy().tolist()
 
-        k = len(scores)
-        total += k
-        if k>0: with_dets += 1
+        k = len(scores); total += k
+        if k > 0: with_dets += 1
 
         write_pred_json(preds_dir, p.stem, boxes, scores, classes, extra={"file": p.name})
-
-        # draw BEFORE save; single PNG overlay in overlays dir
         overlay = _draw_overlay_rgbt(bgr, th, boxes, scores, classes, names)
         save_overlay_png(overlays_dir, p.stem, overlay)
-
         log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")
+
+# ... write metrics + return
 
     elapsed = time.time() - t0
     metrics = {
