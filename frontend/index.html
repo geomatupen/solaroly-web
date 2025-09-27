@@ -269,6 +269,15 @@
         <button class="iconBtn" id="btnCloseStyle">&times;</button>
       </div>
       <div class="modalBody">
+        <!-- inside #styleModal .body (keep your existing color/opacity inputs) -->
+        <div id="stColorByBlock" class="hidden" style="margin-top:10px">
+          <label for="stColorBy">Color by</label>
+          <select id="stColorBy"></select>
+        </div>
+
+        <div id="stCatList" class="hidden" style="margin-top:8px">
+          <!-- per-category color rows injected here -->
+        </div>
         <div class="formGrid">
           <div class="row">
             <label>Stroke</label>

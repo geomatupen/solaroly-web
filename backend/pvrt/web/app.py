@@ -24,6 +24,8 @@ from PIL import Image, ExifTags
 from PIL.ExifTags import TAGS, GPSTAGS
 import numpy as np
 import math
+from io import BytesIO
+_TILER_STATS = {}
 
 # --- Optional tiler deps (best-effort) ---
 try:
@@ -172,6 +174,33 @@ def _unique_dataset_dir(base_name: str) -> Path:
         if not cand.exists():
             return cand
         i += 1
+
+
+# ---- session helpers ----
+from typing import Any  # you already import Dict, List, etc.
+
+def _as_session_dir(ses) -> Path:
+    """
+    Accept a session name like 'test_20250927_111404' or an absolute Path,
+    and return the media sessions/<name> directory.
+    """
+    p = Path(ses)
+    if p.exists():
+        return p
+    return MEDIA_DIR / "sessions" / str(ses)
+
+def _load_metrics(ses) -> Dict[str, Any]:
+    """
+    Read MEDIA_DIR/sessions/<session>/metrics.json safely.
+    Returns {} if missing/invalid.
+    """
+    ses_dir = _as_session_dir(ses)
+    mp = ses_dir / "metrics.json"
+    try:
+        return json.loads(mp.read_text(encoding="utf-8")) if mp.exists() else {}
+    except Exception:
+        return {}
+
 
 def _save_zip_as_dataset(zip_file: UploadFile, preferred_base: str | None = None) -> Path:
     base = _safe_name(preferred_base or Path(zip_file.filename or "dataset.zip").stem) or "dataset"
@@ -1560,12 +1589,12 @@ async def api_test_run(
         metrics = {}
         if mpath.exists():
             metrics = json.loads(mpath.read_text(encoding="utf-8"))
-        metrics["image_input_type"] = _detect_image_input_type(ds_dir)
-        metrics["tif_sources"] = [str(tif_src)]   
-        metrics.setdefault("score_thresh_test", th_num)
+        metrics.setdefault("source_tifs", [])  # <— use this exact key
+        if str(tif_src) not in metrics["source_tifs"]:
+            metrics["source_tifs"].append(str(tif_src))
         mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     except Exception as e:
-        logging.getLogger("pvrt.test").warning(f"metrics.json patch failed: {e}")
+        logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
 
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
@@ -1649,139 +1678,208 @@ def api_model_meta(run_name: str):
     return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
 
 
-
-# -------------- Simple dynamic tiler for TIFF (XYZ) --------------
 # -------------- Simple dynamic tiler for TIFF (XYZ) --------------
 _TILER_INDEX: Dict[str, List[Path]] = {}
+_TILER_STATS: Dict[tuple, Dict[str, Any]] = {}   # per (session, idx) cached stretch + meta
 
 def _session_tifs(session: str) -> List[Path]:
     """
-    Return the list of *original* tif paths for this session.
-    Prefer absolute paths stored in metrics.json ("tif_sources"),
-    fall back to any tifs that happened to be copied under the session dir.
+    Prefer absolute source paths recorded in metrics.json under 'source_tifs'.
+    Fallback: look in media/sessions/<session>/images for *.tif.
     """
-    ses = MEDIA_DIR / "sessions" / session
-    if not ses.exists():
+    ses_dir = MEDIA_DIR / "sessions" / session
+    if not ses_dir.exists():
         return []
-
     tifs: List[Path] = []
-
-    # 1) Prefer absolute sources recorded by api_test_run
-    mpath = ses / "metrics.json"
-    if mpath.exists():
-        try:
-            metr = json.loads(mpath.read_text(encoding="utf-8"))
-            srcs = metr.get("tif_sources") or []
-            for s in srcs:
-                p = Path(s)
-                if p.exists():
-                    tifs.append(p)
-        except Exception:
-            pass
-
-    # 2) Fallback: anything under this session (if you ever copy files here)
+    m = _load_metrics(ses_dir)
+    srcs = m.get("source_tifs") if isinstance(m, dict) else None
+    if isinstance(srcs, list):
+        for s in srcs:
+            p = Path(s)
+            if p.exists() and p.suffix.lower() in (".tif", ".tiff"):
+                tifs.append(p)
     if not tifs:
-        imgdir = ses / "images"
-        if imgdir.exists():
-            tifs = [p for p in imgdir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
-
+        tifs = [p for p in (ses_dir / "images").glob("*") if p.suffix.lower() in (".tif", ".tiff")]
     return tifs
+
+# --- small Inferno-like LUT (256x3) for single-band rasters without palette ---
+def _inferno_lut_256() -> np.ndarray:
+    # coarse stops approximating matplotlib "inferno" ramp:
+    stops = [
+        (0.00, (0,   0,   3)),
+        (0.10, (31,  12,  72)),
+        (0.20, (85,  15, 109)),
+        (0.40, (167, 27,  79)),
+        (0.60, (230, 69,  32)),
+        (0.80, (252, 141, 31)),
+        (1.00, (252, 255, 164)),
+    ]
+    xs = [s for s, _ in stops]; cols = [np.array(c, dtype=np.float32) for _, c in stops]
+    lut = np.zeros((256, 3), dtype=np.uint8)
+    for i in range(256):
+        t = i / 255.0
+        # find surrounding stops
+        j = max(0, min(len(xs) - 2, next((k for k in range(len(xs)-1) if xs[k] <= t <= xs[k+1]), len(xs)-2)))
+        t0, t1 = xs[j], xs[j+1]
+        c0, c1 = cols[j], cols[j+1]
+        if t1 == t0:
+            c = c0
+        else:
+            a = (t - t0) / (t1 - t0)
+            c = (1 - a) * c0 + a * c1
+        lut[i] = np.clip(np.round(c), 0, 255).astype(np.uint8)
+    return lut
 
 
 @app.get("/api/session_tiles")
 async def api_session_tiles(session: str):
+    """
+    Return tile layer descriptors for ORIGINAL GeoTIFF(s) of this session.
+    The frontend will add them under the Images panel (not the Layers list).
+    """
     if not RIO_OK:
         return {"ok": False, "reason": "rasterio_not_available", "layers": []}
+
     tifs = _session_tifs(session)
     _TILER_INDEX[session] = tifs
     layers = []
+
     for i, p in enumerate(tifs):
         try:
             with rasterio.open(p) as ds:
-                # bounds in WGS84
+                # bounds in WGS84 for fitBounds + attribution data
                 try:
-                    left, bottom, right, top = rasterio.warp.transform_bounds(ds.crs, CRS.from_epsg(4326), *ds.bounds, densify_pts=21)
+                    left, bottom, right, top = rasterio.warp.transform_bounds(
+                        ds.crs, CRS.from_epsg(4326), *ds.bounds, densify_pts=21
+                    )
                 except Exception:
-                    left, bottom, right, top = -180.0, -85.0, 180.0, 85.0
+                    # worst-case fallback
+                    left, bottom, right, top = (-180.0, -85.0, 180.0, 85.0)
                 layers.append({
                     "name": p.name,
                     "template": f"/tiles/{session}/{i}" + "/{z}/{x}/{y}.png",
-                    "bounds": [ [bottom, left], [top, right] ],
                     "minzoom": 0,
-                    "maxzoom": 22
+                    "maxzoom": 22,
+                    # [[south, west], [north, east]]
+                    "bounds": [[bottom, left], [top, right]],
                 })
-        except Exception:
-            continue
-    return {"ok": True, "layers": layers}
+        except Exception as e:
+            logger.warning(f"Tiler: failed to inspect '{p}': {e}")
 
-@app.get("/tiles/{session:path}/{idx:int}/{z:int}/{x:int}/{y:int}.png")
-async def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
+    return {"ok": True, "session": session, "layers": layers}
+
+# ---------------- XYZ tile endpoint ----------------
+# Tile size (Leaflet default)
+TILE_SIZE = 256
+
+@app.get("/tiles/{session}/{idx}/{z}/{x}/{y}.png")
+def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
     if not RIO_OK:
-        raise HTTPException(status_code=404, detail="Tiler unavailable")
-    if session not in _TILER_INDEX:
-        _TILER_INDEX[session] = _session_tifs(session)
-    tifs = _TILER_INDEX[session]
-    if idx < 0 or idx >= len(tifs):
-        raise HTTPException(status_code=404, detail="Tile source not found")
-    src_path = tifs[idx]
-    try:
-        with rasterio.open(src_path) as src:
-            dst_crs = CRS.from_epsg(3857)  # Web Mercator
-            # tile bounds in WebMercator meters
-            tb = mercantile.xy_bounds(mercantile.Tile(x=x, y=y, z=z))
-            west_m, south_m, east_m, north_m = tb.left, tb.bottom, tb.right, tb.top
+        raise HTTPException(404, "tiler unavailable")
 
-            dst_transform = from_bounds(west_m, south_m, east_m, north_m, 256, 256)
+    tifs = _TILER_INDEX.get(session) or _session_tifs(session)
+    _TILER_INDEX[session] = tifs
+    if not tifs or idx < 0 or idx >= len(tifs):
+        raise HTTPException(404, "tile source not found")
+    tif = tifs[idx]
 
-            # Prepare destination arrays
-            bands = min(3, max(1, src.count))
-            dst = np.zeros((bands, 256, 256), dtype=np.float32)
+    # XYZ tile bounds → EPSG:3857 meters
+    t = mercantile.Tile(x=int(x), y=int(y), z=int(z))
+    b = mercantile.xy_bounds(t)
+    minx, miny, maxx, maxy = b.left, b.bottom, b.right, b.top
 
-            # Reproject per band directly from dataset
-            for b in range(bands):
-                reproject(
-                    source=rasterio.band(src, b+1),
-                    destination=dst[b],
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=dst_transform,
-                    dst_crs=dst_crs,
-                    resampling=Resampling.bilinear,
-                    num_threads=1
-                )
+    # tiny Inferno-like LUT (256×3) for single-band
+    def lut_inferno():
+        stops = [(0.00,(0,0,3)),(0.15,(40,12,80)),(0.35,(152,24,79)),
+                 (0.55,(222,65,38)),(0.75,(252,141,31)),(1.00,(252,255,164))]
+        xs=[s for s,_ in stops]; cs=[np.array(c,np.float32) for _,c in stops]
+        lut=np.zeros((256,3),np.uint8)
+        for i in range(256):
+            t=i/255.0; j=max(0,min(len(xs)-2,next((k for k in range(len(xs)-1) if xs[k]<=t<=xs[k+1]),len(xs)-2)))
+            a=0 if xs[j+1]==xs[j] else (t-xs[j])/(xs[j+1]-xs[j])
+            lut[i]=np.clip((1-a)*cs[j]+a*cs[j+1],0,255).astype(np.uint8)
+        return lut
 
-            # Normalize to 0..255 uint8
-            out = np.zeros((256,256,3), dtype=np.uint8)
-            if bands == 1:
-                a = dst[0]
-                finite = np.isfinite(a)
-                if np.any(finite):
-                    mn, mx = np.percentile(a[finite], [2, 98])
-                    if mx <= mn: mx = mn + 1.0
-                    norm = np.clip((a - mn) / (mx - mn), 0, 1)
-                else:
-                    norm = np.zeros_like(a)
-                g = (norm * 255).astype(np.uint8)
-                out[...,0] = g; out[...,1] = g; out[...,2] = g
-            else:
-                for i in range(bands):
-                    a = dst[i]
-                    finite = np.isfinite(a)
-                    if np.any(finite):
-                        mn, mx = np.percentile(a[finite], [2, 98])
-                        if mx <= mn: mx = mn + 1.0
-                        norm = np.clip((a - mn) / (mx - mn), 0, 1)
-                    else:
-                        norm = np.zeros_like(a)
-                    out[..., i] = (norm * 255).astype(np.uint8)
+    from rasterio.vrt import WarpedVRT
+    from rasterio.enums import Resampling, ColorInterp
+    from rasterio.windows import from_bounds as win_from_bounds
 
-            # Encode as PNG
-            im = Image.fromarray(out, mode="RGB")
-            bio = io.BytesIO()
-            im.save(bio, format="PNG", optimize=True)
-            return Response(content=bio.getvalue(), media_type="image/png")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tile error: {e}")
+    with rasterio.open(tif) as src, WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.bilinear) as vrt:
+        # overlap clip (prevents boundless)
+        vb = vrt.bounds
+        oxmin, oymin = max(minx, vb.left),  max(miny, vb.bottom)
+        oxmax, oymax = min(maxx, vb.right), min(maxy, vb.top)
+        if not (oxmin < oxmax and oymin < oymax):
+            rgba = np.zeros((TILE_SIZE, TILE_SIZE, 4), np.uint8)
+            im = Image.fromarray(rgba, "RGBA"); buf = BytesIO(); im.save(buf, "PNG"); buf.seek(0)
+            return Response(content=buf.getvalue(), media_type="image/png")
+
+        # where does overlap land inside 256×256?
+        sx = TILE_SIZE / float(maxx - minx); sy = TILE_SIZE / float(maxy - miny)
+        L = max(0, int(np.floor((oxmin - minx) * sx)))
+        R = min(TILE_SIZE, int(np.ceil((oxmax - minx) * sx)))
+        Tt = max(0, int(np.floor((maxy - oymax) * sy)))  # y inverted
+        B = min(TILE_SIZE, int(np.ceil((maxy - oymin) * sy)))
+        W, H = max(1, R - L), max(1, B - Tt)
+        win = win_from_bounds(oxmin, oymin, oxmax, oymax, transform=vrt.transform)
+
+        # choose visible bands (prefer declared RGB)
+        try:
+            cis = list(vrt.colorinterp)
+            rgb_ids = []
+            for want in (ColorInterp.red, ColorInterp.green, ColorInterp.blue):
+                j = next((i+1 for i,ci in enumerate(cis) if ci==want), None)
+                if j: rgb_ids.append(j)
+            vis = rgb_ids if len(rgb_ids)==3 else [next((i+1 for i,ci in enumerate(cis) if ci!=ColorInterp.alpha), 1)]
+        except Exception:
+            vis = [1]
+
+        # alpha from alpha band or mask
+        try:
+            a_id = next((i+1 for i,ci in enumerate(vrt.colorinterp) if ci==ColorInterp.alpha), None)
+        except Exception:
+            a_id = None
+        alpha = (vrt.read(a_id, window=win, out_shape=(H, W), resampling=Resampling.nearest,
+                          masked=False, out_dtype="uint8") if a_id
+                 else vrt.read_masks(vis[0], window=win, out_shape=(H, W)))
+
+        # path A: true RGB uint8 (keep exact colors)
+        rgb_uint8 = False
+        if len(vis)==3:
+            try:
+                dts = [src.dtypes[i-1] for i in vis if 1<=i<=src.count]
+                rgb_uint8 = len(dts)==3 and all(dt.lower()=="uint8" for dt in dts)
+            except Exception:
+                pass
+        if len(vis)==3 and rgb_uint8:
+            raw = vrt.read(vis, window=win, out_shape=(3,H,W), resampling=Resampling.bilinear,
+                           masked=False, out_dtype="uint8")
+            canvas = np.zeros((3, TILE_SIZE, TILE_SIZE), np.uint8)
+            acan   = np.zeros((TILE_SIZE, TILE_SIZE), np.uint8)
+            canvas[:, Tt:B, L:R] = raw; acan[Tt:B, L:R] = alpha
+            rgba = np.dstack([canvas[0], canvas[1], canvas[2], acan])
+        else:
+            # path B: single-band (thermal) → stretch + LUT ; (falls back for non-uint8 RGB)
+            band = vrt.read(vis[0], window=win, out_shape=(H,W), resampling=Resampling.bilinear,
+                            masked=False, out_dtype="float32")
+            # global 2–98% from quick overview (consistent across tiles)
+            oh, ow = min(1024, vrt.height), min(1024, vrt.width)
+            ov = vrt.read(vis[0], out_shape=(oh, ow), resampling=Resampling.bilinear, masked=True)
+            vals = ov.compressed() if hasattr(ov, "compressed") else ov.ravel()
+            p2  = float(np.percentile(vals, 2)) if vals.size else 0.0
+            p98 = float(np.percentile(vals,98)) if vals.size else 1.0
+            g = (np.clip(band, p2, p98) - p2) / max(1e-12, (p98 - p2))
+            g8 = (np.nan_to_num(g) * 255 + 0.5).astype(np.uint8)
+            rgb = lut_inferno()[g8] if len(vis)==1 else np.dstack([g8,g8,g8])
+            canvas = np.zeros((TILE_SIZE, TILE_SIZE, 3), np.uint8)
+            acan   = np.zeros((TILE_SIZE, TILE_SIZE), np.uint8)
+            canvas[Tt:B, L:R, :] = rgb; acan[Tt:B, L:R] = alpha
+            rgba = np.dstack([canvas, acan])
+
+    im = Image.fromarray(rgba, "RGBA")
+    buf = BytesIO(); im.save(buf, "PNG"); buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="image/png")
+
 
 # -------------- Serve media & frontend --------------
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")

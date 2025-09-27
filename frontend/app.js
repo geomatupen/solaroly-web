@@ -32,6 +32,19 @@ let imageOverlays = new Map();      // id -> L.ImageOverlay
 // fallback sizing if images.geojson has only a Point
 const DEFAULT_IMAGE_HALF_SIZE_M = 25; // ~25 m half-width/half-height (adjust if needed)
 
+// --- TIF raster globals ---
+let TIF_TILE_GROUP = null;   // Leaflet layerGroup that holds the ZXY tile layers
+let TIF_TILE_LAYERS = [];    // underlying L.tileLayer instances
+
+function removeTifTiles(){
+  if (TIF_TILE_GROUP) {
+    try { MAP.removeLayer(TIF_TILE_GROUP); } catch {}
+  }
+  TIF_TILE_GROUP = null;
+  TIF_TILE_LAYERS = [];
+}
+
+
 
 // ---------- helpers ----------
 const $ = sel => document.querySelector(sel);
@@ -249,6 +262,44 @@ document.addEventListener('click', (e)=>{
     $('#stOpacity').value  = st.opacity ?? 1;
     $('#fiColor').value    = toHex(st.fillColor || st.color || '#0ea5e9');
     $('#fiOpacity').value  = st.fillOpacity ?? 0.25;
+
+    // === Categorical styling controls (Anomalies layer only) ===
+    if (styleTarget.name === "Anomalies" && styleTarget.info?.data){
+      const stSelBlk = document.getElementById('stColorByBlock');
+      const stSel    = document.getElementById('stColorBy');
+      const stCat    = document.getElementById('stCatList');
+
+      if (stSelBlk && stSel && stCat){
+        stSelBlk.classList.remove('hidden');
+        stCat.classList.remove('hidden');
+
+        // build property list
+        const props = new Set(['class_name','class_id','score']);
+        try{
+          const f0 = styleTarget.info.data.features.find(f => f?.properties) || null;
+          if (f0) Object.keys(f0.properties).forEach(k => props.add(k));
+        }catch(_){}
+        const currentProp = styleTarget.info.categorical?.prop || 'class_name';
+        stSel.innerHTML = "";
+        Array.from(props).forEach(k=>{
+          const opt = document.createElement('option');
+          opt.value = k; opt.textContent = k;
+          if (k === currentProp) opt.selected = true;
+          stSel.appendChild(opt);
+        });
+
+        rebuildCategoryEditors(currentProp);        // draw per-class color pickers
+        stSel.onchange = () => rebuildCategoryEditors(stSel.value);
+      }
+    } else {
+      const stSelBlk = document.getElementById('stColorByBlock');
+      const stCat    = document.getElementById('stCatList');
+      if (stSelBlk) stSelBlk.classList.add('hidden');
+      if (stCat)    stCat.classList.add('hidden');
+    }
+
+
+
 
     $('#styleModal').classList.remove('hidden');
     closeLayerMenu();
@@ -637,6 +688,86 @@ function toHex(c){
   return '#' + m.slice(0,3).map(x => (+x).toString(16).padStart(2,'0')).join('');
 }
 
+function uniqueValuesFromGJ(gj, prop){
+  const s = new Set();
+  (gj.features||[]).forEach(f=>{
+    if (f?.properties?.[prop] != null) s.add(String(f.properties[prop]));
+  });
+  return Array.from(s).sort((a,b)=> a.localeCompare(b));
+}
+
+function toHex(c){
+  if (!c) return '#000000';
+  if (c[0] === '#') return c;
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.fillStyle = c;
+  const rgb = ctx.fillStyle;
+  const m = rgb.match(/\d+/g);
+  if (!m) return '#000000';
+  return '#' + m.slice(0,3).map(x => (+x).toString(16).padStart(2,'0')).join('');
+}
+
+function styleForAnomalyFeature(f, fallback){
+  const rec = overlayRegistry["Anomalies"];
+  const cat = rec?.categorical;
+  if (cat && f?.properties){
+    const v = String(f.properties[cat.prop] ?? '');
+    const c = cat.mapping[v];
+    if (c){
+      return { color: c, weight: 1, opacity: 1, fillColor: c, fillOpacity: 0.25 };
+    }
+  }
+  return fallback || { color: "#ff5722", weight: 1, opacity: 1, fillColor: "#ff5722", fillOpacity: 0.25 };
+}
+
+function rebuildCategoryEditors(prop){
+  const rec = overlayRegistry["Anomalies"];
+  const stCat = document.getElementById('stCatList');
+  if (!rec || !rec.data || !stCat) return;
+
+  const values = uniqueValuesFromGJ(rec.data, prop);
+  stCat.innerHTML = "";
+
+  if (!values.length || values.length > 10){
+    rec.categorical = null;
+    if (rec.layer?.setStyle) rec.layer.setStyle(rec.style || {});
+    renderLegend();
+    if (values.length > 10){
+      const div = document.createElement('div');
+      div.className = 'muted';
+      div.textContent = `Too many unique values (${values.length}). Using single style.`;
+      stCat.appendChild(div);
+    }
+    return;
+  }
+
+  const palette = ['#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#a6cee3','#b2df8a','#fb9a99','#fdbf6f','#cab2d6'];
+  const prev = (rec.categorical && rec.categorical.prop === prop) ? rec.categorical.mapping : {};
+  const mapping = {};
+  values.forEach((v,i)=> mapping[v] = prev[v] || palette[i % palette.length]);
+
+  values.forEach(v=>{
+    const row = document.createElement('div'); row.className = 'catRow';
+    row.innerHTML = `
+      <input type="color" class="catColor" value="${toHex(mapping[v])}" data-val="${v}">
+      <span class="catName">${escapeHtml(v)}</span>
+    `;
+    stCat.appendChild(row);
+  });
+
+  stCat.querySelectorAll('.catColor').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      mapping[inp.dataset.val] = inp.value;
+      rec.categorical = { prop, mapping, values };
+      if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+      renderLegend();
+    });
+  });
+
+  rec.categorical = { prop, mapping, values };
+  if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+  renderLegend();
+}
 
 
 
@@ -706,33 +837,133 @@ function featurePopupHTML(f) {
 
 
 
+// async function loadGeoJSON(url){
+//   const res = await fetch(url);
+//   const gj = await res.json();
+
+//   const st = overlayRegistry["Anomalies"]?.style || {
+//     color: "#ff5722", weight: 1, opacity: 1,
+//     fillColor: "#ff5722", fillOpacity: 0.25
+//   };
+
+//   geojsonLayer = L.geoJSON(gj, {
+//     style: () => st,
+//     pointToLayer: (f, latlng) => {
+//       if(f.properties && f.properties.type === "image"){
+//         return L.marker(latlng).bindPopup(`<div><b>${escapeHtml(f.properties.name||"image")}</b><br>${f.properties.url?`<a href="${f.properties.url}" target="_blank">open image</a>`:""}</div>`);
+//       }
+//       return L.circleMarker(latlng, { radius: 4, color: "#3388ff", fillColor:"#3388ff", fillOpacity:0.8 });
+//     },
+//     onEachFeature: (feature, layer) => {
+//       try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
+//     }
+//   }).addTo(MAP);
+
+//   overlayRegistry["Anomalies"] = { layer: geojsonLayer, type: "geojson", style: st };
+//   refreshLayersPanel();
+//   renderLegend();
+//   try{ MAP.fitBounds(geojsonLayer.getBounds(), {padding:[20,20]}); }catch(_){}
+// }
+
+
+let anomaliesProp = 'class_name';  // current property to color by
+
 async function loadGeoJSON(url){
   const res = await fetch(url);
   const gj = await res.json();
 
-  const st = overlayRegistry["Anomalies"]?.style || {
+  const base = overlayRegistry["Anomalies"]?.style || {
     color: "#ff5722", weight: 1, opacity: 1,
     fillColor: "#ff5722", fillOpacity: 0.25
   };
 
-  geojsonLayer = L.geoJSON(gj, {
-    style: () => st,
-    pointToLayer: (f, latlng) => {
-      if(f.properties && f.properties.type === "image"){
-        return L.marker(latlng).bindPopup(`<div><b>${escapeHtml(f.properties.name||"image")}</b><br>${f.properties.url?`<a href="${f.properties.url}" target="_blank">open image</a>`:""}</div>`);
-      }
-      return L.circleMarker(latlng, { radius: 4, color: "#3388ff", fillColor:"#3388ff", fillOpacity:0.8 });
-    },
-    onEachFeature: (feature, layer) => {
-      try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
-    }
+  const layer = L.geoJSON(gj, {
+    style: (f)=> styleForAnomalyFeature(f, base),
+    pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
+    onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
   }).addTo(MAP);
 
-  overlayRegistry["Anomalies"] = { layer: geojsonLayer, type: "geojson", style: st };
-  refreshLayersPanel();
+  overlayRegistry["Anomalies"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Anomalies"]?.categorical || null };
   renderLegend();
-  try{ MAP.fitBounds(geojsonLayer.getBounds(), {padding:[20,20]}); }catch(_){}
+  try{ MAP.fitBounds(layer.getBounds(), {padding:[20,20]}); }catch(_){}
 }
+
+
+function styleForAnomalyFeature(f, fallback){
+  const rec = overlayRegistry["Anomalies"];
+  const cat = rec?.categorical;
+  if (cat && f?.properties){
+    const v = String(f.properties[cat.prop] ?? '');
+    const c = cat.mapping[v];
+    if (c){
+      return { color: c, weight: 1, opacity: 1, fillColor: c, fillOpacity: 0.25 };
+    }
+  }
+  return fallback;
+}
+
+function applyCategoricalStyling(prop='class_name'){
+  const rec = overlayRegistry["Anomalies"];
+  if (!rec || !rec.data || !rec.layer) { renderLegend(); return; }
+
+  anomaliesProp = prop;
+
+  const values = uniquePropValues(rec.data, prop);
+  if (values.length && values.length <= 10){
+    const palette = ['#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#a6cee3','#b2df8a','#fb9a99','#fdbf6f','#cab2d6'];
+    const mapping = {};
+    values.forEach((v,i)=> mapping[v] = palette[i % palette.length]);
+    rec.categorical = { prop, mapping, values };
+    rec.layer.setStyle((f)=> styleForAnomalyFeature(f, rec.style));
+  } else {
+    rec.categorical = null;           // too many values → fallback
+    rec.layer.setStyle(rec.style);
+  }
+  renderLegend();
+}
+
+function uniquePropValues(gj, prop){
+  const s = new Set();
+  (gj.features || []).forEach(f=>{
+    if (f && f.properties && f.properties[prop] != null){
+      s.add(String(f.properties[prop]));
+    }
+  });
+  return Array.from(s).sort((a,b)=> String(a).localeCompare(String(b)));
+}
+
+function renderLegend(){
+  const el = document.getElementById('legend');
+  if (!el) return;
+  el.innerHTML = '';
+
+  const rec = overlayRegistry["Anomalies"];
+  if (!rec || !rec.layer) return;
+
+  const title = document.createElement('div');
+  title.className = 'legendHeader';
+  const by = rec.categorical?.prop ? ` — <span class="dim">by <b>${escapeHtml(rec.categorical.prop)}</b></span>` : '';
+  title.innerHTML = `<div class="legendTitle">Anomalies${by}</div>`;
+  el.appendChild(title);
+
+  const body = document.createElement('div');
+  body.className = 'legendBody';
+  el.appendChild(body);
+
+  if (rec.categorical){
+    const { values, mapping } = rec.categorical;
+    body.innerHTML = values.map(v=>{
+      const c = mapping[v];
+      return `<div class="legendItem"><span class="swatch" style="background:${c}"></span> ${escapeHtml(v)}</div>`;
+    }).join('');
+  } else {
+    const st = rec.style || { fillColor:'#ff5722' };
+    body.innerHTML = `<div class="legendItem"><span class="swatch" style="background:${st.fillColor}"></span> Anomaly</div>`;
+  }
+}
+
+
+
 
 async function loadImagesGeoJSON(url){
   try{
@@ -814,60 +1045,143 @@ function populateImagesList(features){
 }
 
 
-function renderLegend(){
-  const st = overlayRegistry["Anomalies"]?.style || { color:"#ff5722", fillColor:"#ff5722" };
-  const el = $("#legend");
-  el.innerHTML = `
-    <div class="legendItem"><span class="swatch" style="background:${st.fillColor}"></span> Anomaly (polygon)</div>
-    <div class="legendItem"><span class="swatch" style="background:#3388ff"></span> Image marker</div>
-  `;
-}
+// function renderLegend(){
+//   const st = overlayRegistry["Anomalies"]?.style || { color:"#ff5722", fillColor:"#ff5722" };
+//   const el = $("#legend");
+//   el.innerHTML = `
+//     <div class="legendItem"><span class="swatch" style="background:${st.fillColor}"></span> Anomaly (polygon)</div>
+//     <div class="legendItem"><span class="swatch" style="background:#3388ff"></span> Image marker</div>
+//   `;
+// }
 
 
 async function applySessionToMap(sessionName){
-  // clear previous tile layers (if any)
-  for (const tl of tileLayers){ try{ MAP.removeLayer(tl); }catch(_){} }
-  tileLayers = [];
+  // 0) clear any previous GeoTIFF tiles
+  removeTifTiles();
 
-  // always get the summary first (gives us URLs we can trust)
+  // 1) session summary (urls for geojsons)
   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
   if (!res.ok) { console.warn('session_summary failed'); return; }
   const sum = await res.json();
 
-  // Resolve URLs with safe fallbacks
-  const sessRoot = `/media/sessions/${encodeURIComponent(sessionName)}/`;
+  const sessRoot   = `/media/sessions/${encodeURIComponent(sessionName)}/`;
   const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + 'anomalies.geojson');
-  const imagesUrl    = sum.images_geojson    || sum.images      || (sessRoot + 'images.geojson');
+  const imagesUrl    = sum.images_geojson    || sum.images      || sum.images_gj || (sessRoot + 'images.geojson');
 
-  // 1) polygons (anomalies)
+  // 2) anomalies polygons (load regardless)
   if (anomaliesUrl){
     try { await loadGeoJSON(anomaliesUrl); }
     catch(e){ console.warn('anomalies fetch failed:', e); }
   }
 
-  // 2) photos (catalog + sidebar)
-  await loadImagesCatalog(sessionName, imagesUrl);
-
-  // 3) raster tiles from ORIGINAL GeoTIFF (no copy into media/)
+  // 3) Try ORIGINAL GeoTIFF tiles
+  let tiles = null;
   try{
-    const tr = await (await fetch(`/api/session_tiles?session=${encodeURIComponent(sessionName)}`, { cache:'no-store' })).json();
-    if (tr?.ok && Array.isArray(tr.layers) && tr.layers.length){
-      installTileLayers(tr.layers);    // install + auto-fit to first layer
+    const r = await fetch(`/api/session_tiles?session=${encodeURIComponent(sessionName)}`, { cache:'no-store' });
+    if (r.ok) tiles = await r.json();
+  }catch(e){ console.warn('session_tiles failed:', e); }
+
+  const hasTifTiles = !!(tiles?.ok && Array.isArray(tiles.layers) && tiles.layers.length);
+
+  if (hasTifTiles){
+    const b = createTifTileGroup(tiles.layers);
+    TIF_TILE_GROUP  = b.group;
+    TIF_TILE_LAYERS = b.layers;
+
+    // show controller row inside Images list (replaces normal images there)
+    installTilesIntoImagesList(sessionName, tiles.layers);
+
+    // fit to raster on first load
+    if (b.firstBounds){
+      try{ MAP.fitBounds(b.firstBounds, { padding:[20,20] }); }catch(_){}
     }
-  }catch(e){
-    console.warn('session_tiles fetch failed:', e);
+  } else {
+    // Fallback: point markers loaded from images.geojson
+    await loadImagesCatalog(sessionName, imagesUrl);
   }
 
-  // 4) refresh UI
   refreshLayersPanel();
 }
 
+function createTifTileGroup(layerDefs){
+  const group = L.layerGroup();
+  const layers = [];
+  let firstBounds = null;
+
+  layerDefs.forEach((Ldef, i) => {
+    const lyr = L.tileLayer(Ldef.template, {
+      minZoom: Ldef.minzoom ?? 0,
+      maxZoom: Ldef.maxzoom ?? 22
+    });
+    group.addLayer(lyr);
+    layers.push(lyr);
+
+    if (!firstBounds && Array.isArray(Ldef.bounds) && Ldef.bounds.length === 2){
+      const sw = L.latLng(Ldef.bounds[0][0], Ldef.bounds[0][1]);
+      const ne = L.latLng(Ldef.bounds[1][0], Ldef.bounds[1][1]);
+      firstBounds = L.latLngBounds(sw, ne);
+    }
+  });
+
+  group.addTo(MAP);
+  return { group, layers, firstBounds };
+}
+
+function installTilesIntoImagesList(sessionName, layerDefs){
+  const list = document.getElementById('imagesList');
+  if (!list) return;
+  list.innerHTML = "";
+
+  const label = layerDefs.length === 1 ? layerDefs[0].name : `Orthophoto (GeoTIFF)`;
+
+  const row = document.createElement('li');
+  row.innerHTML = `
+    <label class="chk">
+      <input type="checkbox" id="chkTifTiles" checked>
+      <span>${escapeHtml(label)}</span>
+    </label>
+    <div style="margin-left:auto;display:flex;gap:.75rem;align-items:center;">
+      <span class="dim">Opacity</span>
+      <input id="tifOpacity" type="range" min="0" max="1" step="0.05" value="1" style="width:120px">
+      <button class="iconDots more" title="Zoom">🔍</button>
+    </div>
+  `;
+
+  const chk   = row.querySelector('#chkTifTiles');
+  const rng   = row.querySelector('#tifOpacity');
+  const zoomB = row.querySelector('.more');
+
+  chk.addEventListener('change', ()=>{
+    if (!TIF_TILE_GROUP) return;
+    if (chk.checked) TIF_TILE_GROUP.addTo(MAP);
+    else { try{ MAP.removeLayer(TIF_TILE_GROUP); }catch(_){} }
+  });
+
+  rng.addEventListener('input', ()=>{
+    const v = Math.max(0, Math.min(1, parseFloat(rng.value || '1')));
+    (TIF_TILE_LAYERS || []).forEach(l => { try { l.setOpacity(v); } catch {} });
+  });
+
+  zoomB.addEventListener('click', ()=>{
+    // zoom to first layer bounds (we stored this in applySessionToMap)
+    const bounds = computeLayerBounds(TIF_TILE_GROUP);
+    if (bounds && bounds.isValid && bounds.isValid()) {
+      MAP.fitBounds(bounds.pad(0.2));
+    }
+  });
+
+  list.appendChild(row);
+}
+
+
 
 function installTileLayers(layers){
-  // remove any old layers (defensive; applySessionToMap already does it)
+  // clear any previous raster tiles
   for (const tl of tileLayers){ try{ MAP.removeLayer(tl); }catch(_){} }
   tileLayers = [];
 
+  // use a single registry key "Orthophoto" (group of all tile layers)
+  const group = L.layerGroup();
   let firstBounds = null;
 
   layers.forEach((Ldef, i)=>{
@@ -875,26 +1189,24 @@ function installTileLayers(layers){
       minZoom: Ldef.minzoom ?? 0,
       maxZoom: Ldef.maxzoom ?? 22
     });
-
-    // add to map and registry; turn on the first by default
-    if (i === 0) { lyr.addTo(MAP); }
-
+    group.addLayer(lyr);
     tileLayers.push(lyr);
-    const name = `Raster: ${Ldef.name || `TIF ${i+1}`}`;
-    overlayRegistry[name] = { layer: lyr, type: "raster", style: { opacity: 1 } };
+    if (i === 0) lyr.addTo(MAP);   // show first by default
 
-    // remember bounds of first layer to fit map
     if (!firstBounds && Array.isArray(Ldef.bounds) && Ldef.bounds.length === 2){
-      // backend returns [[south, west],[north, east]]
       const sw = L.latLng(Ldef.bounds[0][0], Ldef.bounds[0][1]);
       const ne = L.latLng(Ldef.bounds[1][0], Ldef.bounds[1][1]);
       firstBounds = L.latLngBounds(sw, ne);
     }
   });
 
+  // register (replaces previous "Raster: …" entries)
+  overlayRegistry["Orthophoto"] = { layer: group, type: "raster", style: { opacity: 1 } };
+
   if (firstBounds){
     try{ MAP.fitBounds(firstBounds, { padding:[20,20] }); }catch(_){}
   }
+  refreshLayersPanel();
 }
 
 
