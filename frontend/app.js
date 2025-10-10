@@ -532,6 +532,7 @@ async function startTraining(){
   const lr = parseFloat($("#inpLR").value || "0.002");
   const batch = parseInt($("#inpBatch").value || "4", 10);
   const modelName = (document.getElementById("inpModelName")?.value || "").trim() || makeStamp();
+  const modelType = $("#selModelType").value;
 
   setHidden($("#spinTrain"), false);
   setText("#trainStatus","Submitting training job…");
@@ -542,6 +543,7 @@ async function startTraining(){
   fd.append("base_lr", String(lr));
   fd.append("ims_per_batch", String(batch));
   fd.append("model_name", String(modelName));
+  fd.append("model_type", modelType);
 
 
   const res = await fetch(api.train, { method:"POST", body:fd });

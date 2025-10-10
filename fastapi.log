@@ -1,0 +1,9 @@
+INFO:     Will watch for changes in these directories: ['/home/upen/projects/solaroly-web']
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+INFO:     Started reloader process [137668] using WatchFiles
+/home/upen/projects/solaroly-web/venv/lib/python3.12/site-packages/detectron2/model_zoo/model_zoo.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+INFO:     Started server process [137670]
+INFO:     Waiting for application startup.
+INFO:     127.0.0.1:32808 - "GET /api/logs HTTP/1.1" 200 OK
+INFO:     Stopping reloader process [137668]

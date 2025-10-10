@@ -27,6 +27,7 @@ class TrainConfig:
     ims_per_batch: int
     # optional name to store alongside artifacts
     run_name: str = ""
+    model_type: str = "maskrcnn"
 
 
 @dataclass

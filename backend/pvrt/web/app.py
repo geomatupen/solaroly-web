@@ -1223,8 +1223,9 @@ async def api_train(
     max_iter: int = Form(1000),
     base_lr: float = Form(0.00025),
     ims_per_batch: int = Form(2),
-    model_name: str = Form(""),
+    model_name: str = Form("") ,
     backend: str = Form("detectron"),
+    model_type: str = Form("fasterrcnn"),
 ):
     safe_name = _safe_name(model_name) or _now_stamp()
     run_dir = OUTPUTS / safe_name
@@ -1249,15 +1250,17 @@ async def api_train(
         setup_logger()  # route detectron2/fvcore to std logging (SSE handler will pick it up)
         with redirect_std_to_logger():
             return train_entry(
-                backend=backend,
-                train_dir=TRAIN_DIR,
-                val_dir=VALID_DIR,
-                out_dir=run_dir,
-                use_thermal_request=use_thermal,
-                max_iter=max_iter,
-                base_lr=base_lr,
-                ims_per_batch=ims_per_batch,
-                run_name=run_dir.name,
+    backend=backend,
+    train_dir=TRAIN_DIR,
+    val_dir=VALID_DIR,
+    out_dir=run_dir,
+    use_thermal_request=use_thermal,
+    max_iter=max_iter,
+    base_lr=base_lr,
+    ims_per_batch=ims_per_batch,
+    run_name=run_dir.name,
+    model_type=model_type,
+
             )
 
     try:

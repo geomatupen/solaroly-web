@@ -115,7 +115,6 @@ class DetectronBackend(Backend):
     """
 
     def train(self, cfg_in: TrainConfig) -> Path:
-
         train_dir, val_dir, out_dir = Path(cfg_in.train_dir), Path(cfg_in.val_dir), Path(cfg_in.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -150,11 +149,17 @@ class DetectronBackend(Backend):
                 pass
             class_names = [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
 
-        # Build cfg
-        MODEL_YAML = "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
+        # Build cfg (always)
+        model_type = getattr(cfg_in, "model_type", "maskrcnn").lower()
+        if model_type == "fastrcnn":
+            MODEL_YAML = "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
+            mask_on = False
+        else:
+            MODEL_YAML = "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
+            mask_on = True
         cfg = get_cfg()
         cfg.merge_from_file(model_zoo.get_config_file(MODEL_YAML))
-        cfg.MODEL.MASK_ON = False  
+        cfg.MODEL.MASK_ON = mask_on
 
         cfg.DATASETS.TRAIN = ("pv_train",)
         cfg.DATASETS.TEST  = ("pv_val",)
@@ -173,7 +178,7 @@ class DetectronBackend(Backend):
 
         cfg.DATALOADER.NUM_WORKERS = 2
         cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
-        cfg.TEST.EVAL_PERIOD = 50 # max(50, int(cfg.SOLVER.MAX_ITER // 10))
+        cfg.TEST.EVAL_PERIOD = 500 # max(50, int(cfg.SOLVER.MAX_ITER // 10))
         cfg.OUTPUT_DIR = str(out_dir)
         cfg.INPUT.FORMAT = "BGR"
 
@@ -196,7 +201,6 @@ class DetectronBackend(Backend):
                     raw = float(getattr(s, "value", s))
                     logging.getLogger("pvrt.test").info(f"UI:LOG:loss: iter={self.trainer.iter} total_loss(raw)={raw:.4f}")
         # trainer.register_hooks([_RawLossLogger()])
-
 
         # capture last seen total_loss from EventStorage
         class _LossTap(hooks.HookBase):

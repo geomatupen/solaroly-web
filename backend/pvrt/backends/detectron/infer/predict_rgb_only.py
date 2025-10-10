@@ -125,6 +125,24 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
 
     return out
 
+def _draw_overlay_with_masks(bgr, boxes, scores, classes, masks, names):
+    out = bgr.copy()
+    H, W = out.shape[:2]
+    pal = _palette_bgr()
+    # Draw masks first if present
+    if masks:
+        for idx, mask in enumerate(masks):
+            color = pal[idx % len(pal)]
+            mask_arr = np.array(mask, dtype=np.uint8)
+            if mask_arr.shape != (H, W):
+                mask_arr = cv2.resize(mask_arr, (W, H), interpolation=cv2.INTER_NEAREST)
+            colored_mask = np.zeros_like(out)
+            for c in range(3):
+                colored_mask[..., c] = color[c]
+            out = np.where(mask_arr[..., None] > 0, cv2.addWeighted(out, 0.5, colored_mask, 0.5, 0), out)
+    # Draw boxes and labels as before
+    return _draw_overlay(out, boxes, scores, classes, names)
+
 
 def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) -> Path:
     log = _log()
@@ -185,16 +203,31 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
         inst = inst.to("cpu") if inst is not None else None
 
         if inst is None or len(inst) == 0:
-            boxes, scores, classes = [], [], []
+            boxes, scores, classes, masks, polygons = [], [], [], [], []
         else:
             boxes   = inst.pred_boxes.tensor.numpy().tolist()
             scores  = inst.scores.numpy().tolist()
             classes = inst.pred_classes.numpy().tolist()
+            # Mask extraction
+            if hasattr(inst, "pred_masks"):
+                masks = inst.pred_masks.cpu().numpy()
+                # Convert masks to polygons (contours)
+                polygons = []
+                for mask in masks:
+                    cnts, _ = cv2.findContours((mask > 0.5).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    poly = [cnt.squeeze().tolist() for cnt in cnts if cnt.size > 0]
+                    polygons.append(poly)
+                masks = [mask.astype(np.uint8).tolist() for mask in masks]
+            else:
+                masks, polygons = [], []
 
         k = len(scores); total += k;  with_dets += int(k>0)
 
-        write_pred_json(preds_dir, p.stem, boxes, scores, classes, extra={"file": p.name})
-        overlay = _draw_overlay(bgr, boxes, scores, classes, names)
+        write_pred_json(
+            preds_dir, p.stem, boxes, scores, classes,
+            extra={"file": p.name, "masks": masks, "polygons": polygons}
+        )
+        overlay = _draw_overlay_with_masks(bgr, boxes, scores, classes, masks, names)
         save_overlay_png(overlay_dir, p.stem, overlay)   # PNG only, drawn BEFORE save
         # save_overlay_jpg(overlay_dir, p.stem, overlay, exif_source=images_dir)
 
@@ -204,14 +237,23 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     # training_meta_dir = os.path.join(weights, "model_meta.json")
     # log.info(f"UI:INFO:test: model path={weights.name}")
     metrics = {
-        "backend":"detectron","input_mode":"rgb","use_thermal":False,"device":cfg.MODEL.DEVICE,
-        "score_thresh_test": getattr(cfg.MODEL.ROI_HEADS,"SCORE_THRESH_TEST",None),
-        "num_images": n, "images_with_detections": with_dets, "total_detections": total,
-        "avg_detections_per_image": round(total/n, 3) if n else 0.0,
+        "backend": "detectron",
+        "input_mode": "rgb",
+        "use_thermal": False,
+        "device": cfg.MODEL.DEVICE,
+        "score_thresh_test": getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", None),
+        "num_images": n,
+        "images_with_detections": with_dets,
+        "total_detections": total,
+        "avg_detections_per_image": round(total / n, 3) if n else 0.0,
         "elapsed_sec": round(elapsed, 3),
-        "img_per_sec": round(n/elapsed, 3) if elapsed>0 else None,
+        "img_per_sec": round(n / elapsed, 3) if elapsed > 0 else None,
         "model_name": str(weights.name),
     }
+    # Add mask AP if available
+    if hasattr(inst, "pred_masks") and hasattr(inst, "scores") and hasattr(inst, "pred_classes"):
+        # Placeholder: actual mask AP computation should be added here if available
+        metrics["mask_ap"] = None  # TODO: replace with real mask AP if computed
     write_metrics_json(out_dir, metrics)
 
     # ONE summary line + completion line

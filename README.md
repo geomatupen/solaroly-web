@@ -146,12 +146,44 @@ If no errors, the SDK is ready. you can type exit() to exit python cell.
 From the project root:
 
 ```bash
-uvicorn backend.pvrt.web.app:app --workers 1 --port 8001  #change workers number based on the hardware you have.
-OR
 uvicorn backend.pvrt.web.app:app --reload --port 8001
+OR
+uvicorn backend.pvrt.web.app:app --workers 1 --port 8001  #change workers number based on the hardware you have.
+
 ```
 
 Open in browser:  
 [http://localhost:8001/](http://localhost:8001/)
 
----
+
+## Debugging FastAPI/uvicorn errors
+
+To capture detailed logs (including tracebacks) when running the backend, use:
+
+```bash
+uvicorn backend.pvrt.web.app:app --reload --port 8001 > fastapi.log 2>&1
+```
+
+This will save all output (including errors) to `fastapi.log`. If you encounter an error, open this file and share the relevant traceback for debugging.
+
+Alternatively, you can run with more verbose logging:
+
+```bash
+uvicorn backend.pvrt.web.app:app --reload --port 8001 --log-level debug #> fastapi.log 2>&1
+```
+
+For real-time viewing, use:
+
+```bash
+tail -f fastapi.log
+```
+
+This helps diagnose issues that occur during training, evaluation, or API calls.
+
+Labelme2Coco
+pip install labelme2coco
+labelme2coco C:\Users\ROG\Documents\Termatics\solaroly\ortho\images C:\Users\ROG\Documents\Termatics\solaroly\annotations\coco
+- Then find and replace the full path from generated coco json and only remaining should be image_name.jpg
+
+
+https://github.com/mcp?utm_source=vscode-website&utm_campaign=mcp-registry-server-launch-2025 

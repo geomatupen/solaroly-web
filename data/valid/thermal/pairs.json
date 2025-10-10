@@ -1,6 +1,0 @@
-{
-  "/home/upen/projects/solaroly-web/data/valid/DJI_20250613134954_0001_T.jpeg": "/home/upen/projects/solaroly-web/data/valid/thermal/DJI_20250613134954_0001_T_thermal.tif",
-  "/home/upen/projects/solaroly-web/data/valid/DJI_20250613134955_0002_T.jpeg": "/home/upen/projects/solaroly-web/data/valid/thermal/DJI_20250613134955_0002_T_thermal.tif",
-  "DJI_20250613134954_0001_T.jpeg": "thermal/DJI_20250613134954_0001_T_thermal.tif",
-  "DJI_20250613134955_0002_T.jpeg": "thermal/DJI_20250613134955_0002_T_thermal.tif"
-}

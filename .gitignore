@@ -1,8 +1,15 @@
 venv/
+data/
 data/test/
 data/train/
+data/train-3-band/
+data/train_whole_panel_annotated/
 data/valid/
+data/valid-3-band/
+data/valid_whole_panel_annotated/
 data/test_orig/
 outputs/
 media/
+.serena/
+.playwright/
 **/__pycache__/

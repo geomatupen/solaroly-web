@@ -48,6 +48,7 @@ def train_entry(
     base_lr: float,
     ims_per_batch: int,
     run_name: str = "",
+    model_type: str = "maskrcnn",
 ) -> dict:
     """
     Decide RGB vs RGBT (based on data availability + user request), then train.
@@ -78,6 +79,7 @@ def train_entry(
             base_lr=float(base_lr),
             ims_per_batch=int(ims_per_batch),
             run_name=run_name,
+            model_type=model_type,
         )
     )
     meta = load_model_meta(run_dir)
