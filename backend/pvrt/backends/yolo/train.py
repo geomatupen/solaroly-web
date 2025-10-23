@@ -76,9 +76,24 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     else:
         model_weights = "yolov8s.pt"
 
+    # If use_thermal: create merged images (RGBA) in a separate folder and point YOLO there.
+    data_root = train_dir.parent.resolve()
+    if use_thermal:
+        try:
+            from .preproc import merge_rgb_with_thermal
+            merged_root = run_dir / "merged"
+            merged_root.mkdir(parents=True, exist_ok=True)
+            # create train/valid/test subfolders
+            tcount = merge_rgb_with_thermal(train_dir, merged_root / "train")
+            merge_rgb_with_thermal(val_dir, merged_root / "valid")
+            # note: test split is left empty; user can provide test set
+            data_root = merged_root
+        except Exception:
+            data_root = train_dir.parent.resolve()
+
     # Create a temporary data.yaml compatible with ultralytics
     data_yaml = {
-        "path": str(train_dir.parent.resolve()),
+        "path": str(data_root),
         "train": "train",
         "val": "valid",
         "test": "test",

@@ -43,6 +43,7 @@ except Exception:
 from ..core.registry import register_backend
 from .bridge import train_entry, predict_entry
 from ..backends.detectron.backend import register as register_detectron
+from ..backends.yolo.backend import register as register_yolo
 
 # --- SSE/logging bridge (your existing file) ---
 from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
@@ -90,6 +91,7 @@ logger.addHandler(sse_handler)
 
 # --------------- Backend registration ----------------
 register_detectron(register_backend)  # Detectron now; add YOLO later by registering it here.
+register_yolo(register_backend)
 
 # --------------- Cancel flag (best-effort) ----------------
 CANCEL_FLAGS: Dict[str, bool] = {"train": False}
