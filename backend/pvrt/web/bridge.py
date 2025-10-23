@@ -49,6 +49,8 @@ def train_entry(
     ims_per_batch: int,
     run_name: str = "",
     model_type: str = "maskrcnn",
+    yolo_family: str = "v8",
+    yolo_seg: bool = False,
 ) -> dict:
     """
     Decide RGB vs RGBT (based on data availability + user request), then train.
@@ -80,6 +82,8 @@ def train_entry(
             ims_per_batch=int(ims_per_batch),
             run_name=run_name,
             model_type=model_type,
+            yolo_family=yolo_family,
+            yolo_seg=bool(yolo_seg),
         )
     )
     meta = load_model_meta(run_dir)

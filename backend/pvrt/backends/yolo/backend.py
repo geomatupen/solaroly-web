@@ -55,13 +55,17 @@ class YOLOBackend(Backend):
             run_name=getattr(cfg_in, "run_name", ""),
         )
 
-        # Normalize and write model_meta.json
+        # Normalize and write model_meta.json (keep keys compatible with Detectron meta)
+        model_name = res.get("model_name", "yolo")
+        model_zoo = getattr(cfg_in, "yolo_family", "v8")
         meta = {
             "backend": "yolo",
             "input_mode": "rgbt" if thermal_ok else "rgb",
-            "model_name": res.get("model_name", "yolo"),
+            "model_name": f"{model_name}-{model_zoo}",
+            "model_zoo": model_zoo,
             "num_classes": int(res.get("num_classes", 0)),
             "class_names": res.get("class_names", []),
+            "score_thresh_test": float(res.get("score_thresh_test", 0.25)),
             "train_params": {
                 "max_iter": int(cfg_in.max_iter or 0),
                 "base_lr": float(cfg_in.base_lr or 0.0),

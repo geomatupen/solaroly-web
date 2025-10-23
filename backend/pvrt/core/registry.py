@@ -28,6 +28,9 @@ class TrainConfig:
     # optional name to store alongside artifacts
     run_name: str = ""
     model_type: str = "maskrcnn"
+    # YOLO-specific options (optional)
+    yolo_family: str = "v8"
+    yolo_seg: bool = False
 
 
 @dataclass

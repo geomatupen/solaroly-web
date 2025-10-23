@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any, List
 import logging
+import json
 
 log = logging.getLogger("pvrt")
 
@@ -47,7 +48,7 @@ def _discover_class_names_from_coco(train_dir: Path) -> List[str]:
     return []
 
 
-def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, max_iter: int, base_lr: float, ims_per_batch: int, run_name: str = "yolo_run") -> Dict[str, Any]:
+def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, max_iter: int, base_lr: float, ims_per_batch: int, run_name: str = "yolo_run", yolo_family: str = "v8", yolo_seg: bool = False) -> Dict[str, Any]:
     """Run a YOLO training job.
 
     Returns a dict with keys: best_weights, final_weights, model_name, num_classes, class_names
@@ -64,9 +65,16 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     class_names = _discover_class_names_from_coco(train_dir)
     num_classes = len(class_names) or _discover_num_classes_from_coco(train_dir)
 
-    # Choose a default small segmentation/detection model depending on use_thermal (we still use RGB/T channels at loader level)
-    # For now pick yolov8s or yolov8n-seg if segmentation requested in future
-    model_weights = "yolov8s.pt"
+    # Choose model checkpoint from family + seg flag
+    family = (yolo_family or "v8").lower()
+    if family in {"v8", "8"}:
+        model_weights = "yolov8n-seg.pt" if yolo_seg else "yolov8s.pt"
+    elif family in {"v9", "9"}:
+        model_weights = "yolov9n-seg.pt" if yolo_seg else "yolov9s.pt"
+    elif family in {"v10", "10"}:
+        model_weights = "yolov10n-seg.pt" if yolo_seg else "yolov10s.pt"
+    else:
+        model_weights = "yolov8s.pt"
 
     # Create a temporary data.yaml compatible with ultralytics
     data_yaml = {
@@ -111,7 +119,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     return {
         "best_weights": str(best) if best.exists() else "",
         "final_weights": str(final) if final.exists() else "",
-        "model_name": "yolov8s",
+        "model_name": model_weights.replace('.pt',''),
+        "score_thresh_test": 0.25,
         "num_classes": int(num_classes),
         "class_names": class_names,
     }

@@ -1226,6 +1226,8 @@ async def api_train(
     model_name: str = Form("") ,
     backend: str = Form("detectron"),
     model_type: str = Form("fasterrcnn"),
+    yolo_family: str = Form("v8"),
+    yolo_seg: bool = Form(False),
 ):
     safe_name = _safe_name(model_name) or _now_stamp()
     run_dir = OUTPUTS / safe_name
@@ -1260,6 +1262,8 @@ async def api_train(
     ims_per_batch=ims_per_batch,
     run_name=run_dir.name,
     model_type=model_type,
+    yolo_family=yolo_family,
+    yolo_seg=yolo_seg,
 
             )
 
@@ -1397,6 +1401,7 @@ async def api_test_run(
     result_name: str = Form(default=""),
     test_threshold: str = Form(default=""),
     forced_backend: Optional[str] = Form(default=None),
+    backend: Optional[str] = Form(default=None),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -1485,7 +1490,7 @@ async def api_test_run(
                 images_dir=run_images_dir,                 # tiles dir for tif
                 out_dir=out_root,
                 use_thermal_request=use_thermal_effective,   # <-- use effective flag
-                forced_backend=forced_backend,
+                forced_backend=(backend or forced_backend),
                 score_thresh_frontend=test_threshold,
                 data_has_thermal_override=data_has_thermal_override,  # <-- tell bridge TIF has band-4
             )
