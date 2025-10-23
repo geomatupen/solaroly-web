@@ -392,6 +392,17 @@ function populateModels(list){
 
 function getSelectedDataset(){ return $("#selTestFolder").value || null; }
 function getSelectedModel(){ return $("#selModelFolder").value || null; }
+function getSelectedBackend(){
+  // priority: per-tab train selector then global selBackend then default detectron
+  const bTrain = $("#selBackendTrain"); if(bTrain && bTrain.value) return bTrain.value;
+  const b = $("#selBackend"); return b && b.value ? b.value : 'detectron';
+}
+function getYoloOptions(){
+  return {
+    family: $("#selYoloFamily") ? $("#selYoloFamily").value : 'v8',
+    seg: !!($("#chkYoloSeg") && $("#chkYoloSeg").checked)
+  };
+}
 
 // ---------- tabs ----------
 function setupTabs(){
@@ -544,6 +555,13 @@ async function startTraining(){
   fd.append("ims_per_batch", String(batch));
   fd.append("model_name", String(modelName));
   fd.append("model_type", modelType);
+  const backend = getSelectedBackend();
+  fd.append("backend", backend);
+  if(backend === 'yolo'){
+    const yo = getYoloOptions();
+    fd.append('yolo_family', yo.family);
+    fd.append('yolo_seg', yo.seg ? 'true' : 'false');
+  }
 
 
   const res = await fetch(api.train, { method:"POST", body:fd });
@@ -590,6 +608,12 @@ async function runTest(){
   fd.append("use_thermal", useThermal ? "true":"false");
   fd.append("result_name", resultName);
   fd.append("test_threshold", testThreshold);
+  const backend = getSelectedBackend();
+  fd.append('backend', backend);
+  if(backend === 'yolo'){
+    const yo = getYoloOptions();
+    fd.append('yolo_family', yo.family);
+  }
 
   try{
     testAbort = new AbortController();
@@ -1777,6 +1801,21 @@ function setupUI(){
   setHidden($("#spinTest"), true);
 
   wireAlertClose();
+
+  // Backend selector wiring: show YOLO options when YOLO is selected
+  const selBackendGlobal = $("#selBackend");
+  const selBackendTrain = $("#selBackendTrain");
+  function _updateYoloUI(){
+    const b = (selBackendTrain && selBackendTrain.value) ? selBackendTrain.value : (selBackendGlobal && selBackendGlobal.value) || 'detectron';
+    const show = (b === 'yolo');
+    const elOpts = $("#yoloOptions");
+    const elSeg = $("#yoloSegOption");
+    if(elOpts) elOpts.style.display = show ? 'block' : 'none';
+    if(elSeg)  elSeg.style.display = show ? 'block' : 'none';
+  }
+  if(selBackendGlobal) selBackendGlobal.addEventListener('change', _updateYoloUI);
+  if(selBackendTrain) selBackendTrain.addEventListener('change', _updateYoloUI);
+  _updateYoloUI();
 
   // lightbox
   $("#btnCloseLightbox").addEventListener("click", _closeLightbox);

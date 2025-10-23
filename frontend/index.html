@@ -65,6 +65,14 @@
           </div>
 
           <div class="row">
+            <label for="selBackend">Backend</label>
+            <select id="selBackend">
+              <option value="detectron">Detectron</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </div>
+
+          <div class="row">
             <label for="selTestFolder">Dataset folder</label>
             <select id="selTestFolder"></select>
             <button id="btnRefreshFolders" class="secondary">Refresh</button>
@@ -120,6 +128,27 @@
               <option value="fasterrcnn">Faster R-CNN</option>
               <option value="maskrcnn">Mask R-CNN</option>
             </select>
+          </div>
+          <div class="row">
+            <label for="selBackendTrain">Backend</label>
+            <select id="selBackendTrain">
+              <option value="detectron">Detectron</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </div>
+          <div class="row" id="yoloOptions" style="display:none;">
+            <label for="selYoloFamily">YOLO Family</label>
+            <select id="selYoloFamily">
+              <option value="v8">YOLOv8</option>
+              <option value="v9">YOLOv9</option>
+              <option value="v10">YOLOv10</option>
+            </select>
+          </div>
+          <div class="row" id="yoloSegOption" style="display:none;">
+            <label class="switchRow">
+              <input type="checkbox" id="chkYoloSeg" />
+              <span>Use segmentation model (save masks)</span>
+            </label>
           </div>
           <div class="row">
             <label for="inpIters">Iterations</label>
