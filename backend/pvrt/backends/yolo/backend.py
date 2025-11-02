@@ -41,6 +41,28 @@ class YOLOBackend(Backend):
         out_dir.mkdir(parents=True, exist_ok=True)
 
         thermal_ok = bool(cfg_in.use_thermal and has_thermal_for_images(train_dir))
+        # Determine requested channel count (user intent). If thermal is not
+        # available we coerce the requested channels to 3 to avoid confusing
+        # log messages and to ensure the training preproc uses RGB-only lists.
+        try:
+            requested_channels = int(getattr(cfg_in, "channel_count", 3))
+        except Exception:
+            requested_channels = 3
+        if not thermal_ok and requested_channels != 3:
+            log.warning(f"UI:WARN:train: requested_channels={requested_channels} but thermal_ok={thermal_ok}; coercing to 3")
+            requested_channels = 3
+
+        # Effective channels for training
+        if thermal_ok and getattr(cfg_in, "use_thermal", False):
+            effective_channels = 1 if requested_channels == 1 else 4
+        else:
+            effective_channels = 3
+
+        log.info(f"UI:INFO:train: backend=yolo | effective_channels={effective_channels} (requested={requested_channels}, thermal_ok={thermal_ok})")
+
+        # NOTE: do not create per-run prepared copies. Use the existing
+        # `train_dir`/`val_dir` in-place. If thermal decoding is required it
+        # should write into `thermal/` subfolders under those directories.
 
         # run_train is responsible for using ultralytics.YOLO to train and save artifacts
         # it should return a dict with at least {"best_weights": Path, "final_weights": Path}
@@ -53,15 +75,51 @@ class YOLOBackend(Backend):
             base_lr=cfg_in.base_lr,
             ims_per_batch=cfg_in.ims_per_batch,
             run_name=getattr(cfg_in, "run_name", ""),
+            requested_channels=requested_channels,
         )
 
         # Normalize and write model_meta.json (keep keys compatible with Detectron meta)
         model_name = res.get("model_name", "yolo")
         model_zoo = getattr(cfg_in, "yolo_family", "v8")
+        # append channel suffix to rgbt models
+        ch = int(getattr(cfg_in, "channel_count", 3))
+        if bool(cfg_in.use_thermal and has_thermal_for_images(train_dir)):
+            suffix = "_1ch" if ch == 1 else "_4ch"
+            model_name = f"{model_name}{suffix}"
+        # prepend the run name (if provided) so the UI shows runs similarly to Detectron
+        run_prefix = getattr(cfg_in, "run_name", "") or out_dir.name
+        # avoid double underscores when run_prefix is empty
+        prefix_part = f"{run_prefix}_" if run_prefix else ""
+
+        # Helper: when ultralytics returns only a weight filename we want to store
+        # the path relative to the run folder (e.g. "train_.../model_best.pt") so
+        # the frontend can locate `model_meta.json` and other artifacts by run.
+        def _make_run_path(candidate_weights, fallback_model_obj):
+            # candidate_weights: path-like string (maybe nested) returned by run_train
+            # fallback_model_obj: dict from res.get('best_model'|'final_model') that
+            # may already contain a .get('path') value; prefer explicit run-relative
+            # path if we can compute it from candidate_weights.
+            if candidate_weights:
+                try:
+                    name = Path(candidate_weights).name
+                    return f"{run_prefix}/{name}" if run_prefix else name
+                except Exception:
+                    # fallback to str(candidate_weights)
+                    return str(candidate_weights)
+            # if ultralytics or our extractor already provided a path, keep it
+            if isinstance(fallback_model_obj, dict):
+                p = fallback_model_obj.get("path")
+                if p:
+                    return p
+            return ""
+
         meta = {
             "backend": "yolo",
             "input_mode": "rgbt" if thermal_ok else "rgb",
-            "model_name": f"{model_name}-{model_zoo}",
+            "selected_bands": getattr(cfg_in, "selected_bands", None),
+            "channel_count": int(getattr(cfg_in, "channel_count", 3)),
+            # model_name includes the training run prefix + base model + zoo
+            "model_name": f"{prefix_part}{model_name}-{model_zoo}",
             "model_zoo": model_zoo,
             "num_classes": int(res.get("num_classes", 0)),
             "class_names": res.get("class_names", []),
@@ -72,11 +130,20 @@ class YOLOBackend(Backend):
                 "ims_per_batch": int(cfg_in.ims_per_batch or 0),
                 "run_name": getattr(cfg_in, "run_name", ""),
             },
+            # include full best/final stats (iter, val_bbox_AP50, loss stats, path)
             "best_model": {
-                "path": str(Path(res.get("best_weights", "")).name) if res.get("best_weights") else "",
+                "iter": res.get("best_model", {}).get("iter") if isinstance(res.get("best_model", {}), dict) else None,
+                "val_bbox_AP50": res.get("best_model", {}).get("val_bbox_AP50") if isinstance(res.get("best_model", {}), dict) else None,
+                "total_loss_med20": res.get("best_model", {}).get("total_loss_med20") if isinstance(res.get("best_model", {}), dict) else None,
+                "total_loss_raw": res.get("best_model", {}).get("total_loss_raw") if isinstance(res.get("best_model", {}), dict) else None,
+                "path": _make_run_path(res.get("best_weights"), res.get("best_model", {})),
             },
             "final_model": {
-                "path": str(Path(res.get("final_weights", "")).name) if res.get("final_weights") else "",
+                "iter": res.get("final_model", {}).get("iter") if isinstance(res.get("final_model", {}), dict) else None,
+                "val_bbox_AP50": res.get("final_model", {}).get("val_bbox_AP50") if isinstance(res.get("final_model", {}), dict) else None,
+                "total_loss_med20": res.get("final_model", {}).get("total_loss_med20") if isinstance(res.get("final_model", {}), dict) else None,
+                "total_loss_raw": res.get("final_model", {}).get("total_loss_raw") if isinstance(res.get("final_model", {}), dict) else None,
+                "path": _make_run_path(res.get("final_weights"), res.get("final_model", {})),
             },
         }
         save_model_meta(out_dir, meta)
@@ -95,9 +162,24 @@ class YOLOBackend(Backend):
 
         # choose rgbt vs rgb based on user request and model capability
         use_thermal = bool(cfg_in.use_thermal and model_mode == "rgbt" and has_thermal_for_images(images_dir))
+        try:
+            requested = int(getattr(cfg_in, "channel_count", 3))
+        except Exception:
+            requested = 3
+        if use_thermal:
+            effective_channels_test = 1 if requested == 1 else 4
+        else:
+            effective_channels_test = 3
 
-        log.info(f"UI:INFO:test: backend=yolo | selected={'rgbt' if use_thermal else 'rgb'} | score_thresh={score_thresh:.3f}")
-        return predict_folder(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh, use_thermal=use_thermal)
+        try:
+            model_chan = int(meta.get("channel_count", 0) or 0)
+        except Exception:
+            model_chan = 0
+
+        log.info(
+            f"UI:INFO:test: backend=yolo | selected={'rgbt' if use_thermal else 'rgb'} | model_trained={model_chan or 'unknown'} | requested={requested} | effective_channels={effective_channels_test} | score_thresh={score_thresh:.3f}"
+        )
+        return predict_folder(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh, use_thermal=use_thermal, channel_count=effective_channels_test)
 
     def read_meta(self, weights_dir: Path) -> dict:
         return load_model_meta(weights_dir)

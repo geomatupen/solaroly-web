@@ -63,9 +63,56 @@ def _load_cfg(d: Path):
     return cfg
 
 def _find_thermal(rgb: Path) -> Path | None:
-    for cand in (rgb.with_name(rgb.stem+"_thermal.tif"),
-                 rgb.with_name(rgb.stem+"_thermal.tiff")):
-        if cand.exists(): return cand
+    """
+    Locate a thermal source for the given RGB `rgb` path.
+
+    Search order (robust against how the decoder writes files):
+      1) If `thermal/pairs.json` exists, honor the mapping (preferred).
+      2) Check `thermal/{stem}_thermal.*` and `thermal/{stem}.*` (decoder writes `_thermal.tif`).
+      3) Check sidecar files next to the RGB image (`{stem}_thermal.*`).
+      4) Legacy fallback: `{stem}_thermal.tif`/`.tiff` next to RGB.
+    """
+    exts = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
+    tdir = rgb.parent / "thermal"
+
+    # 1) pairs.json mapping (decoder writes relative paths there)
+    try:
+        pjson = tdir / "pairs.json"
+        if pjson.exists():
+            import json as _json
+            try:
+                pairs = _json.loads(pjson.read_text(encoding="utf-8"))
+                target = pairs.get(rgb.name)
+                if target:
+                    candidate = (rgb.parent / target).resolve()
+                    if candidate.exists():
+                        return candidate
+            except Exception:
+                # ignore malformed pairs.json and fall through
+                pass
+    except Exception:
+        pass
+
+    # 2) thermal/ subfolder: check both {stem}_thermal.* (what decoder writes) and {stem}.*
+    for e in exts:
+        cand1 = tdir / f"{rgb.stem}_thermal{e}"
+        if cand1.exists():
+            return cand1
+        cand2 = tdir / f"{rgb.stem}{e}"
+        if cand2.exists():
+            return cand2
+
+    # 3) sidecar with _thermal suffix next to the RGB file
+    for e in exts:
+        cand = rgb.with_name(f"{rgb.stem}_thermal{e}")
+        if cand.exists():
+            return cand
+
+    # 4) legacy tif/tiff sidecar (back-compat)
+    for cand in (rgb.with_name(rgb.stem + "_thermal.tif"), rgb.with_name(rgb.stem + "_thermal.tiff")):
+        if cand.exists():
+            return cand
+
     return None
 
 def _read_rgb_and_thermal_from_path(p: Path):
@@ -301,7 +348,7 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
 
 
 
-def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, **_) -> Path:
+def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, channel_count: int = 4, **_) -> Path:
     """
     RGB+Thermal inference (sidecar <stem>_thermal.tif[f]).
     PNG overlays only, with class + %; live mini-logs; end summary.
@@ -316,6 +363,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     meta = load_model_meta(Path(weights_dir))
     model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
 
+    # If model_mode is NOT rgbt but user forced thermal via bridge, we fallback earlier.
     if model_mode not in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}:
         log.warning(
             f"UI:WARN:test: thermal path received RGB model (model_mode={model_mode!r}) - FALLBACK to RGB"
@@ -328,14 +376,42 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
             use_thermal=False,
         )
 
-    # Explicit banner so the mini-log always says which mode ran
-    log.info("UI:INFO:test: Running the mode RGB+Thermal (4ch)")
+    # Log which channel configuration will be used for inference
+    if channel_count == 1:
+        log.info("UI:INFO:test: Running the mode Thermal-only (1ch)")
+    else:
+        log.info("UI:INFO:test: Running the mode RGB+Thermal (4ch)")
 
     layout      = ensure_results_layout(out)
     preds_dir   = layout["preds"]
     overlays_dir= layout["overlays"]
 
-    model, cfg, names, wpth = _build_model_4ch(wdir, score_thresh)
+    # Build model according to requested/effective channel_count
+    if channel_count == 1:
+        # build a 1-channel model: adapt cfg and conv to accept single-channel thermal input
+        device = _pick_device()
+        cfg = _load_cfg(wdir)
+        wpth = _resolve_weights(wdir)
+        cfg.MODEL.WEIGHTS = str(wpth)
+        cfg.MODEL.DEVICE = device
+        # prepare cfg for 1ch
+        try:
+            from ..utils.model_patch import make_cfg_1ch, patch_first_conv_to_1ch, ensure_model_pixel_stats_1ch
+            make_cfg_1ch(cfg)
+        except Exception:
+            pass
+        model = build_model(cfg)
+        model.eval().to(device)
+        try:
+            from ..utils.model_patch import patch_first_conv_to_1ch, ensure_model_pixel_stats_1ch
+            patch_first_conv_to_1ch(model)
+            ensure_model_pixel_stats_1ch(model)
+        except Exception:
+            pass
+        DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
+        names = [str(x) for x in meta.get("class_names", [f"cls_{i}" for i in range(int(getattr(cfg.MODEL.ROI_HEADS, "NUM_CLASSES", 0) or 0))])]
+    else:
+        model, cfg, names, wpth = _build_model_4ch(wdir, score_thresh)
 
     # one-time header
     try:
@@ -348,32 +424,51 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     imgs = [p for p in sorted(images.iterdir()) if p.suffix.lower() in exts]
     n    = len(imgs)
 
-    log.info("UI:OK:test: Testing started (RGB+Thermal)")
+    mode_str = "Thermal-only (1ch)" if channel_count == 1 else "RGB+Thermal (4ch)"
+    log.info(f"UI:OK:test: Testing started ({mode_str})")
     log.info(f"UI:INFO:test: Images={n} | Device={cfg.MODEL.DEVICE} | Thr={getattr(cfg.MODEL.ROI_HEADS,'SCORE_THRESH_TEST',None)} | WeightsMD5={w_md5}")
 
     total, with_dets = 0, 0
+    # ensure variables referenced after the loop exist even if no images processed
+    inst = None
+    masks = []
     for i, p in enumerate(imgs, 1):
         # unified reader: GeoTIFF band-4 thermal OR sidecar *_thermal.tif
         bgr, therm = _read_rgb_and_thermal_from_path(p)
 
-        if bgr is None:
-            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason": "read_failed"})
-            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (read_failed)")
-            continue
+        # Decide acceptance criteria based on requested channel_count
+        if channel_count == 1:
+            # Thermal-only model: require a thermal source; RGB is optional
+            if therm is None:
+                log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: skipping (no_thermal_source for 1ch)")
+                write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason": "no_thermal_source"})
+                continue
+            # Build single-channel tensor from thermal
+            th = _normalize_thermal(therm)
+            # prefer using RGB dims if available so overlays align to original image size
+            if bgr is not None:
+                H, W = bgr.shape[:2]
+                if th.shape[:2] != (H, W):
+                    th = cv2.resize(th, (W, H), interpolation=cv2.INTER_LINEAR)
+            else:
+                H, W = th.shape[:2]
+            ch1 = th.astype(np.float32)
+            tensor = torch.as_tensor(ch1[None, :, :], dtype=torch.float32).to(cfg.MODEL.DEVICE)
+        else:
+            # 4-channel model: require both RGB and thermal
+            if bgr is None or therm is None:
+                reason = "read_failed" if bgr is None else "no_thermal_source"
+                write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason": reason})
+                log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections ({reason})")
+                continue
+            H, W = bgr.shape[:2]
+            th = _normalize_thermal(therm)
+            if th.shape[:2] != (H, W):
+                th = cv2.resize(th, (W, H), interpolation=cv2.INTER_LINEAR)
+            ch4 = np.dstack([bgr.astype(np.float32), (th * 255.0)]).astype(np.float32)  # BGRT
+            tensor = torch.as_tensor(ch4.transpose(2, 0, 1)).to(cfg.MODEL.DEVICE)
 
-        if therm is None:
-            write_pred_json(preds_dir, p.stem, [], [], [], extra={"file": p.name, "reason": "no_thermal_source"})
-            log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (no_thermal_source)")
-            continue
-
-        H, W = bgr.shape[:2]
-        th   = _normalize_thermal(therm)
-        if th.shape[:2] != (H, W):
-            th = cv2.resize(th, (W, H), interpolation=cv2.INTER_LINEAR)
-
-        ch4    = np.dstack([bgr.astype(np.float32), (th * 255.0)]).astype(np.float32)  # BGRT
-        tensor = torch.as_tensor(ch4.transpose(2, 0, 1)).to(cfg.MODEL.DEVICE)
-
+        # Run model
         with torch.no_grad():
             outs = model([{"image": tensor, "height": H, "width": W}])
         inst = outs[0].get("instances", None)
@@ -405,7 +500,54 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
             preds_dir, p.stem, boxes, scores, classes,
             extra={"file": p.name, "masks": masks, "polygons": polygons}
         )
-        overlay = _draw_overlay_rgbt(bgr, th, boxes, scores, classes, names)
+        # For thermal-only runs where BGR may be missing, synthesize a visualization.
+        # Use a grayscale background for single-band visualization instead of a
+        # false-color map so the image appears as a single-channel gray image
+        # (user requested). When RGB is available we still blend falsecolor
+        # thermal for enhanced contrast.
+        if bgr is None:
+            # Prefer using the actual thermal file from the `thermal/` folder
+            # (decoder produces grayscale TIFFs) so overlays match the raw
+            # thermal images on disk. Fall back to normalized `th` if the
+            # file can't be read.
+            try:
+                tpath = _find_thermal(p)
+                gray = None
+                if tpath is not None and tpath.exists():
+                    # Prefer reading TIFFs with tifffile to preserve float32
+                    try:
+                        import tifffile
+                        timg = tifffile.imread(str(tpath))
+                    except Exception:
+                        timg = cv2.imread(str(tpath), cv2.IMREAD_UNCHANGED)
+                    if timg is not None:
+                        # If float or higher-bit-depth, normalize to 0..255
+                        if issubclass(timg.dtype.type, np.floating) or timg.dtype.itemsize > 1:
+                            try:
+                                mn = float(np.nanmin(timg))
+                                mx = float(np.nanmax(timg))
+                                if mx > mn:
+                                    tnorm = (np.clip(timg, mn, mx) - mn) / (mx - mn)
+                                else:
+                                    tnorm = np.zeros_like(timg, dtype=np.float32)
+                                timg8 = (np.clip(tnorm * 255.0, 0, 255)).astype(np.uint8)
+                            except Exception:
+                                timg8 = np.clip(timg, 0, 255).astype(np.uint8)
+                            timg = timg8
+                        if timg.ndim == 3:
+                            timg = cv2.cvtColor(timg, cv2.COLOR_BGR2GRAY)
+                        gray = timg.astype(np.uint8)
+                if gray is None:
+                    gray = (np.clip(th * 255.0, 0, 255).astype(np.uint8))
+                bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            except Exception:
+                gray = (np.clip(th * 255.0, 0, 255).astype(np.uint8))
+                bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            # draw simple box overlays on the actual thermal grayscale image
+            overlay = _draw_overlay(bgr_vis, boxes, scores, classes, names)
+        else:
+            # color RGB + falsecolor thermal blend for RGB+Thermal runs
+            overlay = _draw_overlay_rgbt(bgr, th, boxes, scores, classes, names)
         save_overlay_png(overlays_dir, p.stem, overlay)
         log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")
 
@@ -414,7 +556,8 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     elapsed = time.time() - t0
     metrics = {
         "backend": "detectron",
-        "input_mode": "rgbt",
+        "input_mode": "thermal" if channel_count == 1 else "rgbt",
+        "channel_count": int(channel_count),
         "use_thermal": True,
         "device": cfg.MODEL.DEVICE,
         "score_thresh_test": getattr(cfg.MODEL.ROI_HEADS, "SCORE_THRESH_TEST", None),

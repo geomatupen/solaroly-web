@@ -17,6 +17,10 @@ html,body{ height:100%; margin:0; background:var(--bg); color:#e6edf3; font:14px
 .tabs button{ background:transparent; border:1px solid var(--border); color:#cdd6df; padding:6px 10px; border-radius:8px; margin-left:8px; cursor:pointer; }
 .tabs button.active{ border-color:var(--accent); color:#fff; box-shadow:0 0 0 1px var(--accent) inset; }
 
+.tabs{ display:flex; align-items:center; gap:12px; padding:10px 16px; }
+.tabs .brand{ display:flex; align-items:center; }
+.tabs .brand img{ height:32px; width:auto; border-radius:6px; border:1px solid transparent; }
+
 .container{ padding:16px; max-width:1400px; margin:0 auto; }
 
 .card{ background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
@@ -106,9 +110,10 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
 .modalHeader{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid var(--border); }
 .modalBody{
   padding:12px;
-  display:block;
+  display:flex;            /* center the image and allow panning */
   align-items:center;      /* vertical center */
   justify-content:center;  /* horizontal center */
+  overflow:auto;           /* allow panning when zoomed */
 }
 .modalFooter{ padding:10px 12px; border-top:1px solid var(--border); display:flex; gap:8px; justify-content:flex-end; }
 
@@ -131,6 +136,40 @@ button.secondary{ background:transparent; border:1px solid var(--border); color:
   object-fit:contain;
   display:block;
 }
+
+/* allow smooth zooming (CSS transform) and panning via modalBody scroll */
+#lightboxImg{
+  transition: transform 160ms ease;
+  transform-origin: center center;
+  cursor: default;
+  will-change: transform;
+}
+
+/* Zoom control buttons (small, top-right) */
+.img-zoom{
+  position: absolute;
+  top: 58px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+  z-index: 3;
+}
+.img-zoom:hover{ background: rgba(0,0,0,0.6); }
+.img-zoom[disabled]{ opacity: .35; cursor: default; }
+.img-zoom-reset{ right: 12px; }
+.img-zoom-in{ right: 56px; }
+.img-zoom-out{ right: 100px; }
+
+/* When zoomed-in allow grab cursor on the image */
+.lightbox-grab #lightboxImg{ cursor: grab; }
+.lightbox-grab #lightboxImg:active{ cursor: grabbing; }
 
 .img-nav {
   position: absolute;

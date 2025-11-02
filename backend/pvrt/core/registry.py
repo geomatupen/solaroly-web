@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional, Protocol, runtime_checkable
+from typing import List, Dict as TDict, Any
 
 
 # ---------- config objects passed into backends ----------
@@ -31,6 +32,13 @@ class TrainConfig:
     # YOLO-specific options (optional)
     yolo_family: str = "v8"
     yolo_seg: bool = False
+    yolo_size: str = "s"
+    # Bands and channel selection: list of band identifiers (e.g. ['rgb','thermal'])
+    selected_bands: List[str] = None
+    # requested channel count: 1, 3, or 4
+    channel_count: int = 3
+    # augmentation options passed from frontend
+    augment_options: TDict[str, Any] = None
 
 
 @dataclass
@@ -41,6 +49,9 @@ class PredictConfig:
     # user request: prefer thermal if model supports it and thermal exists
     use_thermal: bool
     score_thresh: Optional[float] = None
+    # selected bands to use at inference (list) and channel count
+    selected_bands: List[str] = None
+    channel_count: int = 3
 
 
 # ---------- what a backend must implement ----------

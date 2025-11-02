@@ -52,6 +52,7 @@ from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
 from ..dataops.scan_decode_split import (
     ensure_dirp_init, scan_split_decode_thermal, # safe to call only if thermal requested
 )
+from ..core.io import has_thermal_for_images
 
 # ---------------- Paths & constants ----------------
 ROOT = Path(__file__).resolve().parents[2]        # .../backend/pvrt
@@ -162,7 +163,12 @@ def _list_models() -> List[str]:
                 models.append({
                     "name": d.name,
                     "mtime": int(d.stat().st_mtime),
-                    "input_mode": meta.get("input_mode", "rgb")
+                    # prefer explicit model_name from meta (may include _1ch/_4ch suffix),
+                    # but keep 'name' as the run folder for lookups
+                    "model_name": meta.get("model_name") or None,
+                    "input_mode": meta.get("input_mode", "rgb"),
+                    "channel_count": meta.get("channel_count"),
+                    "backend": meta.get("backend", "detectron")
                 })
     return models
 
@@ -486,6 +492,112 @@ def _build_anomalies_geojson_from_tiles(
     feats = []
     preds_json_dir = preds_dir / "preds"
 
+    # Read run metrics (if present) so we can make decisions like forcing
+    # overlay regeneration for single-channel thermal runs where a raw
+    # thermal TIFF exists. Default to None (unknown) so behavior is
+    # conservative and preserves reuse when we can't read metrics.
+    run_channel_count = None
+    try:
+        mpath = preds_dir / "metrics.json"
+        if mpath.exists():
+            mm = json.loads(mpath.read_text(encoding="utf-8"))
+            run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    except Exception:
+        run_channel_count = None
+
+    def _find_thermal_candidate(p: Path) -> Path | None:
+        """Quick check for a thermal source for `p` (same rules as predictors).
+        Return a Path if a candidate exists, otherwise None.
+        """
+        try:
+            exts = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+            tdir = p.parent / "thermal"
+            # pairs.json mapping
+            pjson = tdir / "pairs.json"
+            if pjson.exists():
+                try:
+                    pairs = json.loads(pjson.read_text(encoding="utf-8"))
+                    rel = pairs.get(p.name)
+                    if rel:
+                        cand = (p.parent / rel)
+                        if cand.exists():
+                            return cand
+                except Exception:
+                    pass
+            # decoder naming
+            for e in exts:
+                cand = tdir / f"{p.stem}_thermal{e}"
+                if cand.exists():
+                    return cand
+                cand2 = tdir / f"{p.stem}{e}"
+                if cand2.exists():
+                    return cand2
+            # sidecar next to image
+            for e in exts:
+                cand = p.with_name(f"{p.stem}_thermal{e}")
+                if cand.exists():
+                    return cand
+            # legacy
+            for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+                if cand.exists():
+                    return cand
+        except Exception:
+            return None
+        return None
+
+    # Read run metrics (if present) so we can make decisions like forcing
+    # overlay regeneration for single-channel thermal runs where a raw
+    # thermal TIFF exists. Default to None (unknown) so behavior is
+    # conservative and preserves reuse when we can't read metrics.
+    run_channel_count = None
+    try:
+        mpath = preds_dir / "metrics.json"
+        if mpath.exists():
+            mm = json.loads(mpath.read_text(encoding="utf-8"))
+            run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    except Exception:
+        run_channel_count = None
+
+    def _find_thermal_candidate(p: Path) -> Path | None:
+        """Quick check for a thermal source for `p` (same rules as predictors).
+        Return a Path if a candidate exists, otherwise None.
+        """
+        try:
+            exts = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+            tdir = p.parent / "thermal"
+            # pairs.json mapping
+            pjson = tdir / "pairs.json"
+            if pjson.exists():
+                try:
+                    pairs = json.loads(pjson.read_text(encoding="utf-8"))
+                    rel = pairs.get(p.name)
+                    if rel:
+                        cand = (p.parent / rel)
+                        if cand.exists():
+                            return cand
+                except Exception:
+                    pass
+            # decoder naming
+            for e in exts:
+                cand = tdir / f"{p.stem}_thermal{e}"
+                if cand.exists():
+                    return cand
+                cand2 = tdir / f"{p.stem}{e}"
+                if cand2.exists():
+                    return cand2
+            # sidecar next to image
+            for e in exts:
+                cand = p.with_name(f"{p.stem}_thermal{e}")
+                if cand.exists():
+                    return cand
+            # legacy
+            for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+                if cand.exists():
+                    return cand
+        except Exception:
+            return None
+        return None
+
     for jpath in sorted(preds_json_dir.glob("*.json")):
         try:
             jd = json.loads(jpath.read_text(encoding="utf-8"))
@@ -679,6 +791,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
     """
     import logging
     import numpy as np
+    import cv2
     from PIL import Image, ImageDraw, ImageFont
 
     logger   = logging.getLogger("pvrt.test")
@@ -717,6 +830,58 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
 
     preds_json_dir = preds_dir / "preds"
 
+    # Read run metrics (best-effort). We use channel count to decide whether
+    # to force-regenerate overlays when a raw thermal TIFF exists for an image.
+    run_channel_count = None
+    try:
+        mpath = Path(preds_dir) / "metrics.json"
+        if mpath.exists():
+            mm = json.loads(mpath.read_text(encoding="utf-8"))
+            run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    except Exception:
+        run_channel_count = None
+
+    def _find_thermal_candidate(p: Path) -> Path | None:
+        """Local helper mirroring predictor logic: return a Path if a thermal
+        candidate exists for `p` (pairs.json, thermal/* naming, sidecars),
+        otherwise None.
+        """
+        try:
+            exts = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+            tdir = p.parent / "thermal"
+            # pairs.json mapping
+            pjson = tdir / "pairs.json"
+            if pjson.exists():
+                try:
+                    pairs = json.loads(pjson.read_text(encoding="utf-8"))
+                    rel = pairs.get(p.name)
+                    if rel:
+                        cand = (p.parent / rel)
+                        if cand.exists():
+                            return cand
+                except Exception:
+                    pass
+            # decoder naming
+            for e in exts:
+                cand = tdir / f"{p.stem}_thermal{e}"
+                if cand.exists():
+                    return cand
+                cand2 = tdir / f"{p.stem}{e}"
+                if cand2.exists():
+                    return cand2
+            # sidecar next to image
+            for e in exts:
+                cand = p.with_name(f"{p.stem}_thermal{e}")
+                if cand.exists():
+                    return cand
+            # legacy
+            for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+                if cand.exists():
+                    return cand
+        except Exception:
+            return None
+        return None
+
     for img in sorted(images_dir.iterdir()):
         if not _is_image(img):
             continue
@@ -728,12 +893,28 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
         im_for_thumb = None
 
         if use_colored and (colored_src / f"{stem}.png").exists():
-            # Already rendered overlay exists — reuse it
+            # Already rendered overlay exists — reuse it by default. However,
+            # if this run used single-channel thermal input (channel_count==1)
+            # and a raw thermal TIFF exists for this image, force regeneration
+            # so we produce a grayscale thermal overlay instead of reusing any
+            # previously-colored PNG.
+            force_regen = False
             try:
-                # ensure in-place file exists (we point colored_src==overlays, so this is a no-op)
-                im_for_thumb = Image.open(colored_src / f"{stem}.png").convert("RGB")
+                if run_channel_count == 1:
+                    if _find_thermal_candidate(img) is not None:
+                        force_regen = True
             except Exception:
+                force_regen = False
+
+            if force_regen:
+                logger.info(f"UI:INFO:post: forcing regeneration for {img.name} (1ch thermal run and thermal TIFF available)")
                 im_for_thumb = None
+            else:
+                try:
+                    # ensure in-place file exists (we point colored_src==overlays, so this is a no-op)
+                    im_for_thumb = Image.open(colored_src / f"{stem}.png").convert("RGB")
+                except Exception:
+                    im_for_thumb = None
 
         if im_for_thumb is None:
             # Draw overlay from JSON preds (fast; no EXIF)
@@ -742,10 +923,145 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 "boxes": [], "scores": [], "classes": [], "file": img.name
             }
 
+            # Choose base image for overlay depending on run channel count:
+            # - if run_channel_count == 3: always use the RGB original (ignore thermal TIFFs)
+            # - if run_channel_count == 1: prefer the decoded thermal TIFF (grayscale preview)
+            # - if run_channel_count == 4: blend thermal (colormapped) onto RGB as the base
+            base = None
             try:
-                base = Image.open(img).convert("RGB")
+                tdir = img.parent / "thermal"
+                tpath = None
+                # Only consider thermal sidecars when the run is NOT an RGB-only run.
+                if run_channel_count is None or run_channel_count != 3:
+                    # 1) pairs.json mapping
+                    pjson = tdir / "pairs.json"
+                    if pjson.exists():
+                        try:
+                            pairs = json.loads(pjson.read_text(encoding="utf-8"))
+                            rel = pairs.get(img.name)
+                            if rel:
+                                cand = (img.parent / rel)
+                                if cand.exists():
+                                    tpath = cand
+                        except Exception:
+                            tpath = None
+                    # 2) decoder naming: {stem}_thermal.*
+                    if tpath is None:
+                        for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                            cand = tdir / f"{img.stem}_thermal{ext}"
+                            if cand.exists():
+                                tpath = cand
+                                break
+
+                # If we have a thermal path and the run expects a pure thermal (1ch),
+                # create a grayscale preview and use that as the base. If the run
+                # expects 4 channels, blend the thermal colormap onto the RGB base.
+                if tpath is not None and tpath.exists():
+                    try:
+                        tdir = tpath.parent
+                        preview = tdir / f"{img.stem}_thermal_preview.png"
+                        if run_channel_count == 1:
+                            # Single-channel run: prefer cached grayscale preview
+                            if preview.exists() and preview.stat().st_mtime >= tpath.stat().st_mtime:
+                                try:
+                                    base = Image.open(preview).convert("RGB")
+                                    logger.info(f"UI:INFO:post: using cached thermal preview {preview} for {img.name}")
+                                except Exception:
+                                    base = None
+                            else:
+                                try:
+                                    import tifffile as _tifffile
+                                    arr = _tifffile.imread(str(tpath))
+                                except Exception:
+                                    with Image.open(tpath) as _im:
+                                        arr = np.array(_im)
+
+                                if issubclass(getattr(arr, 'dtype').type, np.floating) or getattr(arr, 'dtype').itemsize > 1:
+                                    mn = float(np.nanmin(arr)) if arr.size else 0.0
+                                    mx = float(np.nanmax(arr)) if arr.size else 1.0
+                                    if mx > mn:
+                                        norm = (np.clip(arr, mn, mx) - mn) / (mx - mn)
+                                    else:
+                                        norm = np.zeros_like(arr, dtype=np.float32)
+                                    arr8 = (np.clip(norm * 255.0, 0, 255)).astype(np.uint8)
+                                else:
+                                    arr8 = np.clip(arr, 0, 255).astype(np.uint8)
+
+                                if arr8.ndim == 3:
+                                    try:
+                                        gray = cv2.cvtColor(arr8, cv2.COLOR_BGR2GRAY)
+                                    except Exception:
+                                        gray = arr8[..., 0]
+                                else:
+                                    gray = arr8
+
+                                try:
+                                    gray_u8 = gray.astype(np.uint8)
+                                    cv2.imwrite(str(preview), gray_u8)
+                                    base = Image.fromarray(cv2.cvtColor(gray_u8, cv2.COLOR_GRAY2RGB))
+                                    logger.info(f"UI:INFO:post: generated thermal preview {preview} for {img.name}")
+                                except Exception:
+                                    try:
+                                        base = Image.fromarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB))
+                                    except Exception:
+                                        base = None
+
+                        elif run_channel_count == 4:
+                            # 4-channel run: blend thermal (colormapped) onto RGB
+                            try:
+                                # load RGB original
+                                rgb_base = Image.open(img).convert("RGB")
+                                rgb_arr = np.array(rgb_base)
+                                # load thermal
+                                try:
+                                    import tifffile as _tifffile
+                                    tarr = _tifffile.imread(str(tpath))
+                                except Exception:
+                                    with Image.open(tpath) as _tim:
+                                        tarr = np.array(_tim)
+
+                                if issubclass(getattr(tarr, 'dtype').type, np.floating) or getattr(tarr, 'dtype').itemsize > 1:
+                                    mn = float(np.nanmin(tarr)) if tarr.size else 0.0
+                                    mx = float(np.nanmax(tarr)) if tarr.size else 1.0
+                                    if mx > mn:
+                                        tnorm = (np.clip(tarr, mn, mx) - mn) / (mx - mn)
+                                    else:
+                                        tnorm = np.zeros_like(tarr, dtype=np.float32)
+                                    t8 = (np.clip(tnorm * 255.0, 0, 255)).astype(np.uint8)
+                                else:
+                                    t8 = np.clip(tarr, 0, 255).astype(np.uint8)
+
+                                if t8.ndim == 3:
+                                    try:
+                                        tgray = cv2.cvtColor(t8, cv2.COLOR_BGR2GRAY)
+                                    except Exception:
+                                        tgray = t8[..., 0]
+                                else:
+                                    tgray = t8
+
+                                # simple inferno-like colormap (reuse helper if available)
+                                lut = _inferno_lut_256()
+                                cmap = lut[tgray]
+                                # ensure same shape as rgb_arr
+                                if cmap.shape[:2] != rgb_arr.shape[:2]:
+                                    cmap = cv2.resize(cmap, (rgb_arr.shape[1], rgb_arr.shape[0]), interpolation=cv2.INTER_LINEAR)
+                                # blend: 60% rgb + 40% thermal colormap
+                                blended = cv2.addWeighted(rgb_arr.astype(np.uint8), 0.6, cmap.astype(np.uint8), 0.4, 0)
+                                base = Image.fromarray(blended)
+                            except Exception:
+                                base = None
+
+                    except Exception:
+                        base = None
+
             except Exception:
-                base = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
+                base = None
+
+            if base is None:
+                try:
+                    base = Image.open(img).convert("RGB")
+                except Exception:
+                    base = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
 
             draw = ImageDraw.Draw(base)
             W, H = base.size
@@ -797,22 +1113,43 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                     draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
                 draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
 
-            # Save overlay (PNG, fast)
+            # Save overlay (fast): prefer OpenCV PNG write for speed, fall back to PIL
             try:
-                base.save(ov, format="PNG", optimize=True)
+                try:
+                    arr_out = np.array(base)  # RGB
+                    bgr = cv2.cvtColor(arr_out, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(ov), bgr)
+                    logger.info(f"UI:INFO:post: wrote overlay {ov} for {img.name}")
+                except Exception:
+                    # fallback to PIL save
+                    base.save(ov, format="PNG", optimize=True)
+                    logger.info(f"UI:INFO:post: wrote overlay (PIL fallback) {ov} for {img.name}")
             except Exception:
-                # fallback: ensure file exists
-                Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8)).save(ov, format="PNG", optimize=True)
+                # final fallback: ensure file exists
+                try:
+                    Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8)).save(ov, format="PNG", optimize=True)
+                except Exception:
+                    pass
             im_for_thumb = base
 
-        # Thumb from overlay
+        # Thumb from overlay (fast write via OpenCV)
         try:
             w, h = im_for_thumb.size
             tw = max(96, w // 6); thh = max(96, h // 6)
             im_thumb = im_for_thumb.resize((tw, thh))
-            im_thumb.save(th, format="PNG", optimize=True)
+            try:
+                arr_thumb = np.array(im_thumb)  # RGB
+                bgr_thumb = cv2.cvtColor(arr_thumb, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(th), bgr_thumb)
+                logger.info(f"UI:INFO:post: wrote thumb {th} for {img.name}")
+            except Exception:
+                im_thumb.save(th, format="PNG", optimize=True)
+                logger.info(f"UI:INFO:post: wrote thumb (PIL fallback) {th} for {img.name}")
         except Exception:
-            Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
+            try:
+                Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
+            except Exception:
+                pass
 
         mapper[img.name] = {
             "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
@@ -1161,7 +1498,7 @@ def _wire_logging_to_sse() -> None:
     child.propagate = True
 
     # 3rd-party: attach handler directly, no propagation (no duplicates)
-    for name in ("detectron2", "fvcore", "fvcore.common.checkpoint", "torch"):
+    for name in ("detectron2", "fvcore", "fvcore.common.checkpoint", "torch", "ultralytics"):
         lg = logging.getLogger(name)
         lg.setLevel(logging.INFO)
         lg.propagate = False
@@ -1230,6 +1567,9 @@ async def api_train(
     model_type: str = Form("fasterrcnn"),
     yolo_family: str = Form("v8"),
     yolo_seg: bool = Form(False),
+    yolo_size: str = Form("s"),
+    selected_bands: str = Form(None),
+    channel_count: int = Form(3),
 ):
     safe_name = _safe_name(model_name) or _now_stamp()
     run_dir = OUTPUTS / safe_name
@@ -1253,7 +1593,18 @@ async def api_train(
         from detectron2.utils.logger import setup_logger
         setup_logger()  # route detectron2/fvcore to std logging (SSE handler will pick it up)
         with redirect_std_to_logger():
-            return train_entry(
+            # Also persist logs to a per-run file so users can inspect train logs later.
+            # We attach a FileHandler to the root logger for the duration of this run.
+            fh = None
+            root_logger = logging.getLogger()
+            try:
+                train_log_path = run_dir / "train.log"
+                fh = logging.FileHandler(str(train_log_path), mode="a", encoding="utf-8")
+                fh.setLevel(logging.DEBUG)
+                fh.setFormatter(logging.Formatter("[%(asctime)s] %(name)s %(levelname)s: %(message)s", "%m/%d %H:%M:%S"))
+                root_logger.addHandler(fh)
+                root_logger.debug(f"Per-run logging started -> {train_log_path}")
+                return train_entry(
     backend=backend,
     train_dir=TRAIN_DIR,
     val_dir=VALID_DIR,
@@ -1266,8 +1617,20 @@ async def api_train(
     model_type=model_type,
     yolo_family=yolo_family,
     yolo_seg=yolo_seg,
+    yolo_size=yolo_size,
+    selected_bands=[b.strip() for b in (selected_bands.split(',') if selected_bands else [])] or None,
+    channel_count=int(channel_count or 3),
 
             )
+            finally:
+                try:
+                    if fh:
+                        root_logger.debug(f"Per-run logging stopping -> {train_log_path}")
+                        root_logger.removeHandler(fh)
+                        fh.flush()
+                        fh.close()
+                except Exception:
+                    logging.getLogger("pvrt").exception("Failed to remove/close per-run file handler")
 
     try:
         resp = await asyncio.to_thread(_do_train)  # <-- key change
@@ -1294,6 +1657,73 @@ async def api_test_datasets():
     details = _list_datasets()                      # current shape: [{name, count, mtime}, ...]
     names = [d["name"] for d in details]           # simple shape: ["name", ...]
     return {"ok": True, "datasets": details, "dataset_names": names}
+
+
+@app.get("/api/dataset_bands")
+async def api_dataset_bands(dataset: str):
+    """Return detected bands for a dataset folder under data/test or data/train.
+    Query param `dataset` may be a folder name under data/test or the literal 'train'/'valid'.
+    """
+    # resolve dataset path
+    ds = None
+    if dataset in ("train", "valid"):
+        base = PROJECT_ROOT / "data"
+        ds = base / dataset
+    else:
+        ds = TEST_DIR / dataset
+
+    if not ds or not ds.exists():
+        return {"ok": False, "error": "dataset_not_found", "dataset": dataset}
+
+    # simple detection: check for thermal subdir and presence of RGB-like images
+    bands = []
+    examples = {}
+    try:
+        if (ds / "thermal").exists():
+            bands.append("thermal")
+            # collect some examples
+            ex = [str(p.relative_to(PROJECT_ROOT)) for p in sorted((ds / "thermal").glob("*"))[:5] if p.is_file()]
+            examples["thermal"] = ex
+
+        # rgb if top-level images exist
+        imgs = [p for p in ds.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+        if imgs:
+            bands.insert(0, "rgb")
+            examples["rgb"] = [str(p.relative_to(PROJECT_ROOT)) for p in imgs[:5]]
+
+        # if TIFFs available, expose tif as band candidate
+        tifs = [p for p in ds.glob("*.tif")]
+        if tifs and "rgb" not in bands:
+            bands.insert(0, "tif")
+            examples["tif"] = [str(p.relative_to(PROJECT_ROOT)) for p in tifs[:5]]
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "dataset": str(ds), "bands": bands, "examples": examples}
+
+
+@app.post("/api/decode_dataset")
+async def api_decode_dataset(dataset: str = Form(...)):
+    """Trigger thermal decoding for a dataset (images pipeline). Returns updated band list."""
+    # resolve dataset path similarly to above
+    if dataset in ("train", "valid"):
+        ds = PROJECT_ROOT / "data" / dataset
+    else:
+        ds = TEST_DIR / dataset
+
+    if not ds.exists():
+        raise HTTPException(status_code=404, detail="dataset not found")
+
+    try:
+        ensure_dirp_init()
+        scan_split_decode_thermal(ds)
+    except Exception as e:
+        logger.exception("decode failed")
+        raise HTTPException(status_code=500, detail=f"decode failed: {e}")
+
+    # return updated bands
+    return await api_dataset_bands(dataset)
 
 @app.post("/api/test_upload")
 async def api_test_upload_underscore(
@@ -1404,6 +1834,8 @@ async def api_test_run(
     test_threshold: str = Form(default=""),
     forced_backend: Optional[str] = Form(default=None),
     backend: Optional[str] = Form(default=None),
+    selected_bands: str = Form(None),
+    channel_count: int = Form(3),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -1439,11 +1871,12 @@ async def api_test_run(
     tif_has_thermal = False  # only meaningful for 'tif'
 
     if input_type == "images":
-        # Thermal decode ONLY for per-image RJPEG workflow
-        if use_thermal:
-            ensure_dirp_init()
-            scan_split_decode_thermal(ds_dir)
-            logger.info("thermal images decoded (images pipeline)")
+        # For image datasets we will *infer* thermal needs from the model metadata.
+        # If the selected model was trained for RGB+Thermal (rgbt/4ch) then attempt
+        # an idempotent decode pass which will create thermal/ + pairs.json when
+        # RJPEG payloads are present. The decode helper is safe to call repeatedly
+        # and will early-exit if DIRP isn't available.
+        pass
     else:
         # input_type == "tif"
         tifs = [p for p in ds_dir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
@@ -1471,14 +1904,96 @@ async def api_test_run(
         f"TestRun: image_input_type={input_type} ds='{ds_dir.name}' tiles='{tiles_dir if input_type=='tif' else '-'}'"
     )
 
-    # --- Effective thermal request & override for TIFF runs ---
+    # --- Decide whether to decode / use thermal for inference ---
     meta = _read_model_meta(model_dir)
     model_mode = (meta.get("input_mode") or "rgb").strip().lower()
     model_is_rgbt = model_mode in {"rgbt","rgb+thermal","rgb_thermal","thermal","4ch"}
 
-    # If user ticked OR (TIF has band-4 AND model supports thermal) -> request thermal
-    use_thermal_effective = bool(use_thermal or (input_type == "tif" and tif_has_thermal and model_is_rgbt))
-    data_has_thermal_override = (tif_has_thermal if input_type == "tif" else None)
+    # Determine model's declared channel count (1,3,4) with safe default
+    try:
+        model_chan = int(meta.get("channel_count") or (4 if model_is_rgbt else 3))
+    except Exception:
+        model_chan = 3
+
+    # If model expects thermal for inference and this is an images dataset, run
+    # the idempotent decode pass which will populate images_dir/thermal/pairs.json
+    # when RJPEG payloads exist. This lets us infer availability afterwards.
+    if input_type == "images" and model_is_rgbt:
+        try:
+            ensure_dirp_init()
+            scan_split_decode_thermal(ds_dir)
+            logger.info("thermal decode attempted for images dataset (test pipeline)")
+        except Exception as e:
+            # Don't fail the whole test run for DIRP issues; log and continue.
+            logger.warning(f"thermal decode attempt failed: {e}")
+
+    # Determine whether the dataset actually has thermal after any decode attempt
+    if input_type == "tif":
+        data_has_thermal = tif_has_thermal
+        data_has_thermal_override = tif_has_thermal
+    else:
+        # images dir - check for thermal/pairs.json or thermal/ files
+        data_has_thermal = has_thermal_for_images(ds_dir)
+        data_has_thermal_override = None
+
+    # Infer dataset channel count:
+    # - images with both rgb files and thermal/ → 4
+    # - images with only thermal/ → 1
+    # - tif with 4+ bands flagged earlier → 4
+    # - otherwise assume 3 (RGB)
+    def _infer_data_channel_count(images_dir: Path, input_type: str, tif_has_thermal_flag: bool) -> int:
+        try:
+            if input_type == "tif":
+                return 4 if tif_has_thermal_flag else 3
+            # images directory
+            rgb_exists = any(p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+            thermal_dir = images_dir / "thermal"
+            thermal_exists = thermal_dir.exists() and any(thermal_dir.iterdir())
+            if thermal_exists and rgb_exists:
+                return 4
+            if thermal_exists and not rgb_exists:
+                return 1
+            return 3
+        except Exception:
+            return 3
+
+    data_chan = _infer_data_channel_count(ds_dir, input_type, tif_has_thermal)
+
+    # Use thermal only if model supports it AND data provides it
+    use_thermal_effective = bool(model_is_rgbt and data_has_thermal)
+
+    # Validate model <-> data channel compatibility and provide clear messages
+    # Possible cases:
+    # - model=3 and data=4 -> we can run RGB-only (ignore thermal) but warn user
+    # - model=3 and data=1 -> cannot run (model expects RGB)
+    # - model in {1,4} and data=3 -> cannot run (model expects thermal)
+    # - model=1 and data=4 -> run using thermal-only (ok)
+    # - model=4 and data=1 -> cannot run (expects both RGB+thermal)
+    if model_chan == 3 and data_chan == 4:
+        # dataset has thermal but model is RGB-only; run without thermal but warn
+        logger.warning(f"UI:WARN:test: Model trained for 3-channel RGB but dataset contains thermal; running in RGB-only mode (thermal ignored). model={model_dir.name}")
+        logging.getLogger("pvrt.test").info(f"UI:WARN:test: Model trained for 3-channel RGB but dataset contains thermal; running in RGB-only mode (thermal ignored).")
+        # ensure we won't request thermal
+        use_thermal_effective = False
+    elif model_chan == 3 and data_chan == 1:
+        # dataset only has thermal images — can't run an RGB model
+        msg = "Model expects RGB (3-channel) but dataset contains only thermal images. Convert dataset or use a thermal-capable model."
+        logger.error(f"UI:ERR:test: {msg} model={model_dir.name}")
+        raise HTTPException(status_code=400, detail=msg)
+    elif model_chan in (1, 4) and data_chan == 3:
+        # model expects thermal but dataset has no thermal
+        msg = "Model expects thermal input but dataset has no thermal images. Enable dataset decoding or choose an RGB model."
+        logger.error(f"UI:ERR:test: {msg} model={model_dir.name}")
+        raise HTTPException(status_code=400, detail=msg)
+    elif model_chan == 1 and data_chan == 4:
+        # model expects single-channel thermal; dataset has both → use thermal-only
+        logging.getLogger("pvrt.test").info("UI:INFO:test: Model expects single-channel thermal; using thermal band only for inference.")
+        use_thermal_effective = True
+    elif model_chan == 4 and data_chan == 1:
+        # model expects RGB+thermal but dataset only has thermal
+        msg = "Model expects 4-channel RGB+thermal input but dataset contains only thermal. Provide RGB or retrain for single-channel thermal."
+        logger.error(f"UI:ERR:test: {msg} model={model_dir.name}")
+        raise HTTPException(status_code=400, detail=msg)
 
     logging.getLogger("pvrt.test").info(
         f"UI:INFO:test: will_request={'rgbt' if use_thermal_effective else 'rgb'}; "
@@ -1495,6 +2010,8 @@ async def api_test_run(
                 forced_backend=(backend or forced_backend),
                 score_thresh_frontend=test_threshold,
                 data_has_thermal_override=data_has_thermal_override,  # <-- tell bridge TIF has band-4
+                selected_bands=[b.strip() for b in (selected_bands.split(',') if selected_bands else [])] or None,
+                channel_count=int(channel_count or 3),
             )
 
 

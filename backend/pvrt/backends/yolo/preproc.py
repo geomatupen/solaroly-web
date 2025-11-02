@@ -14,48 +14,206 @@ import numpy as np
 from PIL import Image
 
 
-def merge_rgb_with_thermal(images_dir: Path, out_dir: Path) -> int:
-    """Scan `images_dir` for RGB files and a `thermal/` subdir with matching basenames.
+def merge_rgb_with_thermal(
+    images_dir: Path,
+    out_dir: Path,
+    requested_channels: int = 3,
+    use_thermal: bool = False,
+    symlink: bool = False,
+) -> int:
+    """Prepare a YOLO-friendly dataset targeted at `requested_channels`.
 
-    For each RGB image X and thermal image Y with same stem, create an RGBA PNG
-    where RGB channels are from X and the A channel is a uint8 rescaled Y.
-    Returns number of merged images written.
+    Behavior:
+    - requested_channels == 3: include only RGB images (skip single-channel thermals).
+    - requested_channels == 1 and use_thermal=True: include only images that have a
+      decoded thermal sidecar; output single-channel 'L' images containing the
+      rescaled thermal band.
+    - requested_channels == 4 and use_thermal=True: include only images that have a
+      decoded thermal sidecar; output RGBA images where A is the rescaled thermal band.
+
+    The function writes outputs preserving subdirectory structure relative to
+    `images_dir` into `out_dir`. Label files with the same stem (``.txt``) are
+    copied alongside images when present. Returns the number of output images
+    written.
     """
     images_dir = Path(images_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     therm_dir = images_dir / "thermal"
-    if not therm_dir.exists() or not therm_dir.is_dir():
-        return 0
+    written = 0
 
-    count = 0
-    for p in images_dir.iterdir():
-        if not p.is_file():
+    # helper to find thermal sidecar for an image path
+    def find_thermal(p: Path):
+        # pairs.json
+        pj = therm_dir / "pairs.json"
+        if pj.exists():
+            try:
+                import json as _json
+
+                pairs = _json.loads(pj.read_text(encoding="utf-8"))
+                rel = pairs.get(p.name) if isinstance(pairs, dict) else None
+                if rel:
+                    cand = images_dir / rel
+                    if cand.exists():
+                        return cand
+            except Exception:
+                pass
+
+        # common names in thermal dir
+        for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
+            cand = therm_dir / f"{p.stem}_thermal{ext}"
+            if cand.exists():
+                return cand
+        for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
+            cand = therm_dir / f"{p.stem}{ext}"
+            if cand.exists():
+                return cand
+
+        # sidecar next to image
+        for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
+            cand = p.with_name(f"{p.stem}_thermal{ext}")
+            if cand.exists():
+                return cand
+
+        # legacy
+        for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+            if cand.exists():
+                return cand
+        return None
+
+    for src in images_dir.rglob("*"):
+        if not src.is_file():
             continue
-        if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
+        if src.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
             continue
-        stem = p.stem
-        t = therm_dir / f"{stem}.png"
-        if not t.exists():
-            t = therm_dir / f"{stem}.tif"
-        if not t.exists():
-            continue
+
+        # preserve relative path
+        rel = src.relative_to(images_dir)
+        out_path = out_dir / rel
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            img = Image.open(p).convert("RGB")
-            therm = Image.open(t).convert("L")
-            # rescale thermal to 0..255
-            a = np.array(therm).astype(np.float32)
-            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
-            if hi <= lo: hi = lo + 1.0
-            a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
-            alpha = Image.fromarray(a, mode="L")
-            rgba = Image.merge("RGBA", (*img.split(), alpha))
-            out_path = out_dir / f"{stem}.png"
-            rgba.save(out_path)
-            count += 1
+            with Image.open(src) as im:
+                mode = im.mode
+                # determine if this is a single-channel thermal image
+                is_single = mode in ("L", "I;16", "I")
+
+                if requested_channels == 3:
+                    # include only RGB-capable images
+                    if is_single:
+                        # skip single-channel thermal-only files
+                        continue
+                    # prefer to create a symlink to the original RGB file to
+                    # avoid duplicating image bytes. If symlink is False or
+                    # the filesystem doesn't support symlinks, fall back to
+                    # writing a converted PNG.
+                    target = out_path.with_suffix(src.suffix)
+                    try:
+                        if symlink:
+                            # remove existing target if any
+                            if target.exists() or target.is_symlink():
+                                try:
+                                    target.unlink()
+                                except Exception:
+                                    pass
+                            target.symlink_to(src.resolve())
+                        else:
+                            rgb = im.convert("RGB")
+                            target = out_path.with_suffix(".png")
+                            rgb.save(target)
+                    except Exception:
+                        # fallback: write converted PNG
+                        try:
+                            rgb = im.convert("RGB")
+                            target = out_path.with_suffix(".png")
+                            rgb.save(target)
+                        except Exception:
+                            continue
+                    # copy label if exists
+                    lbl = src.with_suffix(".txt")
+                    if lbl.exists():
+                        try:
+                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                        except Exception:
+                            pass
+                    written += 1
+
+                elif requested_channels == 1 and use_thermal:
+                    # require thermal sidecar
+                    t = find_thermal(src)
+                    if t is None or not t.exists():
+                        continue
+                    # Ultralytics expects 3-channel images in most cases.
+                    # To avoid channel-mismatch errors when users request
+                    # a thermal-only run, write a 3-channel RGB image where
+                    # each channel contains the rescaled thermal band (grayscale
+                    # duplicated). This mirrors the behavior used in the
+                    # inference path and ensures the dataset is compatible with
+                    # standard YOLO loaders.
+                    try:
+                        with Image.open(t) as therm:
+                            therm_l = therm.convert("L")
+                            a = np.array(therm_l).astype(np.float32)
+                            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+                            if hi <= lo:
+                                hi = lo + 1.0
+                            a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+                            gray = Image.fromarray(a, mode="L")
+                            # duplicate into RGB
+                            rgb = Image.merge("RGB", (gray, gray, gray))
+                            target = out_path.with_suffix(".png")
+                            rgb.save(target)
+                        lbl = src.with_suffix(".txt")
+                        if lbl.exists():
+                            try:
+                                (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                            except Exception:
+                                pass
+                        written += 1
+                    except Exception:
+                        # conversion failed; skip this image
+                        continue
+
+                elif requested_channels == 4 and use_thermal:
+                    # require thermal sidecar
+                    t = find_thermal(src)
+                    if t is None or not t.exists():
+                        continue
+                    # 4-channel output requires composing RGB+thermal into an
+                    # RGBA file; symlinking is not possible because the file
+                    # doesn't exist beforehand. Always write the RGBA PNG for
+                    # requested_channels==4.
+                    try:
+                        rgb = im.convert("RGB")
+                        with Image.open(t) as therm:
+                            therm_l = therm.convert("L")
+                            a = np.array(therm_l).astype(np.float32)
+                            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+                            if hi <= lo:
+                                hi = lo + 1.0
+                            a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+                            alpha = Image.fromarray(a, mode="L")
+                            rgba = Image.merge("RGBA", (*rgb.split(), alpha))
+                            target = out_path.with_suffix(".png")
+                            # save RGBA
+                            rgba.save(target)
+                            lbl = src.with_suffix(".txt")
+                            if lbl.exists():
+                                try:
+                                    (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                                except Exception:
+                                    pass
+                            written += 1
+                    except Exception:
+                        continue
+
+                else:
+                    # unsupported combination (e.g., requested 1 without thermal)
+                    continue
+
         except Exception:
+            # ignore problematic files
             continue
 
-    return count
+    return written

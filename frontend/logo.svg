@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="32" viewBox="0 0 240 64">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1">
+      <stop offset="0" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#f08000"/>
+    </linearGradient>
+  </defs>
+  <rect rx="8" width="240" height="64" fill="#071018" />
+  <g transform="translate(12,8)">
+    <circle cx="24" cy="24" r="20" fill="url(#g)" />
+    <path d="M24 8 L28 24 L24 40 L20 24 Z" fill="#fff" opacity="0.9"/>
+  </g>
+  <g transform="translate(64,36)">
+    <text x="0" y="0" font-family="Segoe UI, Roboto, Arial" font-size="28" fill="#fff">SolarOly</text>
+  </g>
+</svg>

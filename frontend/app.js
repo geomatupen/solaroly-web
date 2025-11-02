@@ -25,6 +25,11 @@ let styleTarget = null;
 let layerMenuState = { name: null, info: null };
 let testAbort = null;
 
+// runtime caches & UI flags
+let modelsCache = {};                // name -> model metadata returned by /api/models
+let userToggledThermalTrain = false; // whether user manually toggled the train thermal checkbox
+let userToggledThermalTest = false;  // whether user manually toggled the test thermal checkbox
+
 // catalog & runtime overlays for photos
 let imageCatalog = [];              // [{ id, name, url, bounds, on }]
 let imageOverlays = new Map();      // id -> L.ImageOverlay
@@ -379,23 +384,105 @@ function populateFolders(list){
   });
 }
 function populateModels(list){
-  const sel = $("#selModelFolder");
+  // Populate a models <select>. Default target is the Test tab model selector.
+  const target = "#selModelFolder";
+  return populateModelsInto(list, target);
+}
+
+// more flexible populate: target selector can be provided
+function populateModelsInto(list, selSelector){
+  const sel = document.querySelector(selSelector);
+  if(!sel) return;
   sel.innerHTML = "";
+  // refresh models cache for client-side lookups
+  try { modelsCache = {}; } catch(_) { modelsCache = {}; }
+  const fmt = (m) => {
+    // Prefer explicit model_name from meta (often contains a readable run name)
+    function prettyModelType(t){
+      if(!t) return '';
+      t = String(t);
+      // Use compact detectron-style short names for dropdown labels
+      const tl = t.toLowerCase();
+      if(tl.includes('faster')) return 'fastrcnn';
+      if(tl.includes('mask')) return 'maskrcnn';
+      // fallback: remove spaces/underscores and non-alphanumerics for compactness
+      return tl.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    }
+
+    if (m.model_name) {
+      const mt = prettyModelType(m.model_type || '');
+      // try to pick up num_classes from several possible metadata locations
+      const nc = (m.num_classes != null) ? Number(m.num_classes)
+                 : (m.model_meta && m.model_meta.num_classes != null) ? Number(m.model_meta.num_classes)
+                 : null;
+      const nch = m.channel_count ? `-${m.channel_count}ch` : '';
+      const ncs = (nc != null) ? `-${nc}cls` : '';
+      return `${m.model_name}${mt ? `_${mt}` : ''}${nch}${ncs}`;
+    }
+    // Fallback: construct a compact run-like label: <run>_<backend>_<input_mode>_<nch>
+    const parts = [m.name];
+    if (m.backend) parts.push(String(m.backend));
+  const mtf = m.model_type ? prettyModelType(m.model_type) : '';
+    if (mtf) parts.push(mtf);
+    let out = parts.join('_');
+  if (m.channel_count) out = `${out}-${m.channel_count}ch`;
+  const nc2 = (m.num_classes != null) ? Number(m.num_classes)
+        : (m.model_meta && m.model_meta.num_classes != null) ? Number(m.model_meta.num_classes)
+        : null;
+  if (nc2 != null) out = `${out}-${nc2}cls`;
+    return out;
+  };
+
   list.forEach(m => {
-    // console.log(m)
+    // cache metadata by run name for later decisions (e.g., channel_count)
+    if (m && m.name) modelsCache[m.name] = m;
     const o = document.createElement("option");
     o.value = m.name;
-    o.textContent = `${m.name} — ${m.input_mode}`;
+    o.textContent = fmt(m);
     sel.appendChild(o);
   });
+
+  // If populating the primary model selector (test-run), auto-set the test thermal checkbox
+  // according to the selected model's channel_count unless the user explicitly toggled it.
+  if (selSelector === '#selModelFolder'){
+    const selected = sel.value || sel.options[0]?.value;
+    const m = modelsCache[selected];
+    const defaultRequiresThermal = (m && m.channel_count) ? (Number(m.channel_count) === 4 || Number(m.channel_count) === 1) : false;
+    const chkTest = document.getElementById('chkUseThermalTest');
+    // only override the checkbox if the user hasn't manually toggled it
+    if (chkTest && !userToggledThermalTest){
+      try { chkTest.checked = !!defaultRequiresThermal; } catch(_){}
+    }
+  }
 }
 
 function getSelectedDataset(){ return $("#selTestFolder").value || null; }
 function getSelectedModel(){ return $("#selModelFolder").value || null; }
 function getSelectedBackend(){
-  // priority: per-tab train selector then global selBackend then default detectron
-  const bTrain = $("#selBackendTrain"); if(bTrain && bTrain.value) return bTrain.value;
-  const b = $("#selBackend"); return b && b.value ? b.value : 'detectron';
+  // Decide backend based on the currently active tab.
+  const activeTabBtn = document.querySelector('.tabs button.active');
+  const activeTab = activeTabBtn?.dataset?.tab;
+  const selGlobal = $("#selBackend");
+  const selTrain = $("#selBackendTrain");
+  const selTest  = $("#selBackendTest");
+
+  if(activeTab === 'tab-train'){
+    if(selTrain && selTrain.value) return selTrain.value;
+    if(selGlobal && selGlobal.value) return selGlobal.value;
+    return 'detectron';
+  }
+
+  if(activeTab === 'tab-test'){
+    if(selTest && selTest.value) return selTest.value;
+    if(selGlobal && selGlobal.value) return selGlobal.value;
+    return 'detectron';
+  }
+
+  // default fallback (prefer train selector if present)
+  if(selTrain && selTrain.value) return selTrain.value;
+  if(selTest && selTest.value) return selTest.value;
+  if(selGlobal && selGlobal.value) return selGlobal.value;
+  return 'detectron';
 }
 function getYoloOptions(){
   return {
@@ -433,11 +520,23 @@ async function loadDatasets(){
   const js = await res.json();
   if(js.ok){ populateFolders(js.datasets); }
 }
-async function loadModels(){
-  const res = await fetch(api.models);
-  const js = await res.json();
-  // console.log(js)
-  if(js.ok){ populateModels(js.models); }
+// Load models, optionally filtered by backend (e.g., ?backend=yolo)
+// targetSel - optional selector string for which <select> to populate (defaults to '#selModelFolder')
+async function loadModels(backend, targetSel = '#selModelFolder'){
+  try{
+    let url = api.models;
+    if(backend) url = `${api.models}?backend=${encodeURIComponent(backend)}`;
+    const res = await fetch(url);
+    const js = await res.json();
+    if(js.ok){
+      let models = js.models || [];
+      // Server may not honor backend query; do client-side filtering as a safe fallback
+      if(backend && models.length && models[0].backend !== undefined){
+        models = models.filter(m => String(m.backend || '').toLowerCase() === String(backend || '').toLowerCase());
+      }
+      populateModelsInto(models, targetSel);
+    }
+  }catch(e){ console.warn('loadModels failed', e); }
 }
 async function loadSessions(selectLatest=true){
   const res = await fetch(api.sessions);
@@ -557,6 +656,9 @@ async function startTraining(){
   fd.append("model_type", modelType);
   const backend = getSelectedBackend();
   fd.append("backend", backend);
+  // include requested channel count for training so backend can prepare appropriate inputs
+  const channelCount = (document.getElementById('selChannelCountTrain') || { value: '3' }).value;
+  fd.append('channel_count', String(channelCount));
   if(backend === 'yolo'){
     const yo = getYoloOptions();
     fd.append('yolo_family', yo.family);
@@ -595,7 +697,15 @@ async function runTest(){
     return;
   }
   const model = getSelectedModel();
-  const useThermal = $("#chkUseThermalTest").checked;
+  // Decide channels based solely on the selected model's metadata.
+  // The frontend will send the model's expected channel_count to the server so the backend
+  // can decide whether to decode/use the thermal band. If model metadata is missing,
+  // default to 3 channels (RGB) and therefore no thermal decoding.
+  const selectedModelName = model;
+  const mmeta = selectedModelName ? modelsCache[selectedModelName] : null;
+  const modelChannelCount = (mmeta && mmeta.channel_count) ? Number(mmeta.channel_count) : 3;
+  // use_thermal true only when model expects 4 channels (RGB+thermal) or 1 channel (thermal-only)
+  const useThermal = (modelChannelCount === 4 || modelChannelCount === 1);
   const resultName = (document.getElementById("inpResultName")?.value || "").trim() || makeStamp();
   const testThreshold = (document.getElementById("testThreshold")?.value);
 
@@ -606,6 +716,9 @@ async function runTest(){
   fd.append("dataset", ds);
   if(model) fd.append("model", model);
   fd.append("use_thermal", useThermal ? "true":"false");
+  // inform backend of the expected model channel count so it can prepare inputs correctly
+  // inform backend of the expected model channel count so it can prepare inputs correctly
+  fd.append('channel_count', String(modelChannelCount));
   fd.append("result_name", resultName);
   fd.append("test_threshold", testThreshold);
   const backend = getSelectedBackend();
@@ -625,8 +738,21 @@ async function runTest(){
 
     if(!js.ok) throw new Error("test failed");
 
+    // If backend reports which channel configuration it actually used, show it briefly
+    try{
+      if (js.used_channel_count != null){
+        const uc = Number(js.used_channel_count);
+        const msg = (uc === 1) ? 'Run used: 1ch (thermal-only)'
+                  : (uc === 3) ? 'Run used: 3ch (RGB only)'
+                  : (uc === 4) ? 'Run used: 4ch (RGB + thermal)'
+                  : `Run used: ${uc}ch`;
+        ok("test", msg);
+      }
+    }catch(_){ }
+
     // console.log(js)
     currentSession = js.session;
+    // Add a more explicit status line with total predictions
     ok("test", "Testing completed.");
     setText("#testStatus", `Inference complete. ${totalPreds} predictions.`);
 
@@ -1689,9 +1815,9 @@ function connectLogs(){
     if(line.includes("UI:OK:train: Training completed")){
       setText("#trainStatus","Training completed.");
       setHidden($("#spinTrain"), true);
-      ok("train","Training completed.");
-      wireAlertClose();
-      loadModels();
+  ok("train","Training completed.");
+  wireAlertClose();
+  loadModels(getSelectedBackend(), '#selModelFolder');
     }
     if(line.includes("UI:ERR:train:")){
       setHidden($("#spinTrain"), true);
@@ -1727,6 +1853,30 @@ async function refreshMapSessionSelected(){
 let _gallery = [];     // array of {src, file}
 let _gIdx = 0;
 let _lightboxOpen = false;
+let _lightboxScale = 1.0;
+
+function _applyLightboxScale(){
+  const img = document.getElementById('lightboxImg');
+  if(!img) return;
+  // ensure img displays transforms correctly
+  img.style.transform = `scale(${_lightboxScale})`;
+  img.style.transition = 'transform 120ms ease-out';
+  img.style.display = 'block';
+  img.style.maxWidth = 'none';
+}
+
+function _zoomIn(step = 0.15){
+  _lightboxScale = Math.min(5.0, _lightboxScale + step);
+  _applyLightboxScale();
+}
+function _zoomOut(step = 0.15){
+  _lightboxScale = Math.max(0.2, _lightboxScale - step);
+  _applyLightboxScale();
+}
+function _resetZoom(){
+  _lightboxScale = 1.0;
+  _applyLightboxScale();
+}
 
 function _setLightbox(idx){
   _gIdx = Math.max(0, Math.min(idx, _gallery.length - 1));
@@ -1766,7 +1916,7 @@ function setupUI(){
   setupTabs();
 
   $("#btnRefreshFolders").addEventListener("click", loadDatasets);
-  $("#btnRefreshModels").addEventListener("click", loadModels);
+  $("#btnRefreshModels").addEventListener("click", ()=> loadModels(getSelectedBackend(), '#selModelFolder'));
   $("#btnOpenUploadModal").addEventListener("click", openUploadModal);
   $("#btnCloseUploadModal").addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
   $("#btnCancelUpload").addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
@@ -1805,22 +1955,90 @@ function setupUI(){
   // Backend selector wiring: show YOLO options when YOLO is selected
   const selBackendGlobal = $("#selBackend");
   const selBackendTrain = $("#selBackendTrain");
-  function _updateYoloUI(){
+  const selBackendTest  = $("#selBackendTest");
+
+  // Train-side: show/hide YOLO-specific train options and the Detectron model-type selector
+  function _updateYoloUIForTrain(){
     const b = (selBackendTrain && selBackendTrain.value) ? selBackendTrain.value : (selBackendGlobal && selBackendGlobal.value) || 'detectron';
     const show = (b === 'yolo');
     const elOpts = $("#yoloOptions");
     const elSeg = $("#yoloSegOption");
+    const elSize = $("#yoloSizeOption");
     if(elOpts) elOpts.style.display = show ? 'block' : 'none';
-    if(elSeg)  elSeg.style.display = show ? 'block' : 'none';
+    // The segmentation checkbox is meaningful for Detectron (Mask R-CNN).
+    // Show it only when Detectron is selected; hide it for YOLO.
+    if(elSeg)  elSeg.style.display = (b === 'detectron') ? 'block' : 'none';
+    if(elSize) elSize.style.display = show ? 'block' : 'none';
+    // Hide Detectron-only model type selector when YOLO selected
+    const modelTypeRow = document.getElementById('selModelType') ? document.getElementById('selModelType').closest('.row') : null;
+    if(modelTypeRow) modelTypeRow.style.display = show ? 'none' : 'block';
   }
-  if(selBackendGlobal) selBackendGlobal.addEventListener('change', _updateYoloUI);
-  if(selBackendTrain) selBackendTrain.addEventListener('change', _updateYoloUI);
-  _updateYoloUI();
+  if(selBackendGlobal) selBackendGlobal.addEventListener('change', _updateYoloUIForTrain);
+  if(selBackendTrain) selBackendTrain.addEventListener('change', ()=>{ _updateYoloUIForTrain(); /* no-op for models list on train */ });
+  _updateYoloUIForTrain();
+
+  // Show/hide the channel count controls when the user toggles Use thermal band on Train tab
+  const chkUseThermalTrain = document.getElementById('chkUseThermalTrain');
+  const trainBandBlock = document.getElementById('trainBandControls');
+  if (chkUseThermalTrain && trainBandBlock){
+    const toggle = ()=>{
+      const show = !!chkUseThermalTrain.checked;
+      trainBandBlock.style.display = show ? 'block' : 'none';
+    };
+    // initialize
+    toggle();
+    chkUseThermalTrain.addEventListener('change', ()=>{ userToggledThermalTrain = true; toggle(); });
+  }
+
+  // Test-side: when test-backend changes, reload the models list filtered for that backend
+  async function _onBackendChangeForTest(backend){
+    try{ await loadModels(backend, '#selModelFolder'); }catch(_){ /* ignore */ }
+  }
+  if(selBackendTest) selBackendTest.addEventListener('change', ()=> _onBackendChangeForTest(selBackendTest.value));
+  // Initialize test models list according to current test/backend selector
+  if(selBackendTest){ _onBackendChangeForTest(selBackendTest.value || (selBackendGlobal && selBackendGlobal.value)); }
+
+  // When the selected model changes in the test selector, update the test thermal checkbox
+  // to reflect the model's channel_count unless the user manually toggled the checkbox.
+  const selModelFolder = document.getElementById('selModelFolder');
+  if (selModelFolder){
+    selModelFolder.addEventListener('change', ()=>{
+      if (userToggledThermalTest) return;
+      const sel = selModelFolder.value;
+      const m = modelsCache[sel];
+      const def = (m && m.channel_count) ? (Number(m.channel_count) === 4 || Number(m.channel_count) === 1) : false;
+      const chk = document.getElementById('chkUseThermalTest');
+      if (chk){ try{ chk.checked = !!def; }catch(_){ } }
+    });
+  }
+
+  // Track manual toggles so we don't overwrite user intent when a model is auto-selected
+  const chkTrain = document.getElementById('chkUseThermalTrain');
+  if (chkTrain) chkTrain.addEventListener('change', ()=> { userToggledThermalTrain = true; });
+  const chkTest = document.getElementById('chkUseThermalTest');
+  if (chkTest) chkTest.addEventListener('change', ()=> { userToggledThermalTest = true; });
 
   // lightbox
   $("#btnCloseLightbox").addEventListener("click", _closeLightbox);
   document.getElementById("imgNext")?.addEventListener("click", _nextImg);
   document.getElementById("imgPrev")?.addEventListener("click", _prevImg);
+
+  // Zoom controls wiring (buttons are in HTML as #imgZoomIn/#imgZoomOut/#imgResetZoom)
+  document.getElementById("imgZoomIn")?.addEventListener("click", ()=> _zoomIn());
+  document.getElementById("imgZoomOut")?.addEventListener("click", ()=> _zoomOut());
+  document.getElementById("imgResetZoom")?.addEventListener("click", ()=> _resetZoom());
+
+  // Wheel zoom on image and mouse drag to pan when zoomed (simple implementation)
+  const lbImg = document.getElementById('lightboxImg');
+  if(lbImg){
+    lbImg.style.transformOrigin = 'center center';
+    lbImg.addEventListener('wheel', (ev)=>{
+      if (!_lightboxOpen) return;
+      ev.preventDefault();
+      const delta = Math.sign(ev.deltaY) * -0.075; // wheel up -> zoom in
+      if (delta > 0) _zoomIn(delta); else _zoomOut(-delta);
+    }, { passive: false });
+  }
 
   // keyboard: ← - Esc (also allow A/D)
   document.addEventListener("keydown", (e)=>{
@@ -1837,7 +2055,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
   setupUI();
   initMap();
   connectLogs();
-  await Promise.all([loadDatasets(), loadModels(), loadSessions(true)]);
+  await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder'), loadSessions(true)]);
   if($("#selResults").value){ await showResultsForSelected(); }
   if($("#selMapSession").value){ await refreshMapSessionSelected(); }
 });

@@ -41,7 +41,7 @@ def _resolve_weights(d: Path) -> Path:
         if p.exists(): return p
     return d / "model_final.pth"
 
-def _cfg_like_before() -> "CfgNode":
+def _cfg_like_before():
     cfg = get_cfg()
     cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
     cfg.MODEL.MASK_ON = False
@@ -191,6 +191,9 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     log.info(f"UI:INFO:test: Using model: {weights}") 
 
     total, with_dets = 0, 0
+    # ensure variables referenced after the loop exist even if no images processed
+    inst = None
+    masks = []
     for i, p in enumerate(imgs, 1):
         bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
         if bgr is None:

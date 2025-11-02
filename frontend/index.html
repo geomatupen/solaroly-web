@@ -8,28 +8,22 @@
   <link rel="stylesheet" href="styles.css" />
 
   <!-- Leaflet -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>SolarOly</h1>
+  <header>
     <div class="tabs">
+      <div class="brand">
+        <img id="siteLogo" src="logo.svg" alt="SolarOly logo" />
+      </div>
       <button class="active" data-tab="tab-test">Test</button>
       <button data-tab="tab-train">Train</button>
       <button data-tab="tab-results">Results</button>
       <button data-tab="tab-map">Map</button>
       <button data-tab="tab-logs">Logs</button>
     </div>
+    <!-- header controls removed: backend selector moved into Test/Train forms -->
   </header>
 
   <main class="container">
@@ -52,11 +46,14 @@
             <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
             <div class="progressText" id="testUploadText">Uploading… 0%</div>
           </div>
-
-          <label class="switchRow">
-            <input type="checkbox" id="chkUseThermalTest" />
-            <span>Use thermal band</span>
-          </label>
+          <div class="row">
+            <label for="selBackendTest">Backend</label>
+            <select id="selBackendTest">
+              <option value="detectron">Detectron</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </div>
+          
 
           <div class="row">
             <label for="selModelFolder">Model run</label>
@@ -65,18 +62,11 @@
           </div>
 
           <div class="row">
-            <label for="selBackend">Backend</label>
-            <select id="selBackend">
-              <option value="detectron">Detectron</option>
-              <option value="yolo">YOLO</option>
-            </select>
-          </div>
-
-          <div class="row">
             <label for="selTestFolder">Dataset folder</label>
             <select id="selTestFolder"></select>
             <button id="btnRefreshFolders" class="secondary">Refresh</button>
           </div>
+
 
           <div class="row">
             <label for="inpResultName">Result Name</label>
@@ -117,11 +107,14 @@
         <p class="muted">Kicks off training using your configured dataset. Thermal channel support is preserved. Each run saves to <code>outputs/mrcnn/&lt;timestamp&gt;/</code>.</p>
 
         <!-- Keep advanced hyperparams -->
-        <div class="formGrid">
-          <label class="switchRow">
-            <input type="checkbox" id="chkUseThermalTrain" />
-            <span>Use thermal band</span>
-          </label>
+         <div class="row">
+            <label for="selBackendTrain">Backend</label>
+            <select id="selBackendTrain">
+              <option value="detectron">Detectron</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </div>
+        
           <div class="row">
             <label for="selModelType">Model Type</label>
             <select id="selModelType">
@@ -129,13 +122,7 @@
               <option value="maskrcnn">Mask R-CNN</option>
             </select>
           </div>
-          <div class="row">
-            <label for="selBackendTrain">Backend</label>
-            <select id="selBackendTrain">
-              <option value="detectron">Detectron</option>
-              <option value="yolo">YOLO</option>
-            </select>
-          </div>
+          <div class="formGrid">
           <div class="row" id="yoloOptions" style="display:none;">
             <label for="selYoloFamily">YOLO Family</label>
             <select id="selYoloFamily">
@@ -144,11 +131,34 @@
               <option value="v10">YOLOv10</option>
             </select>
           </div>
+          <div class="row" id="yoloSizeOption" style="display:none;">
+            <label for="selYoloSize">YOLO Size</label>
+            <select id="selYoloSize">
+              <option value="n">nano (n)</option>
+              <option value="s" selected>small (s)</option>
+              <option value="m">medium (m)</option>
+              <option value="l">large (l)</option>
+              <option value="x">xlarge (x)</option>
+            </select>
+          </div>
           <div class="row" id="yoloSegOption" style="display:none;">
             <label class="switchRow">
               <input type="checkbox" id="chkYoloSeg" />
               <span>Use segmentation model (save masks)</span>
             </label>
+          </div>
+          <label class="switchRow">
+            <input type="checkbox" id="chkUseThermalTrain" />
+            <span>Use thermal band</span>
+          </label>
+          <div class="row" id="trainBandControls" style="display:none;">
+            <div style="flex:1 1 220px;">
+              <label for="selChannelCountTrain">Channel count</label>
+              <select id="selChannelCountTrain">
+                <option value="1">1 (thermal only)</option>
+                <option value="4">4 (RGB + thermal)</option>
+              </select>
+            </div>
           </div>
           <div class="row">
             <label for="inpIters">Iterations</label>
@@ -355,6 +365,11 @@
       <div class="modalBody">
         <img id="lightboxImg" alt="overlay" />
       </div>
+      <!-- Zoom controls -->
+      <button id="imgZoomIn" class="img-zoom img-zoom-in" aria-label="Zoom in">+</button>
+      <button id="imgZoomOut" class="img-zoom img-zoom-out" aria-label="Zoom out">−</button>
+      <button id="imgResetZoom" class="img-zoom img-zoom-reset" aria-label="Reset zoom">⟲</button>
+
       <button id="imgPrev" class="img-nav img-nav-prev" aria-label="Previous image">‹</button>
       <button id="imgNext" class="img-nav img-nav-next" aria-label="Next image">›</button>
       <div id="imgCounter" class="img-counter"></div>
