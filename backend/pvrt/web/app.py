@@ -129,7 +129,8 @@ def redirect_std_to_logger():
         try:
             sys.stdout.flush(); sys.stderr.flush()
         except Exception as e:
-            logger.debug("ignored web.app error: %s", e)
+            # ignore flush errors silently
+            pass
         sys.stdout, sys.stderr = old_out, old_err
 
 def _now_stamp() -> str:
@@ -522,8 +523,9 @@ def _build_anomalies_geojson_from_tiles(
                         cand = (p.parent / rel)
                         if cand.exists():
                             return cand
-                except Exception as e:
-                    logger.debug("ignored web.app error: %s", e)
+                except Exception:
+                    # ignore malformed pairs.json entries silently
+                    pass
             # decoder naming
             for e in exts:
                 cand = tdir / f"{p.stem}_thermal{e}"

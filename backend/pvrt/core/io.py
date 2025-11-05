@@ -23,8 +23,9 @@ def read_json_safe(path: Path) -> Dict[str, Any]:
     try:
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
+    except Exception:
+        # Return empty dict on any error reading/parsing JSON (keep callers' behavior)
+        return {}
     return {}
 
 
@@ -109,8 +110,8 @@ def has_thermal_for_images(images_dir: Path) -> bool:
                     cand = d / Path(v)
                     if cand.exists():
                         return True
-                except Exception as e:
-                    logging.getLogger("pvrt").debug("skipping due to core.io error: %s", e)
+                except Exception:
+                    # ignore malformed pair entries
                     continue
 
     # 2) Subdir scan
@@ -136,7 +137,8 @@ def images_are_single_channel(images_dir: Path, max_samples: int = 50) -> bool:
     try:
         from PIL import Image
     except Exception as e:
-        logging.getLogger("pvrt").debug("core.io returning False due to: %s", e)
+        # PIL not available or import failed -> treat as not single-channel
+        return False
         return False
     d = Path(images_dir)
     if not d.exists() or not d.is_dir():

@@ -170,8 +170,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     rgb = Image.merge("RGB", (gray, gray, gray))
                     out_path = temp_prep / f"{p.stem}.png"
                     rgb.save(out_path)
-            except Exception as e:
-                log.debug("yolo.infer: failed to prepare merged image %s: %s", p, e)
+            except Exception:
+                # skip problematic files during merged preparation
                 continue
         source_dir = temp_prep
 
@@ -201,7 +201,6 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     outp = temp_rgb / f"{p.stem}.png"
                     rgb.save(outp, format="PNG")
                 except Exception as e:
-                    log.debug("yolo.infer: failed to convert to RGB %s: %s", p, e)
                     # skip problematic files; YOLO will skip them later
                     continue
         source_dir = temp_rgb
@@ -342,9 +341,9 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             out_overlay = overlays_dir / f"{Path(key).stem}.png"
             cv2.imwrite(str(out_overlay), vis)
             logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay")
-        except Exception as e:
-            # overlay generation is best-effort; log failure at debug level and continue
-            log.debug("yolo.infer: overlay generation failed: %s", e)
+        except Exception:
+            # overlay generation is best-effort; skip failures silently
+            continue
 
     # finalize metrics
     elapsed = time.time() - t0

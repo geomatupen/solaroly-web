@@ -227,10 +227,7 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
     for bx, sc, cl in zip(boxes, scores, classes):
         if not bx:
             continue
-        try:
-            x1, y1, x2, y2 = map(int, bx)
-        except Exception:
-            continue
+        x1, y1, x2, y2 = map(int, bx)
 
         # clamp to image bounds
         x1 = max(0, min(W - 1, x1))

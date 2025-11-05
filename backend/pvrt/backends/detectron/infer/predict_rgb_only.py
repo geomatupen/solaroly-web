@@ -27,7 +27,7 @@ def _log() -> logging.Logger:
 def _pick_device() -> str:
     try:
         return "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
+    except Exception as e:
         return "cpu"
 
 def _load_meta(d: Path) -> dict:
@@ -35,8 +35,8 @@ def _load_meta(d: Path) -> dict:
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception as e:
-            logging.getLogger("pvrt").debug("failed to load model_meta.json %s: %s", p, e)
+        except Exception:
+            return {}
     return {}
 
 def _resolve_weights(d: Path) -> Path:
@@ -178,8 +178,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     # thr = meta.get("score_thresh_test", 0.6)
     try:
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
-    except Exception as e:
-        logging.getLogger("pvrt").debug("invalid score_thresh '%s', using default 0.6: %s", score_thresh, e)
+    except Exception:
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
 
     predictor = DefaultPredictor(cfg)
@@ -188,9 +187,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     try:
         w_sz = wpth.stat().st_size if wpth.exists() else -1
         w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8] if wpth.exists() else "missing"
-    except Exception as e:
-        log = _log()
-        log.debug("failed to stat/read weights %s: %s", wpth, e)
+    except Exception:
         w_sz, w_md5 = -1, "n/a"
 
     exts = {".jpg",".jpeg",".png",".tif",".tiff",".bmp"}

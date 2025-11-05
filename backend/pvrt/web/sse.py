@@ -188,4 +188,7 @@ def set_event_loop(_loop: asyncio.AbstractEventLoop) -> None:
     Deprecated no-op kept for backwards compatibility.
     Call broker.set_loop(loop) in app startup instead.
     """
+    # Keep the function for backwards compatibility but emit a visible
+    # deprecation warning so callers migrate to broker.set_loop(loop).
+    logging.getLogger("pvrt").warning("set_event_loop is deprecated; call broker.set_loop(loop) instead.")
     return

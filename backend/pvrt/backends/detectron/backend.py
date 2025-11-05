@@ -164,11 +164,8 @@ class DetectronBackend(Backend):
         num_classes = int(get_num_classes(ann_json))
 
         # class_names from MetadataCatalog (Detectron populates this at registration)
-        try:
-            meta_train = MetadataCatalog.get("pv_train")
-            class_names = list(meta_train.thing_classes) if getattr(meta_train, "thing_classes", None) else []
-        except Exception:
-            class_names = []
+        meta_train = MetadataCatalog.get("pv_train")
+        class_names = list(meta_train.thing_classes) if getattr(meta_train, "thing_classes", None) else []
 
         # fallback to COCO if still empty (prevents blank in thermal)
         if not class_names:
@@ -214,10 +211,7 @@ class DetectronBackend(Backend):
         # smoke runs (e.g., max_iter <= 5) while preserving reasonable
         # multi-step schedules for typical runs.
         raw_steps = list(_safe_solver_steps(cfg.SOLVER.MAX_ITER))
-        try:
-            cfg.SOLVER.STEPS = [int(s) for s in raw_steps if 0 < int(s) < int(cfg.SOLVER.MAX_ITER)]
-        except Exception:
-            cfg.SOLVER.STEPS = []
+        cfg.SOLVER.STEPS = [int(s) for s in raw_steps if 0 < int(s) < int(cfg.SOLVER.MAX_ITER)]
         # cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(cfg.SOLVER.MAX_ITER / 6))
         cfg.SOLVER.CHECKPOINT_PERIOD = 10**9  # disabled time-based checkpoints
         cfg.SOLVER.LOG_PERIOD    = 1
@@ -264,7 +258,8 @@ class DetectronBackend(Backend):
                 self.last_raw = float(getattr(s, "value", s))
                 try:
                     self.last_med20 = float(hb.median(20))
-                except Exception:
+                except Exception as e:
+                    log.debug("ignored detectron.backend error computing median(20): %s", e)
                     self.last_med20 = self.last_raw
 
 

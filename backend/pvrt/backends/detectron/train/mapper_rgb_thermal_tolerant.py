@@ -20,8 +20,8 @@ def _load_pairs_json(images_dir: str) -> Dict[str, str]:
         try:
             j = json.loads(pj.read_text(encoding="utf-8"))
             return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
-        except Exception as e:
-            logging.getLogger("pvrt").debug("failed to read pairs.json %s: %s", pj, e)
+        except Exception:
+            # malformed or unreadable pairs.json -> treat as empty mapping
             return {}
     return {}
 

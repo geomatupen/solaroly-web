@@ -30,8 +30,9 @@ def _discover_num_classes_from_coco(train_dir: Path) -> int:
             if isinstance(data, dict) and all(k in data for k in ("images", "annotations", "categories")):
                 cats = data.get("categories", [])
                 return len(cats)
-        except Exception as e:
-            log.debug("skipping due to: %s", e)
+        except json.JSONDecodeError:
+            # skip invalid JSON files
+            continue
     return 0
 
 
@@ -43,8 +44,9 @@ def _discover_class_names_from_coco(train_dir: Path) -> List[str]:
         cats = data.get("categories", [])
         try:
             cats = sorted(cats, key=lambda c: int(c.get("id", 0)))
-        except Exception as e:
-            log.debug("ignored yolo.train error: %s", e)
+        except (TypeError, ValueError):
+            # keep original order if ids are non-numeric or malformed
+            pass
         return [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
     return []
 
@@ -126,8 +128,9 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                             # single-channel -> skip
                             continue
                         out.append(str(p.resolve()))
-                except Exception as e:
-                    log.debug("skipping due to: %s", e)
+                except Exception:
+                    # unreadable file: skip it
+                    continue
             return out
 
         try:
@@ -164,13 +167,10 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                 # dataloader/loader hook that reads the alpha channel as input.
                 # We emit a prominent mini-log warning so the user is informed.
                 if requested_channels == 4 and use_thermal:
-                    try:
-                        logging.getLogger("pvrt.test").warning(
-                            "UI:WARN:train: YOLO merged RGBA created for 4-channel training. "
-                            "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
-                        )
-                    except Exception as e:
-                        log.debug("ignored yolo.train error: %s", e)
+                    logging.getLogger("pvrt.test").warning(
+                        "UI:WARN:train: YOLO merged RGBA created for 4-channel training. "
+                        "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
+                    )
             else:
                 log.debug(f"YOLO preproc (symlink) produced no outputs; using original data root {data_root}")
         except Exception:

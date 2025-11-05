@@ -98,8 +98,7 @@ def merge_rgb_with_thermal(
         out_path = out_dir / rel
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            with Image.open(src) as im:
+        with Image.open(src) as im:
                 mode = im.mode
                 # determine if this is a single-channel thermal image
                 is_single = mode in ("L", "I;16", "I")
@@ -120,8 +119,9 @@ def merge_rgb_with_thermal(
                             if target.exists() or target.is_symlink():
                                 try:
                                     target.unlink()
-                                except Exception as e:
-                                    logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
+                                except Exception:
+                                    # ignore unlink failures
+                                    pass
                             target.symlink_to(src.resolve())
                         else:
                             rgb = im.convert("RGB")
@@ -140,8 +140,9 @@ def merge_rgb_with_thermal(
                     if lbl.exists():
                         try:
                             (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception as e:
-                            logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
+                        except Exception:
+                            # ignore label copy failures
+                            pass
                     written += 1
 
                 elif requested_channels == 4 and use_thermal:
@@ -171,8 +172,9 @@ def merge_rgb_with_thermal(
                             if lbl.exists():
                                 try:
                                     (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                                except Exception as e:
-                                    logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
+                                except Exception:
+                                    # ignore label copy failures
+                                    pass
                             written += 1
                     except Exception:
                         continue
@@ -186,8 +188,9 @@ def merge_rgb_with_thermal(
                             if target.exists() or target.is_symlink():
                                 try:
                                     target.unlink()
-                                except Exception as e:
-                                    logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
+                                except Exception:
+                                    # ignore unlink failures
+                                    pass
                             target.symlink_to(src.resolve())
                         else:
                             rgb = im.convert("RGB")
@@ -204,12 +207,12 @@ def merge_rgb_with_thermal(
                     if lbl.exists():
                         try:
                             (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception as e:
-                            logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
+                        except Exception:
+                            # ignore label copy failures
+                            pass
                     written += 1
 
-        except Exception:
-            # ignore problematic files
-            continue
+        # NOTE: let exceptions propagate for problematic files so callers
+        # can see and handle failures instead of silently skipping them.
 
     return written
