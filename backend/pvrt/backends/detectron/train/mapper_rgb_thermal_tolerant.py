@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 from functools import lru_cache
 import json, cv2, numpy as np, torch
+import logging
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
 
@@ -19,7 +20,8 @@ def _load_pairs_json(images_dir: str) -> Dict[str, str]:
         try:
             j = json.loads(pj.read_text(encoding="utf-8"))
             return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
-        except Exception:
+        except Exception as e:
+            logging.getLogger("pvrt").debug("failed to read pairs.json %s: %s", pj, e)
             return {}
     return {}
 

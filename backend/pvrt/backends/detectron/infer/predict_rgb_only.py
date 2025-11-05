@@ -25,14 +25,18 @@ def _log() -> logging.Logger:
     return lg
 
 def _pick_device() -> str:
-    try: return "cuda" if torch.cuda.is_available() else "cpu"
-    except: return "cpu"
+    try:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
 
 def _load_meta(d: Path) -> dict:
     p = d / "model_meta.json"
     if p.exists():
-        try: return json.loads(p.read_text(encoding="utf-8"))
-        except: pass
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            logging.getLogger("pvrt").debug("failed to load model_meta.json %s: %s", p, e)
     return {}
 
 def _resolve_weights(d: Path) -> Path:
@@ -67,7 +71,8 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
             continue
         try:
             x1, y1, x2, y2 = map(int, bx)
-        except Exception:
+        except Exception as e:
+            logging.getLogger("pvrt").debug("skipping malformed bbox %r: %s", bx, e)
             continue
 
         # clamp to image bounds
@@ -171,16 +176,21 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
         names = [f"cls_{i}" for i in range(getattr(cfg.MODEL.ROI_HEADS,"NUM_CLASSES",0) or 0)]
 
     # thr = meta.get("score_thresh_test", 0.6)
-    try:    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
-    except: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
+    try:
+        cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
+    except Exception as e:
+        logging.getLogger("pvrt").debug("invalid score_thresh '%s', using default 0.6: %s", score_thresh, e)
+        cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
 
     predictor = DefaultPredictor(cfg)
 
     # header log
     try:
-        w_sz  = wpth.stat().st_size if wpth.exists() else -1
+        w_sz = wpth.stat().st_size if wpth.exists() else -1
         w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8] if wpth.exists() else "missing"
-    except Exception:
+    except Exception as e:
+        log = _log()
+        log.debug("failed to stat/read weights %s: %s", wpth, e)
         w_sz, w_md5 = -1, "n/a"
 
     exts = {".jpg",".jpeg",".png",".tif",".tiff",".bmp"}

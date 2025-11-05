@@ -19,7 +19,8 @@ def _load_pairs_json(images_dir: str) -> Dict[str, str]:
         try:
             j = json.loads(pj.read_text(encoding="utf-8"))
             return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
-        except Exception:
+        except Exception as e:
+            logging.getLogger("pvrt").debug("failed to read pairs.json %s: %s", pj, e)
             return {}
     return {}
 
@@ -103,7 +104,8 @@ class ThermalOnlyDatasetMapper:
         try:
             img = utils.read_image(str(rgb_path), format=self.image_format)
             H, W = img.shape[:2]
-        except Exception:
+        except Exception as e:
+            logging.getLogger("pvrt").debug("failed to read image %s: %s", rgb_path, e)
             # as a fallback assume typical size from cfg
             H = int(getattr(self.cfg.INPUT, "MIN_SIZE_TEST", 800))
             W = H

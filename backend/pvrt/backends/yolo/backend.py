@@ -46,7 +46,8 @@ class YOLOBackend(Backend):
         # log messages and to ensure the training preproc uses RGB-only lists.
         try:
             requested_channels = int(getattr(cfg_in, "channel_count", 3))
-        except Exception:
+        except Exception as e:
+            log.debug("failed to parse requested channel_count %r: %s", getattr(cfg_in, "channel_count", None), e)
             requested_channels = 3
         # We no longer support 1-channel models. Coerce any '1' requests to 3.
         if requested_channels == 1:
@@ -129,7 +130,8 @@ class YOLOBackend(Backend):
                 try:
                     name = Path(candidate_weights).name
                     return f"{run_prefix}/{name}" if run_prefix else name
-                except Exception:
+                except Exception as e:
+                    log.debug("unable to make run-relative path from %r: %s", candidate_weights, e)
                     # fallback to str(candidate_weights)
                     return str(candidate_weights)
             # if ultralytics or our extractor already provided a path, keep it
@@ -190,7 +192,8 @@ class YOLOBackend(Backend):
         use_thermal = bool(cfg_in.use_thermal and model_mode == "rgbt" and has_thermal_for_images(images_dir))
         try:
             requested = int(getattr(cfg_in, "channel_count", 3))
-        except Exception:
+        except Exception as e:
+            log.debug("failed to parse requested channel_count at test-time %r: %s", getattr(cfg_in, "channel_count", None), e)
             requested = 3
         # Mirror training logic for test-time: if user requested 3-channel
         # thermal (grayscale-as-RGB), report 3 channels; if requested==1,
@@ -207,7 +210,8 @@ class YOLOBackend(Backend):
 
         try:
             model_chan = int(meta.get("channel_count", 0) or 0)
-        except Exception:
+        except Exception as e:
+            log.debug("failed to parse channel_count from meta %r: %s", meta.get("channel_count", None), e)
             model_chan = 0
 
         log.info(
