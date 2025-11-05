@@ -76,6 +76,24 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
     # 1) Find annotations
     anno = _find_coco_json(split_dir)
 
+    # 1b) Defensive: some COCO JSON files omit optional top-level fields like
+    # 'info' which pycocotools expects when loading results. Create a small
+    # fixed copy with a minimal 'info' section if needed so evaluation does
+    # not fail. We write the fixed copy next to the original (idempotent).
+    try:
+        with open(anno, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict) and 'info' not in data:
+            fixed = dict(data)
+            fixed['info'] = {'description': 'pvrt dataset (info added)'}
+            fixed_path = Path(anno).with_name(Path(anno).stem + "_pvrt_fixed.json")
+            fixed_path.write_text(json.dumps(fixed), encoding='utf-8')
+            anno = fixed_path
+    except Exception:
+        # If anything goes wrong, fall back to the original anno path and
+        # let register_coco_instances raise if it's truly broken.
+        pass
+
     # 2) Purge any prior registration for this name (idempotent re-run)
     _purge_dataset_name(name)
 

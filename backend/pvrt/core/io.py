@@ -87,7 +87,6 @@ def backend_name_from_meta(meta: Dict[str, Any], default: str = "detectron") -> 
 # ---------- Thermal availability helpers ----------
 
 THERMAL_DIR_CANDIDATES: Iterable[str] = ("thermal", "ir", "t", "temp")
-
 def has_thermal_for_images(images_dir: Path) -> bool:
     """
     Heuristic to decide if thermal data is available for a set of images.
@@ -103,8 +102,18 @@ def has_thermal_for_images(images_dir: Path) -> bool:
     if pairs.exists():
         try:
             j = read_json_safe(pairs)
-            if j:  # any content signals presence
-                return True
+            # Only treat pairs.json as positive signal if at least one mapped
+            # thermal target actually exists on disk. This avoids false-positives
+            # when pairs.json references legacy TIFFs that were removed.
+            if isinstance(j, dict):
+                for v in j.values():
+                    try:
+                        cand = d / Path(v)
+                        if cand.exists():
+                            return True
+                    except Exception:
+                        continue
+            # fall through to directory scan if no mapped targets exist
         except Exception:
             # ignore parse errors, fall through to scan
             pass
@@ -162,15 +171,24 @@ def images_are_single_channel(images_dir: Path, max_samples: int = 50) -> bool:
     return any_found and count > 0
 
 
+# Canonical set of extensions we treat as possible thermal sidecars / previews.
+# Keep lowercase and prefer image-like formats (JPG/PNG) in addition to TIFF.
+THERMAL_EXTS: set[str] = {'.jpg', '.jpeg', '.png', '.tif', '.tiff'}
+
+
 def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, selected_bands: list | None, channel_count: int = 3) -> dict:
     """
     Prepare a per-run dataset directory under dest_run/prepared with consistent channels.
 
     - selected_bands: list of band identifiers, e.g. ['rgb','thermal'] or None => auto
-    - channel_count: 1,3,4 desired. For channel_count==1 we will still provide 3-channel images
-      to keep compatibility unless downstream explicitly supports 1-channel.
+    - channel_count: desired channel configuration. Historically 1,3,4 were used; we now
+        represent thermal-only datasets as 3-channel (grayscale duplicated into RGB) so
+        downstream loaders always see 3-channel images. When preparing a thermal-only
+        dataset this function will produce 3-channel PNG/JPEG images and return
+        "channel_count": 3 along with "selected_bands": ['thermal'] and
+        an explicit "thermal_only": True flag in the returned dict.
 
-    Returns a dict with keys: train_dir, valid_dir, channel_count, selected_bands
+    Returns a dict with keys: train_dir, valid_dir, channel_count, selected_bands, (optional) thermal_only
     """
     from shutil import copy2
     from PIL import Image
@@ -196,7 +214,7 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
 
     sel = list(selected_bands) if selected_bands else _find_bands(src_train)
     # default channel_count sanity
-    if channel_count not in (1,3,4):
+    if channel_count not in (1, 3, 4):
         channel_count = 3
 
     # If the source dataset already carries thermal data and the user requested
@@ -299,23 +317,71 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                 for t in sorted((src_train / 'thermal').iterdir() if (src_train / 'thermal').exists() else []):
                     if not t.is_file():
                         continue
-                    outp = train_out / t.name
+                    # Convert thermal files (often TIFF) into normalized 3-channel JPGs
+                    outp = train_out / (t.stem + ".jpg")
                     try:
-                        from shutil import copy2
-                        copy2(t, outp)
+                        from PIL import Image
+                        import numpy as np
+
+                        with Image.open(t) as _im:
+                            arr = np.asarray(_im)
+                        # pick first channel if multi-channel
+                        if arr.ndim == 3 and arr.shape[2] != 1:
+                            arr = arr[:, :, 0]
+                        arr = np.nan_to_num(arr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+                        p2, p98 = np.percentile(arr.ravel(), (2, 98)) if arr.size else (0.0, 1.0)
+                        if p98 <= p2:
+                            p2, p98 = arr.min(), arr.max() if arr.size else (0.0, 1.0)
+                        if p98 <= p2:
+                            g = np.clip(arr, 0, 255).astype('uint8')
+                        else:
+                            g = (np.clip(arr, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                            g = (g * 255.0).astype('uint8')
+                        rgb = np.stack([g, g, g], axis=-1)
+                        Image.fromarray(rgb).save(outp, format='JPEG', quality=90)
                     except Exception:
-                        try: outp.write_bytes(t.read_bytes())
-                        except Exception: pass
+                        # fallback: copy raw file if conversion fails
+                        try:
+                            from shutil import copy2
+                            copy2(t, train_out / t.name)
+                        except Exception:
+                            try:
+                                (train_out / t.name).write_bytes(t.read_bytes())
+                            except Exception:
+                                pass
                 # do the same for valid if available
                 for t in sorted((src_valid / 'thermal').iterdir() if (src_valid / 'thermal').exists() else []):
-                    if not t.is_file(): continue
-                    outp = valid_out / t.name
+                    if not t.is_file():
+                        continue
+                    outp = valid_out / (t.stem + ".jpg")
                     try:
-                        from shutil import copy2
-                        copy2(t, outp)
+                        from PIL import Image
+                        import numpy as np
+
+                        with Image.open(t) as _im:
+                            arr = np.asarray(_im)
+                        if arr.ndim == 3 and arr.shape[2] != 1:
+                            arr = arr[:, :, 0]
+                        arr = np.nan_to_num(arr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+                        p2, p98 = np.percentile(arr.ravel(), (2, 98)) if arr.size else (0.0, 1.0)
+                        if p98 <= p2:
+                            p2, p98 = arr.min(), arr.max() if arr.size else (0.0, 1.0)
+                        if p98 <= p2:
+                            g = np.clip(arr, 0, 255).astype('uint8')
+                        else:
+                            g = (np.clip(arr, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                            g = (g * 255.0).astype('uint8')
+                        rgb = np.stack([g, g, g], axis=-1)
+                        Image.fromarray(rgb).save(outp, format='JPEG', quality=90)
                     except Exception:
-                        try: outp.write_bytes(t.read_bytes())
-                        except Exception: pass
+                        try:
+                            from shutil import copy2
+                            copy2(t, valid_out / t.name)
+                        except Exception:
+                            try:
+                                (valid_out / t.name).write_bytes(t.read_bytes())
+                            except Exception:
+                                pass
             else:
                 # For each RGB entry, try to find a thermal counterpart and resample to RGB size. If not found,
                 # fallback to converting the RGB to grayscale (least-preferred).
@@ -345,8 +411,10 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                                 from shutil import copy2
                                 copy2(p, outp)
                             except Exception:
-                                try: outp.write_bytes(p.read_bytes())
-                                except Exception: pass
+                                try:
+                                    outp.write_bytes(p.read_bytes())
+                                except Exception:
+                                    pass
 
                 # Mirror the same logic for validation set
                 if src_valid and src_valid.exists():
@@ -373,10 +441,15 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                                     from shutil import copy2
                                     copy2(p, outp)
                                 except Exception:
-                                    try: outp.write_bytes(p.read_bytes())
-                                    except Exception: pass
+                                    try:
+                                        outp.write_bytes(p.read_bytes())
+                                    except Exception:
+                                        pass
 
-            return {"train_dir": str(train_out), "valid_dir": str(valid_out), "selected_bands": ['thermal'], "channel_count": 1}
+            # We produce 3-channel images (grayscale duplicated) for thermal-only
+            # datasets to avoid single-channel model requirements. Inform callers
+            # that this prepared dataset is thermal-only via the thermal_only flag.
+            return {"train_dir": str(train_out), "valid_dir": str(valid_out), "selected_bands": ['thermal'], "channel_count": 3, "thermal_only": True}
 
         # For other cases (e.g., channel_count==4) keep the previous fast-return behavior
         if channel_count in (4,) and has_thermal_for_images(src_train):

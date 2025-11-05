@@ -158,6 +158,19 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
             if (tcount or vcount):
                 data_root = merged_root
                 log.info(f"YOLO preproc (symlink): prepared dataset: train={tcount}, valid={vcount}; using {merged_root}")
+                # NOTE: merged RGBA files embed thermal as the alpha channel.
+                # Ultralytics' default loader will usually ignore alpha; to
+                # actually train on a 4th channel you must provide a custom
+                # dataloader/loader hook that reads the alpha channel as input.
+                # We emit a prominent mini-log warning so the user is informed.
+                if requested_channels == 4 and use_thermal:
+                    try:
+                        logging.getLogger("pvrt.test").warning(
+                            "UI:WARN:train: YOLO merged RGBA created for 4-channel training. "
+                            "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
+                        )
+                    except Exception:
+                        pass
             else:
                 log.debug(f"YOLO preproc (symlink) produced no outputs; using original data root {data_root}")
         except Exception:
@@ -178,125 +191,13 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     except Exception:
         yaml_path.write_text(json.dumps(data_yaml), encoding="utf-8")
 
-    # If requested_channels == 1, attempt to convert the base checkpoint into
-    # a 1-channel-first-conv variant that we can pass to YOLO so training
-    # produces a true 1-channel model. Conversion is best-effort and falls
-    # back to the original checkpoint on failure.
-    if requested_channels == 1:
-        try:
-            from .weights import convert_yolo_checkpoint_to_1ch
-            src = Path(model_weights)
-            converted = run_dir / "weights" / "converted_1ch.pt"
-            converted.parent.mkdir(parents=True, exist_ok=True)
-            new_path = convert_yolo_checkpoint_to_1ch(src, converted)
-            # If conversion produced a different path, use it. Otherwise,
-            # if the source wasn't a local file (e.g., hub name), try the
-            # fallback: instantiate YOLO once, extract state_dict, convert
-            # that state and write dst.
-            if Path(new_path) == src and not src.exists():
-                try:
-                    temp_model = YOLO(model_weights)
-                    # try to locate underlying module's state_dict
-                    underlying = None
-                    for attr in ("model", "model.model", "module", "net"):
-                        try:
-                            obj = temp_model
-                            for p in attr.split("."):
-                                obj = getattr(obj, p)
-                            import torch
-                            if isinstance(obj, torch.nn.Module):
-                                underlying = obj
-                                break
-                        except Exception:
-                            continue
-                    if underlying is not None:
-                        try:
-                            sd = underlying.state_dict()
-                            # attempt conversion via the helper by saving
-                            # a minimal checkpoint containing 'model'
-                            ck = {"model": sd}
-                            torch.save(ck, str(converted))
-                            new_path = convert_yolo_checkpoint_to_1ch(converted, converted)
-                            if Path(new_path) != src:
-                                model_weights = str(new_path)
-                        except Exception:
-                            log.exception("YOLO weights: fallback conversion from instantiated model failed")
-                except Exception:
-                    log.exception("YOLO weights: fallback instantiation for conversion failed")
-            else:
-                model_weights = str(new_path)
-        except Exception:
-            log.exception("YOLO weights: conversion attempt failed; proceeding with original weights")
+    # 1-channel models are no longer supported; requested==1 should have been
+    # coerced earlier by the backend. No checkpoint conversion is performed.
 
     # instantiate model and call train
     model = YOLO(model_weights)
 
-    # If requested_channels == 1 we may want to produce a model that truly
-    # accepts a single-channel input. Ultralytics' YOLO object wraps a
-    # torch.nn.Module; try to locate that module and patch its first Conv2d
-    # to accept 1 input channel by averaging pretrained RGB weights. This is
-    # best-effort and will continue silently on failure.
-    if requested_channels == 1:
-        try:
-            import torch.nn as _nn
-
-            # locate underlying module
-            underlying = None
-            for attr in ("model", "model.model", "module", "net"):
-                try:
-                    parts = attr.split(".")
-                    obj = model
-                    for p in parts:
-                        obj = getattr(obj, p)
-                    if isinstance(obj, _nn.Module):
-                        underlying = obj
-                        break
-                except Exception:
-                    continue
-
-            def _patch_first_conv_to_1ch_general(mod: _nn.Module) -> bool:
-                import torch
-                for name, module_ in mod.named_modules():
-                    if isinstance(module_, _nn.Conv2d) and module_.in_channels == 3:
-                        new_conv = _nn.Conv2d(
-                            in_channels=1,
-                            out_channels=module_.out_channels,
-                            kernel_size=module_.kernel_size,
-                            stride=module_.stride,
-                            padding=module_.padding,
-                            dilation=module_.dilation,
-                            groups=module_.groups,
-                            bias=(module_.bias is not None),
-                            padding_mode=module_.padding_mode,
-                        )
-                        with torch.no_grad():
-                            w = module_.weight  # [out,3,k,k]
-                            avg = w.mean(dim=1, keepdim=True)  # [out,1,k,k]
-                            new_conv.weight[:, :1, :, :] = avg
-                            if module_.bias is not None:
-                                new_conv.bias.copy_(module_.bias)
-
-                        parent = mod
-                        parts = name.split(".")
-                        for p in parts[:-1]:
-                            parent = getattr(parent, p)
-                        setattr(parent, parts[-1], new_conv)
-                        return True
-                return False
-
-            if underlying is not None:
-                try:
-                    patched = _patch_first_conv_to_1ch_general(underlying)
-                    if patched:
-                        log.info("UI:OK:train: YOLO underlying model patched to 1-channel first conv")
-                except Exception:
-                    log.exception("UI:WARN:train: failed to patch YOLO model to 1-channel; proceeding")
-        except Exception:
-            # any failure here is non-fatal; training will still run on 3-channel inputs
-            try:
-                log.exception("UI:WARN:train: exception while attempting YOLO 1-channel patch")
-            except Exception:
-                pass
+    # 1-channel model patching removed: we don't support single-channel models.
 
     # Map parameters: for YOLO we treat the UI "Iterations" value as epochs
     # (user expects the number they enter to be honored as epochs). This keeps

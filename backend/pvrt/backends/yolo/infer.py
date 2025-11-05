@@ -55,7 +55,17 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
 
     def _find_thermal(rgb_path: Path) -> Path | None:
         # Robust thermal discovery that matches the decoder output (pairs.json)
-        exts = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
+        # Use canonical thermal extensions from core.io so JPG/PNG previews are accepted.
+        try:
+            # Use canonical thermal extensions but ignore TIFFs: we now expect
+            # decoder-produced previews (JPEG/PNG) in `thermal/` rather than
+            # single-channel TIFFs.
+            from ...core.io import THERMAL_EXTS
+            exts = tuple(sorted(e for e in THERMAL_EXTS if e not in {'.tif', '.tiff'}))
+            if not exts:
+                exts = (".png", ".jpg", ".jpeg")
+        except Exception:
+            exts = (".png", ".jpg", ".jpeg")
         tdir = rgb_path.parent / "thermal"
         stem = rgb_path.stem
 
@@ -76,7 +86,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         except Exception:
             pass
 
-        # 2) thermal/ subfolder: decoder uses {stem}_thermal.tif — check that first
+        # 2) thermal/ subfolder: decoder writes preview files (e.g. {stem}_thermal.jpg).
+        #     Check previews first (we no longer look for single-band TIFFs here).
         for e in exts:
             cand1 = tdir / f"{stem}_thermal{e}"
             if cand1.exists():
@@ -134,6 +145,14 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         except Exception:
             w_sz, w_md5 = -1, "n/a"
         tlog.info(f"UI:OK:test: YOLO predict start | weights={Path(model_weights).name} md5={w_md5} | source={images_dir} | thr={score_thresh} | channels={channel_count}")
+        # If channel_count indicates a thermal-grayscale run (single-channel
+        # encoded as 3-channel RGB), log that information up front so the
+        # mini-log shows whether thermal-as-RGB is being used.
+        try:
+            if int(channel_count) == 1:
+                tlog.info("UI:INFO:test: Using thermal grayscale images for testing (thermal-as-RGB)")
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -281,6 +300,10 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     rgb_candidate = Path(images_dir) / Path(key).name
                     tpath = _find_thermal(rgb_candidate)
                     if tpath is not None and tpath.exists():
+                        try:
+                            logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{p.name}] using thermal grayscale background for overlay")
+                        except Exception:
+                            pass
                         # Prefer tifffile for float32/16 TIFFs
                         try:
                             import tifffile

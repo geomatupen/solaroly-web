@@ -32,7 +32,6 @@ from ...core.io import (
 from .train.datasets import register_split_coco, _find_coco_json
 from .train.trainer_rgb_only import RGBOnlyTrainer
 from .train.trainer_rgb_thermal_tolerant import RTolerantTrainer
-from .train.trainer_thermal_only import ThermalOnlyTrainer
 from .infer.predict_rgb_only import predict_folder as predict_folder_rgb
 from .infer.predict_rgb_thermal import predict_folder as predict_folder_rgbt
 
@@ -121,25 +120,34 @@ class DetectronBackend(Backend):
 
         # Decide if this run should be 4-channel
         thermal_ok = bool(cfg_in.use_thermal and has_thermal_for_images(train_dir))
-        # Determine requested channel count (default 3)
+        # Determine requested channel count (default 3). We no longer
+        # support 1-channel models; coerce any '1' to 3.
         try:
             requested_channels = int(getattr(cfg_in, "channel_count", 3))
         except Exception:
             requested_channels = 3
+        if requested_channels == 1:
+            log.warning("UI:WARN:train: requested_channels=1 is deprecated; coercing to 3")
+            requested_channels = 3
 
-        # Compute effective channel count used for this training run
+        # Compute effective channel count used for this training run.
+        # If thermal is available and enabled, honor requested==4 (RGB+thermal)
+        # or requested==3 (thermal provided as 3-channel grayscale). Otherwise
+        # fall back to RGB (3).
         if thermal_ok and getattr(cfg_in, "use_thermal", False):
-            # If thermal is available and requested, prefer 4-channel unless
-            # the user explicitly requested single-channel (1)
-            if requested_channels == 1:
-                effective_channels = 1
-            else:
+            if requested_channels == 4:
                 effective_channels = 4
+            else:
+                # default/other requests (including coerced 1) -> treat as 3-channel
+                effective_channels = 3
         else:
-            # No thermal available or not requested: fall back to RGB (3)
             effective_channels = 3
 
         log.info(f"UI:INFO:train: effective_channels={effective_channels} (requested={requested_channels}, thermal_ok={thermal_ok})")
+        # If thermal is available but the run will use 3 channels, we are
+        # using thermal-as-RGB (grayscale encoded as 3-channel) for training.
+        if thermal_ok and effective_channels == 3:
+            log.info("UI:INFO:train: Thermal grayscale will be used for training (thermal-as-RGB)")
 
         # NOTE: per-user request we no longer prepare per-run dataset copies.
         # Backends should operate on the existing dataset folders in-place
@@ -197,7 +205,18 @@ class DetectronBackend(Backend):
         cfg.SOLVER.IMS_PER_BATCH = int(cfg_in.ims_per_batch or 2)
         cfg.SOLVER.BASE_LR       = float(cfg_in.base_lr or 0.00025)
         cfg.SOLVER.MAX_ITER      = int(cfg_in.max_iter or 1000)
-        cfg.SOLVER.STEPS         = list(_safe_solver_steps(cfg.SOLVER.MAX_ITER))
+        # Build solver steps but be defensive: if user set very small MAX_ITER
+        # the fvcore MultiStepParamScheduler will raise if the total number
+        # of updates is <= number of milestones. Keep only milestones that
+        # are strictly less than MAX_ITER and drop the schedule when it's
+        # not sensible (very short runs). This prevents failures for tiny
+        # smoke runs (e.g., max_iter <= 5) while preserving reasonable
+        # multi-step schedules for typical runs.
+        raw_steps = list(_safe_solver_steps(cfg.SOLVER.MAX_ITER))
+        try:
+            cfg.SOLVER.STEPS = [int(s) for s in raw_steps if 0 < int(s) < int(cfg.SOLVER.MAX_ITER)]
+        except Exception:
+            cfg.SOLVER.STEPS = []
         # cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(cfg.SOLVER.MAX_ITER / 6))
         cfg.SOLVER.CHECKPOINT_PERIOD = 10**9  # disabled time-based checkpoints
         cfg.SOLVER.LOG_PERIOD    = 1
@@ -213,10 +232,8 @@ class DetectronBackend(Backend):
 
         # Train
         setup_logger()
-        # choose trainer class based on effective_channels
-        if effective_channels == 1:
-            trainer = ThermalOnlyTrainer(cfg)
-        elif effective_channels == 4:
+        # choose trainer class based on effective_channels (no 1-channel models)
+        if effective_channels == 4:
             trainer = RTolerantTrainer(cfg)
         else:
             trainer = RGBOnlyTrainer(cfg)
@@ -257,9 +274,7 @@ class DetectronBackend(Backend):
         trainer.register_hooks([loss_tap])
 
         # 2) build val loader/evaluator once
-        if effective_channels == 1:
-            val_loader = ThermalOnlyTrainer.build_test_loader(cfg, "pv_val")
-        elif effective_channels == 4:
+        if effective_channels == 4:
             val_loader = RTolerantTrainer.build_test_loader(cfg, "pv_val")
         else:
             val_loader = RGBOnlyTrainer.build_test_loader(cfg, "pv_val")
@@ -283,7 +298,39 @@ class DetectronBackend(Backend):
         _latest = {"ap50_pct": None}
 
         def _eval_and_log():
-            res = inference_on_dataset(trainer.model, val_loader, evaluator)
+            # inference_on_dataset may raise a KeyError when the underlying
+            # COCO API expects certain top-level keys (like 'info') to be
+            # present in the dataset. Some user-provided COCO JSON files omit
+            # these optional fields which causes pycocotools to fail during
+            # loadRes(). To be robust, catch that KeyError, attempt to
+            # inject minimal 'info' into the evaluator's COCO dataset, and
+            # retry once.
+            try:
+                res = inference_on_dataset(trainer.model, val_loader, evaluator)
+            except KeyError as ke:
+                msg = str(ke)
+                if "'info'" in msg or 'info' in msg:
+                    try:
+                        # Best-effort patch: add a minimal 'info' dict to the
+                        # internal COCO dataset so pycocotools.loadRes() can
+                        # proceed. This avoids forcing users to edit their
+                        # COCO files which may be missing optional fields.
+                        if hasattr(evaluator, '_coco_api') and getattr(evaluator, '_coco_api') is not None:
+                            coco_ds = evaluator._coco_api.dataset
+                            if isinstance(coco_ds, dict) and 'info' not in coco_ds:
+                                coco_ds['info'] = {'description': 'pvrt dataset (info added)'}
+                                evaluator._coco_api.dataset = coco_ds
+                                # retry once
+                                res = inference_on_dataset(trainer.model, val_loader, evaluator)
+                            else:
+                                raise
+                        else:
+                            raise
+                    except Exception:
+                        # re-raise the original KeyError to be handled upstream
+                        raise
+                else:
+                    raise
 
             ap50_pct = _ap50_pct_from_results(res)       # percent, not fraction
             if not math.isfinite(ap50_pct):
@@ -360,11 +407,13 @@ class DetectronBackend(Backend):
 
         
         MODEL_NAME = Path(MODEL_YAML).stem
-        # Append channel suffix for rgbt runs so frontend can distinguish 1ch vs 4ch
+        # Append channel suffix for rgbt runs so frontend can distinguish 3ch vs 4ch
         ch = int(getattr(cfg_in, "channel_count", 3))
+        # coerce any 1 to 3 for naming consistency
+        if ch == 1:
+            ch = 3
         if thermal_ok:
-            # if user explicitly requested 1 channel, mark as _1ch, else _4ch
-            suffix = "_1ch" if ch == 1 else "_4ch"
+            suffix = "_4ch" if ch == 4 else "_3ch"
             MODEL_NAME = f"{MODEL_NAME}{suffix}"
 
         # Prepend the run name (or out_dir.name) so the UI shows runs similarly to YOLO
@@ -374,10 +423,10 @@ class DetectronBackend(Backend):
         # Save normalized meta for the run
         _normalize_and_save_meta(out_dir, {
             "backend": "detectron",
-            "input_mode": "rgbt" if thermal_ok else "rgb",
+            "input_mode": "rgbt" if (thermal_ok and effective_channels == 4) else "rgb",
             "selected_bands": getattr(cfg_in, "selected_bands", None),
-            "channel_count": int(getattr(cfg_in, "channel_count", 3)),
-            "model_name": MODEL_NAME, 
+            "channel_count": int(effective_channels),
+            "model_name": MODEL_NAME,
             "model_zoo": MODEL_YAML,
             "num_classes": num_classes,
             "class_names": class_names,
@@ -421,11 +470,24 @@ class DetectronBackend(Backend):
             except Exception:
                 model_chan = 0
             if use_thermal:
-                effective_channels_test = 4 if requested != 1 else 1
+                # mirror training semantics: only 3 or 4 channels supported. Requested 1 is treated as 3.
+                if requested == 4:
+                    effective_channels_test = 4
+                else:
+                    effective_channels_test = 3
                 log.info(
                     f"UI:INFO:test: backend=detectron | selected=rgbt | model_trained={model_chan or 'unknown'} | requested={requested} | effective_channels={effective_channels_test} | score_thresh={score_thresh:.3f}"
                 )
-                return predict_folder_rgbt(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh, channel_count=effective_channels_test)
+                # If the effective test channels is 3 while thermal is present,
+                # this means we will be testing on thermal-as-RGB (grayscale
+                # previews) rather than RGB+Thermal fusion.
+                if effective_channels_test == 3:
+                    log.info("UI:INFO:test: Thermal grayscale will be used for testing (thermal-as-RGB)")
+                # for 4-channel use rgbt predictor; otherwise use RGB predictor (3-channel grayscale encoded as RGB)
+                if effective_channels_test == 4:
+                    return predict_folder_rgbt(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh, channel_count=effective_channels_test)
+                else:
+                    return predict_folder_rgb(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
             else:
                 # Model or data don't support thermal despite user request: fall back to RGB
                 log.info(f"UI:INFO:test: backend=detectron | selected=rgb (fallback) | effective_channels=3 | score_thresh={score_thresh:.3f}")

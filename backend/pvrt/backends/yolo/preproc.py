@@ -23,13 +23,12 @@ def merge_rgb_with_thermal(
 ) -> int:
     """Prepare a YOLO-friendly dataset targeted at `requested_channels`.
 
-    Behavior:
-    - requested_channels == 3: include only RGB images (skip single-channel thermals).
-    - requested_channels == 1 and use_thermal=True: include only images that have a
-      decoded thermal sidecar; output single-channel 'L' images containing the
-      rescaled thermal band.
-    - requested_channels == 4 and use_thermal=True: include only images that have a
-      decoded thermal sidecar; output RGBA images where A is the rescaled thermal band.
+        Behavior:
+        - requested_channels == 3: include only RGB images (skip single-channel thermals).
+        - requested_channels == 4 and use_thermal=True: include only images that have a
+            decoded thermal sidecar; output RGBA images where A is the rescaled thermal band.
+        - any other request (including 1) is treated as 3-channel RGB (thermal-as-RGB when
+            where appropriate is handled by writing 3-channel grayscale images elsewhere).
 
     The function writes outputs preserving subdirectory structure relative to
     `images_dir` into `out_dir`. Label files with the same stem (``.txt``) are
@@ -61,23 +60,27 @@ def merge_rgb_with_thermal(
                 pass
 
         # common names in thermal dir
-        for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
+        # prefer image previews (PNG/JPG). We no longer look for single-band
+        # TIFFs in the thermal/ folder — thermal previews are stored as JPG/PNG.
+        for ext in (".png", ".jpg", ".jpeg"):
             cand = therm_dir / f"{p.stem}_thermal{ext}"
             if cand.exists():
                 return cand
-        for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
+        for ext in (".png", ".jpg", ".jpeg"):
             cand = therm_dir / f"{p.stem}{ext}"
             if cand.exists():
                 return cand
 
         # sidecar next to image
-        for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
+        for ext in (".png", ".jpg", ".jpeg"):
             cand = p.with_name(f"{p.stem}_thermal{ext}")
             if cand.exists():
                 return cand
 
-        # legacy
-        for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+        # legacy fallback: prefer common image preview suffixes (do not
+        # search for single-band TIFFs anymore)
+        for ext in (".png", ".jpg", ".jpeg"):
+            cand = p.with_name(f"{p.stem}_thermal{ext}")
             if cand.exists():
                 return cand
         return None
@@ -139,42 +142,6 @@ def merge_rgb_with_thermal(
                             pass
                     written += 1
 
-                elif requested_channels == 1 and use_thermal:
-                    # require thermal sidecar
-                    t = find_thermal(src)
-                    if t is None or not t.exists():
-                        continue
-                    # Ultralytics expects 3-channel images in most cases.
-                    # To avoid channel-mismatch errors when users request
-                    # a thermal-only run, write a 3-channel RGB image where
-                    # each channel contains the rescaled thermal band (grayscale
-                    # duplicated). This mirrors the behavior used in the
-                    # inference path and ensures the dataset is compatible with
-                    # standard YOLO loaders.
-                    try:
-                        with Image.open(t) as therm:
-                            therm_l = therm.convert("L")
-                            a = np.array(therm_l).astype(np.float32)
-                            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
-                            if hi <= lo:
-                                hi = lo + 1.0
-                            a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
-                            gray = Image.fromarray(a, mode="L")
-                            # duplicate into RGB
-                            rgb = Image.merge("RGB", (gray, gray, gray))
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                        lbl = src.with_suffix(".txt")
-                        if lbl.exists():
-                            try:
-                                (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                            except Exception:
-                                pass
-                        written += 1
-                    except Exception:
-                        # conversion failed; skip this image
-                        continue
-
                 elif requested_channels == 4 and use_thermal:
                     # require thermal sidecar
                     t = find_thermal(src)
@@ -207,10 +174,37 @@ def merge_rgb_with_thermal(
                             written += 1
                     except Exception:
                         continue
-
                 else:
-                    # unsupported combination (e.g., requested 1 without thermal)
-                    continue
+                    # any other combination: treat as 3-channel RGB behaviour
+                    # (covers requested==1 coerced to 3 or other unsupported values)
+                    # try to symlink/convert as RGB as above
+                    target = out_path.with_suffix(src.suffix)
+                    try:
+                        if symlink:
+                            if target.exists() or target.is_symlink():
+                                try:
+                                    target.unlink()
+                                except Exception:
+                                    pass
+                            target.symlink_to(src.resolve())
+                        else:
+                            rgb = im.convert("RGB")
+                            target = out_path.with_suffix(".png")
+                            rgb.save(target)
+                    except Exception:
+                        try:
+                            rgb = im.convert("RGB")
+                            target = out_path.with_suffix(".png")
+                            rgb.save(target)
+                        except Exception:
+                            continue
+                    lbl = src.with_suffix(".txt")
+                    if lbl.exists():
+                        try:
+                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                        except Exception:
+                            pass
+                    written += 1
 
         except Exception:
             # ignore problematic files

@@ -13,6 +13,7 @@ from dji_thermal_sdk.dji_sdk import dji_init
 from dji_thermal_sdk.utility import rjpeg_to_heatmap
 
 from ..config import DIRP_LIB, describe_dirp
+from ..core.io import THERMAL_EXTS
 
 log = logging.getLogger("pvrt")
 
@@ -52,15 +53,17 @@ def ensure_dirp_init() -> None:
 
 def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | str | None]]:
     """
-    For each RGB image in `images_dir`, ensure a thermal TIFF exists in `images_dir/thermal`
-    and maintain `images_dir/thermal/pairs.json` with:
-        { "<rgb_filename>": "thermal/<stem>_thermal.tif" }
+        For each RGB image in `images_dir`, ensure a thermal preview exists under
+        `images_dir/thermal` and maintain `images_dir/thermal/pairs.json` mapping:
+                { "<rgb_filename>": "thermal/<stem>_thermal.<ext>" }
 
-    Rules:
-      - If a thermal TIFF already exists, keep it (idempotent).
-      - Else, try to decode RJPEG via DJI SDK and write a float32 single-band TIFF.
-      - Never overwrite existing thermal files.
-      - Keys in pairs.json are *filenames* (not absolute paths) to match predictors.
+        Rules:
+            - If a thermal preview already exists, keep it (idempotent).
+            - Else, try to decode RJPEG via DJI SDK and write a normalized 3-channel
+                JPEG preview (`<stem>_thermal.jpg`). We no longer write single-band TIFFs
+                for decoded RJPEGs to simplify downstream tooling.
+            - Never overwrite existing thermal preview files.
+            - Keys in pairs.json are *filenames* (not absolute paths) to match predictors.
 
     Returns:
       (pairs_json_path, stats)
@@ -105,25 +108,25 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
             continue
 
         stem = rgb.stem
-        out_tif = thermal_dir / f"{stem}_thermal.tif"
+        out_preview = thermal_dir / f"{stem}_thermal.jpg"
 
         # Already paired correctly?
         already = pairs.get(rgb.name)
         if already and (images_dir / already).exists():
             # [LOG] already paired; skip
             log.info(f"UI:INFO:prep: reuse pair: {rgb.name} -> {already}")
-            reuse +=1
-            continue
-
-        # If a TIFF exists from before, reuse it and set/refresh the pair.
-        if out_tif.exists():
-            pairs[rgb.name] = str(out_tif.relative_to(images_dir))
-            # [LOG] reuse existing tiff
-            log.info(f"UI:INFO:prep: reuse existing TIFF for {rgb.name} -> {out_tif.name}")
             reuse += 1
             continue
 
-        # Decode RJPEG - float32 map - TIFF
+        # If a preview exists from before, reuse it and set/refresh the pair.
+        if out_preview.exists():
+            pairs[rgb.name] = str(out_preview.relative_to(images_dir))
+            # [LOG] reuse existing preview
+            log.info(f"UI:INFO:prep: reuse existing preview for {rgb.name} -> {out_preview.name}")
+            reuse += 1
+            continue
+
+        # Decode RJPEG - float32 map and write a 3-channel JPG preview
         try:
             temps = rjpeg_to_heatmap(str(rgb), dtype=np.float32)  # HxW float32
             if not isinstance(temps, np.ndarray) or temps.ndim != 2:
@@ -133,13 +136,31 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
             try:
                 tmin = float(np.nanmin(temps))
                 tmax = float(np.nanmax(temps))
-                log.info(f"UI:INFO:prep: decoded {rgb.name} - {out_tif.name} | range={tmin:.2f}..{tmax:.2f}°C")
+                log.info(f"UI:INFO:prep: decoded {rgb.name} - {out_preview.name} | range={tmin:.2f}..{tmax:.2f}°C")
             except Exception:
-                log.info(f"UI:INFO:prep: decoded {rgb.name} - {out_tif.name}")
+                log.info(f"UI:INFO:prep: decoded {rgb.name} - {out_preview.name}")
 
-            # Write single-band float32 TIFF
-            tifffile.imwrite(str(out_tif), temps.astype(np.float32))
-            pairs[rgb.name] = str(out_tif.relative_to(images_dir))
+            # Normalize to 8-bit and write 3-channel JPEG so downstream code
+            # can use RGB inputs consistently (we no longer write TIFFs).
+            try:
+                # percentile stretch 2-98
+                vals = temps.ravel()
+                p2 = float(np.percentile(vals, 2)) if vals.size else 0.0
+                p98 = float(np.percentile(vals, 98)) if vals.size else 1.0
+                g = (np.clip(temps, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                g8 = (np.nan_to_num(g) * 255.0).astype(np.uint8)
+            except Exception:
+                g8 = np.clip(temps, 0, 255).astype(np.uint8)
+
+            # make 3-channel RGB by stacking
+            if g8.ndim == 2:
+                rgb_arr = np.stack([g8, g8, g8], axis=2)
+            else:
+                rgb_arr = g8[..., :3]
+
+            from PIL import Image
+            Image.fromarray(rgb_arr).save(str(out_preview), format="JPEG", quality=90)
+            pairs[rgb.name] = str(out_preview.relative_to(images_dir))
             ok += 1
         except Exception as e:
             # Record only the first error for UI, continue processing others
@@ -161,5 +182,11 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
 # -----------------------
 
 def _looks_like_rgb(p: Path) -> bool:
-    # treat any image that is not *our* generated thermal tif as an RGB candidate
-    return p.is_file() and p.suffix in _IMG_EXTS and not p.name.endswith("_thermal.tif")
+    # treat any image that is not *our* generated thermal preview as an RGB candidate
+    if not (p.is_file() and p.suffix in _IMG_EXTS):
+        return False
+    # ignore any generated thermal preview sidecars (various extensions)
+    for ext in THERMAL_EXTS:
+        if p.name.endswith(f"_thermal{ext}"):
+            return False
+    return True

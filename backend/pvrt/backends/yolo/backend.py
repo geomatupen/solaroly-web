@@ -48,17 +48,35 @@ class YOLOBackend(Backend):
             requested_channels = int(getattr(cfg_in, "channel_count", 3))
         except Exception:
             requested_channels = 3
+        # We no longer support 1-channel models. Coerce any '1' requests to 3.
+        if requested_channels == 1:
+            log.warning("UI:WARN:train: requested_channels=1 is deprecated; coercing to 3")
+            requested_channels = 3
         if not thermal_ok and requested_channels != 3:
             log.warning(f"UI:WARN:train: requested_channels={requested_channels} but thermal_ok={thermal_ok}; coercing to 3")
             requested_channels = 3
 
-        # Effective channels for training
+        # Effective channels for training.
+        # If thermal is available and enabled, honor the user's requested
+        # channel_count when it is 3 (thermal as grayscale presented as
+        # 3-channel). Otherwise, if the user explicitly requested 4, use
+        # RGB+thermal (4). We no longer support true 1-channel models;
+        # any '1' was coerced earlier to 3.
         if thermal_ok and getattr(cfg_in, "use_thermal", False):
-            effective_channels = 1 if requested_channels == 1 else 4
+            if requested_channels == 3:
+                effective_channels = 3
+            else:
+                # default/other requests (including explicit 4) -> RGB+thermal
+                effective_channels = 4
         else:
             effective_channels = 3
 
         log.info(f"UI:INFO:train: backend=yolo | effective_channels={effective_channels} (requested={requested_channels}, thermal_ok={thermal_ok})")
+        # If thermal is available but the effective channels is 3, then
+        # thermal will be presented as grayscale encoded into 3 channels
+        # for training (thermal-as-RGB).
+        if thermal_ok and effective_channels == 3:
+            log.info("UI:INFO:train: Thermal grayscale will be used for training (thermal-as-RGB)")
 
         # NOTE: do not create per-run prepared copies. Use the existing
         # `train_dir`/`val_dir` in-place. If thermal decoding is required it
@@ -66,6 +84,11 @@ class YOLOBackend(Backend):
 
         # run_train is responsible for using ultralytics.YOLO to train and save artifacts
         # it should return a dict with at least {"best_weights": Path, "final_weights": Path}
+        # Ensure the training routine sees the effective channel layout
+        # (e.g. 4 == RGB+thermal). Previously we logged effective_channels
+        # but continued to pass the original requested_channels into the
+        # trainer which could produce inconsistent behavior/meta. Use the
+        # computed effective value as the requested_channels for run_train.
         res = run_train(
             train_dir=train_dir,
             val_dir=val_dir,
@@ -75,17 +98,20 @@ class YOLOBackend(Backend):
             base_lr=cfg_in.base_lr,
             ims_per_batch=cfg_in.ims_per_batch,
             run_name=getattr(cfg_in, "run_name", ""),
-            requested_channels=requested_channels,
+            requested_channels=effective_channels,
         )
 
         # Normalize and write model_meta.json (keep keys compatible with Detectron meta)
         model_name = res.get("model_name", "yolo")
         model_zoo = getattr(cfg_in, "yolo_family", "v8")
         # append channel suffix to rgbt models
-        ch = int(getattr(cfg_in, "channel_count", 3))
-        if bool(cfg_in.use_thermal and has_thermal_for_images(train_dir)):
-            suffix = "_1ch" if ch == 1 else "_4ch"
-            model_name = f"{model_name}{suffix}"
+        # Record the actual effective channel count in the saved meta so
+        # downstream components (predict) interpret the model correctly.
+        ch = int(effective_channels)
+    # Only append a _4ch suffix when the model includes thermal as an
+    # extra channel. We no longer create single-channel model names.
+        if ch == 4:
+            model_name = f"{model_name}_4ch"
         # prepend the run name (if provided) so the UI shows runs similarly to Detectron
         run_prefix = getattr(cfg_in, "run_name", "") or out_dir.name
         # avoid double underscores when run_prefix is empty
@@ -115,9 +141,9 @@ class YOLOBackend(Backend):
 
         meta = {
             "backend": "yolo",
-            "input_mode": "rgbt" if thermal_ok else "rgb",
+            "input_mode": "rgbt" if ch == 4 else "rgb",
             "selected_bands": getattr(cfg_in, "selected_bands", None),
-            "channel_count": int(getattr(cfg_in, "channel_count", 3)),
+            "channel_count": ch,
             # model_name includes the training run prefix + base model + zoo
             "model_name": f"{prefix_part}{model_name}-{model_zoo}",
             "model_zoo": model_zoo,
@@ -166,8 +192,16 @@ class YOLOBackend(Backend):
             requested = int(getattr(cfg_in, "channel_count", 3))
         except Exception:
             requested = 3
+        # Mirror training logic for test-time: if user requested 3-channel
+        # thermal (grayscale-as-RGB), report 3 channels; if requested==1,
+        # use 1; otherwise use RGB+thermal (4).
         if use_thermal:
-            effective_channels_test = 1 if requested == 1 else 4
+            if requested == 1:
+                effective_channels_test = 1
+            elif requested == 3:
+                effective_channels_test = 3
+            else:
+                effective_channels_test = 4
         else:
             effective_channels_test = 3
 
@@ -179,6 +213,8 @@ class YOLOBackend(Backend):
         log.info(
             f"UI:INFO:test: backend=yolo | selected={'rgbt' if use_thermal else 'rgb'} | model_trained={model_chan or 'unknown'} | requested={requested} | effective_channels={effective_channels_test} | score_thresh={score_thresh:.3f}"
         )
+        if use_thermal and effective_channels_test == 3:
+            log.info("UI:INFO:test: Thermal grayscale will be used for testing (thermal-as-RGB)")
         return predict_folder(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh, use_thermal=use_thermal, channel_count=effective_channels_test)
 
     def read_meta(self, weights_dir: Path) -> dict:

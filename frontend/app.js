@@ -447,7 +447,9 @@ function populateModelsInto(list, selSelector){
   if (selSelector === '#selModelFolder'){
     const selected = sel.value || sel.options[0]?.value;
     const m = modelsCache[selected];
-    const defaultRequiresThermal = (m && m.channel_count) ? (Number(m.channel_count) === 4 || Number(m.channel_count) === 1) : false;
+    const defaultRequiresThermal = (m && m.channel_count) ? (
+      Number(m.channel_count) === 4 || (Number(m.channel_count) === 3 && !!(m && m.thermal_only))
+    ) : false;
     const chkTest = document.getElementById('chkUseThermalTest');
     // only override the checkbox if the user hasn't manually toggled it
     if (chkTest && !userToggledThermalTest){
@@ -703,9 +705,13 @@ async function runTest(){
   // default to 3 channels (RGB) and therefore no thermal decoding.
   const selectedModelName = model;
   const mmeta = selectedModelName ? modelsCache[selectedModelName] : null;
-  const modelChannelCount = (mmeta && mmeta.channel_count) ? Number(mmeta.channel_count) : 3;
-  // use_thermal true only when model expects 4 channels (RGB+thermal) or 1 channel (thermal-only)
-  const useThermal = (modelChannelCount === 4 || modelChannelCount === 1);
+  let modelChannelCount = (mmeta && mmeta.channel_count) ? Number(mmeta.channel_count) : 3;
+  // Map legacy '1' markers to 3 for the UI (we no longer use 1-channel models).
+  if (modelChannelCount === 1) modelChannelCount = 3;
+  // use_thermal true when model expects 4 channels (RGB+thermal) or when a
+  // 3-channel model was prepared as thermal-only (thermal_only flag). Do not
+  // treat '1' specially anymore.
+  const useThermal = (modelChannelCount === 4 || (modelChannelCount === 3 && !!(mmeta && mmeta.thermal_only)));
   const resultName = (document.getElementById("inpResultName")?.value || "").trim() || makeStamp();
   const testThreshold = (document.getElementById("testThreshold")?.value);
 
@@ -719,6 +725,11 @@ async function runTest(){
   // inform backend of the expected model channel count so it can prepare inputs correctly
   // inform backend of the expected model channel count so it can prepare inputs correctly
   fd.append('channel_count', String(modelChannelCount));
+  // optional: request extraction of thermal TIFF -> 3-channel JPGs for inference
+  try{
+    const extr = document.getElementById('chkExtractThermalAsRGB');
+    if (extr && extr.checked) fd.append('extract_thermal_rgb', 'true');
+  }catch(_){ }
   fd.append("result_name", resultName);
   fd.append("test_threshold", testThreshold);
   const backend = getSelectedBackend();
@@ -742,10 +753,12 @@ async function runTest(){
     try{
       if (js.used_channel_count != null){
         const uc = Number(js.used_channel_count);
-        const msg = (uc === 1) ? 'Run used: 1ch (thermal-only)'
-                  : (uc === 3) ? 'Run used: 3ch (RGB only)'
-                  : (uc === 4) ? 'Run used: 4ch (RGB + thermal)'
-                  : `Run used: ${uc}ch`;
+        // If server indicates thermal_only (new behavior), show that explicitly.
+        const thermalOnly = !!js.thermal_only;
+        let msg = `Run used: ${uc}ch`;
+        if (thermalOnly) msg += ' (thermal-only)';
+        else if (uc === 3) msg = 'Run used: 3ch (RGB only)';
+        else if (uc === 4) msg = 'Run used: 4ch (RGB + thermal)';
         ok("test", msg);
       }
     }catch(_){ }
@@ -2006,10 +2019,33 @@ function setupUI(){
       if (userToggledThermalTest) return;
       const sel = selModelFolder.value;
       const m = modelsCache[sel];
-      const def = (m && m.channel_count) ? (Number(m.channel_count) === 4 || Number(m.channel_count) === 1) : false;
+      const def = (m && m.channel_count) ? (
+        Number(m.channel_count) === 4 || (Number(m.channel_count) === 3 && !!(m && m.thermal_only))
+      ) : false;
       const chk = document.getElementById('chkUseThermalTest');
       if (chk){ try{ chk.checked = !!def; }catch(_){ } }
     });
+  }
+
+  // Show an extra option only for 3-channel models: allow using decoded
+  // thermal as 3-channel JPGs for inference. This checkbox is only shown
+  // when the selected model declares channel_count === 3.
+  const extractRow = document.getElementById('extractThermalRow');
+  const extractChk = document.getElementById('chkExtractThermalAsRGB');
+  if (selModelFolder){
+    selModelFolder.addEventListener('change', ()=>{
+      const sel = selModelFolder.value;
+      const m = modelsCache[sel];
+      const nch = (m && m.channel_count) ? Number(m.channel_count) : null;
+      if (extractRow){
+        // show only for 3-channel models
+        extractRow.style.display = (nch === 3) ? 'block' : 'none';
+      }
+      // reset the checkbox when switching away
+      if (extractChk && nch !== 3) extractChk.checked = false;
+    });
+    // trigger once to update initial visibility
+    selModelFolder.dispatchEvent(new Event('change'));
   }
 
   // Track manual toggles so we don't overwrite user intent when a model is auto-selected

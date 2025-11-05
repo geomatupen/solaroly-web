@@ -163,7 +163,7 @@ def _list_models() -> List[str]:
                 models.append({
                     "name": d.name,
                     "mtime": int(d.stat().st_mtime),
-                    # prefer explicit model_name from meta (may include _1ch/_4ch suffix),
+                    # prefer explicit model_name from meta (may include _4ch suffix),
                     # but keep 'name' as the run folder for lookups
                     "model_name": meta.get("model_name") or None,
                     "input_mode": meta.get("input_mode", "rgb"),
@@ -537,8 +537,9 @@ def _build_anomalies_geojson_from_tiles(
                 cand = p.with_name(f"{p.stem}_thermal{e}")
                 if cand.exists():
                     return cand
-            # legacy
-            for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+            # legacy: also accept common image preview suffixes in addition to TIFF
+            for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                cand = p.with_name(f"{p.stem}_thermal{ext}")
                 if cand.exists():
                     return cand
         except Exception:
@@ -590,8 +591,9 @@ def _build_anomalies_geojson_from_tiles(
                 cand = p.with_name(f"{p.stem}_thermal{e}")
                 if cand.exists():
                     return cand
-            # legacy
-            for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+            # legacy: also accept common image preview suffixes in addition to TIFF
+            for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                cand = p.with_name(f"{p.stem}_thermal{ext}")
                 if cand.exists():
                     return cand
         except Exception:
@@ -874,8 +876,9 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 cand = p.with_name(f"{p.stem}_thermal{e}")
                 if cand.exists():
                     return cand
-            # legacy
-            for cand in (p.with_name(p.stem + "_thermal.tif"), p.with_name(p.stem + "_thermal.tiff")):
+            # legacy: also accept common image preview suffixes in addition to TIFF
+            for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                cand = p.with_name(f"{p.stem}_thermal{ext}")
                 if cand.exists():
                     return cand
         except Exception:
@@ -894,12 +897,12 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
 
         if use_colored and (colored_src / f"{stem}.png").exists():
             # Already rendered overlay exists — reuse it by default. However,
-            # if this run used single-channel thermal input (channel_count==1)
-            # and a raw thermal TIFF exists for this image, force regeneration
-            # so we produce a grayscale thermal overlay instead of reusing any
-            # previously-colored PNG.
+            # if this run used a thermal-only source and a raw thermal TIFF
+            # exists for this image, force regeneration so we produce a
+            # thermal-preview overlay instead of reusing any previously-colored PNG.
             force_regen = False
             try:
+                # legacy behavior: treat explicit single-channel runs as thermal-only
                 if run_channel_count == 1:
                     if _find_thermal_candidate(img) is not None:
                         force_regen = True
@@ -907,7 +910,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 force_regen = False
 
             if force_regen:
-                logger.info(f"UI:INFO:post: forcing regeneration for {img.name} (1ch thermal run and thermal TIFF available)")
+                logger.info(f"UI:INFO:post: forcing regeneration for {img.name} (thermal-only source and TIFF available)")
                 im_for_thumb = None
             else:
                 try:
@@ -953,8 +956,8 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                 tpath = cand
                                 break
 
-                # If we have a thermal path and the run expects a pure thermal (1ch),
-                # create a grayscale preview and use that as the base. If the run
+                # If we have a thermal path and the run expects a pure thermal
+                # preview, create a grayscale preview and use that as the base. If the run
                 # expects 4 channels, blend the thermal colormap onto the RGB base.
                 if tpath is not None and tpath.exists():
                     try:
@@ -1603,6 +1606,11 @@ async def api_train(
                 fh.setLevel(logging.DEBUG)
                 fh.setFormatter(logging.Formatter("[%(asctime)s] %(name)s %(levelname)s: %(message)s", "%m/%d %H:%M:%S"))
                 root_logger.addHandler(fh)
+                # Also attach the per-run file handler to our 'pvrt' logger
+                # so that SSE-forwarded logs and redirected stdout/stderr (which
+                # are routed to 'pvrt') are persisted to the per-run file.
+                pvrt_logger = logging.getLogger("pvrt")
+                pvrt_logger.addHandler(fh)
                 root_logger.debug(f"Per-run logging started -> {train_log_path}")
                 return train_entry(
     backend=backend,
@@ -1626,9 +1634,22 @@ async def api_train(
                 try:
                     if fh:
                         root_logger.debug(f"Per-run logging stopping -> {train_log_path}")
-                        root_logger.removeHandler(fh)
-                        fh.flush()
-                        fh.close()
+                        try:
+                            pvrt_logger.removeHandler(fh)
+                        except Exception:
+                            pass
+                        try:
+                            root_logger.removeHandler(fh)
+                        except Exception:
+                            pass
+                        try:
+                            fh.flush()
+                        except Exception:
+                            pass
+                        try:
+                            fh.close()
+                        except Exception:
+                            pass
                 except Exception:
                     logging.getLogger("pvrt").exception("Failed to remove/close per-run file handler")
 
@@ -1836,6 +1857,7 @@ async def api_test_run(
     backend: Optional[str] = Form(default=None),
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
+    extract_thermal_rgb: bool = Form(False),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -1918,7 +1940,11 @@ async def api_test_run(
     # If model expects thermal for inference and this is an images dataset, run
     # the idempotent decode pass which will populate images_dir/thermal/pairs.json
     # when RJPEG payloads exist. This lets us infer availability afterwards.
-    if input_type == "images" and model_is_rgbt:
+    # If model expects RGB+thermal OR user explicitly requested extraction for
+    # 3-channel models, attempt the idempotent decode pass which will populate
+    # images_dir/thermal/pairs.json. The decoder is safe to call repeatedly
+    # and will early-exit if DIRP isn't available.
+    if input_type == "images" and (model_is_rgbt or extract_thermal_rgb):
         try:
             ensure_dirp_init()
             scan_split_decode_thermal(ds_dir)
@@ -1958,6 +1984,134 @@ async def api_test_run(
             return 3
 
     data_chan = _infer_data_channel_count(ds_dir, input_type, tif_has_thermal)
+
+    # If the user requested 'extract_thermal_rgb' for a 3-channel model and the
+    # dataset has thermal data, materialize a temporary per-run folder with
+    # 3-channel JPGs created from the decoded thermal TIFFs and run inference
+    # on that folder. This avoids mutating the source dataset.
+    if extract_thermal_rgb and model_chan == 3 and input_type == "images" and data_has_thermal:
+        try:
+            thermal_dir = ds_dir / "thermal"
+            pairs_path = thermal_dir / "pairs.json"
+            mappings = {}
+            if pairs_path.exists():
+                try:
+                    mappings = json.loads(pairs_path.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    mappings = {}
+
+            out_thermal_jpg = out_root / "thermal_jpg"
+            out_thermal_jpg.mkdir(parents=True, exist_ok=True)
+            created = 0
+
+            # Prefer pairs.json mapping (keys are RGB filenames)
+            if mappings:
+                for rgb_fname, rel in mappings.items():
+                    try:
+                        tpath = ds_dir / rel
+                        if not tpath.exists():
+                            # try relative inside thermal dir
+                            tpath = thermal_dir / Path(rel).name
+                            if not tpath.exists():
+                                continue
+                        # read TIFF (float32 or uint16) using tifffile when available
+                        try:
+                            import tifffile as _tifffile
+                            arr = _tifffile.imread(str(tpath))
+                        except Exception:
+                            # fallback to PIL
+                            from PIL import Image
+                            arr = np.array(Image.open(tpath))
+
+                        # normalize to uint8 using robust 2-98 percentile stretch
+                        try:
+                            vals = arr.ravel()
+                            p2 = float(np.percentile(vals, 2)) if vals.size else 0.0
+                            p98 = float(np.percentile(vals, 98)) if vals.size else 1.0
+                            g = (np.clip(arr, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                            g8 = (np.nan_to_num(g) * 255.0).astype(np.uint8)
+                        except Exception:
+                            g8 = np.clip(arr, 0, 255).astype(np.uint8)
+
+                        # make 3-channel RGB by stacking
+                        if g8.ndim == 2:
+                            rgb_arr = np.stack([g8, g8, g8], axis=2)
+                        elif g8.ndim == 3 and g8.shape[2] == 1:
+                            rgb_arr = np.concatenate([g8, g8, g8], axis=2)
+                        else:
+                            # if already 3-channel, just clamp
+                            rgb_arr = g8[..., :3]
+
+                        from PIL import Image
+                        out_name = Path(rgb_fname).stem + ".jpg"
+                        out_path = out_thermal_jpg / out_name
+                        Image.fromarray(rgb_arr).save(out_path, format="JPEG", quality=90)
+                        created += 1
+                    except Exception:
+                        logger.warning(f"UI:WARN:test: failed to create thermal JPG for {rgb_fname}")
+                        continue
+            else:
+                # No pairs.json: convert any TIFFs in thermal/ to JPGs named by stem
+                for tpath in sorted(thermal_dir.glob("*")):
+                    if not tpath.is_file():
+                        continue
+                    if tpath.suffix.lower() not in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                        continue
+                    try:
+                        try:
+                            import tifffile as _tifffile
+                            arr = _tifffile.imread(str(tpath))
+                        except Exception:
+                            from PIL import Image
+                            arr = np.array(Image.open(tpath))
+
+                        try:
+                            vals = arr.ravel()
+                            p2 = float(np.percentile(vals, 2)) if vals.size else 0.0
+                            p98 = float(np.percentile(vals, 98)) if vals.size else 1.0
+                            g = (np.clip(arr, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                            g8 = (np.nan_to_num(g) * 255.0).astype(np.uint8)
+                        except Exception:
+                            g8 = np.clip(arr, 0, 255).astype(np.uint8)
+
+                        if g8.ndim == 2:
+                            rgb_arr = np.stack([g8, g8, g8], axis=2)
+                        elif g8.ndim == 3 and g8.shape[2] == 1:
+                            rgb_arr = np.concatenate([g8, g8, g8], axis=2)
+                        else:
+                            rgb_arr = g8[..., :3]
+
+                        from PIL import Image
+                        out_name = tpath.stem + ".jpg"
+                        out_path = out_thermal_jpg / out_name
+                        Image.fromarray(rgb_arr).save(out_path, format="JPEG", quality=90)
+                        created += 1
+                    except Exception:
+                        logger.warning(f"UI:WARN:test: failed to convert thermal file {tpath}")
+                        continue
+
+            if created:
+                logger.info(f"UI:OK:test: created {created} thermal_jpg images at {out_thermal_jpg}")
+                run_images_dir = out_thermal_jpg
+            else:
+                logger.warning("UI:WARN:test: no thermal_jpg images were created; falling back to original dataset")
+        except Exception as e:
+            logger.warning(f"UI:WARN:test: extract_thermal_rgb step failed: {e}")
+
+    # If we materialized a per-run images dir (e.g. thermal_jpg), re-infer
+    # the dataset channel count and thermal availability from that run dir
+    # so downstream compatibility checks use the actual run inputs.
+    try:
+        if run_images_dir is not None and run_images_dir.exists() and run_images_dir != ds_dir:
+            # recompute data_has_thermal based on the run_images_dir and
+            # infer channel count from that location (images vs tif logic
+            # handled by the helper).
+            data_has_thermal = has_thermal_for_images(run_images_dir)
+            data_chan = _infer_data_channel_count(run_images_dir, input_type, tif_has_thermal)
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: re-inferred data_chan={data_chan} after preparing run_images_dir={run_images_dir}")
+    except Exception:
+        # be conservative and keep previous inferences on failure
+        pass
 
     # Use thermal only if model supports it AND data provides it
     use_thermal_effective = bool(model_is_rgbt and data_has_thermal)
