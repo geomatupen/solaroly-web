@@ -37,7 +37,8 @@ def _serialize_prediction(r) -> Dict[str, Any]:
                 out["boxes"].append(xyxy)
                 out["scores"].append(conf)
                 out["classes"].append(cls)
-            except Exception:
+            except Exception as e:
+                log.debug("serialize_prediction: skipped bounding box due to: %s", e)
                 continue
     return out
 
@@ -188,7 +189,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     rgb = Image.merge("RGB", (gray, gray, gray))
                     out_path = temp_prep / f"{p.stem}.png"
                     rgb.save(out_path)
-            except Exception:
+            except Exception as e:
+                log.debug("yolo.infer: failed to prepare merged image %s: %s", p, e)
                 continue
         source_dir = temp_prep
 
@@ -217,7 +219,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     rgb = im.convert("RGB")
                     outp = temp_rgb / f"{p.stem}.png"
                     rgb.save(outp, format="PNG")
-                except Exception:
+                except Exception as e:
+                    log.debug("yolo.infer: failed to convert to RGB %s: %s", p, e)
                     # skip problematic files; YOLO will skip them later
                     continue
         source_dir = temp_rgb
@@ -348,7 +351,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             for bi, sc, cl in zip(boxes, scores, classes):
                 try:
                     x1, y1, x2, y2 = map(int, bi)
-                except Exception:
+                except Exception as e:
+                    log.debug("yolo.infer: skipping malformed box %r: %s", bi, e)
                     continue
                 color = (0, 0, 255)  # red BGR
                 cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
@@ -366,16 +370,17 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                 logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay")
             except Exception as e:
                 log.debug("ignored yolo.infer error: %s", e)
-        except Exception:
-            # overlay generation is best-effort; ignore failures
-            pass
+        except Exception as e:
+            # overlay generation is best-effort; log failure at debug level and continue
+            log.debug("yolo.infer: overlay generation failed: %s", e)
 
     # finalize metrics
     elapsed = time.time() - t0
     device = "cpu"
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
+    except Exception as e:
+        log.debug("yolo.infer: device probe failed, defaulting to cpu: %s", e)
         device = "cpu"
 
     metrics = {
