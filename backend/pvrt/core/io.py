@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable
 import json
+import logging
 
 
 # ---------- JSON helpers ----------
@@ -22,8 +23,8 @@ def read_json_safe(path: Path) -> Dict[str, Any]:
     try:
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
     return {}
 
 
@@ -42,10 +43,8 @@ def write_json_safe(path: Path, obj: Dict[str, Any]) -> None:
         path.write_text(data, encoding="utf-8")
         try:
             tmp.unlink(missing_ok=True)  # py>=3.8
-        except Exception:
-            pass
-
-
+        except Exception as e:
+            logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
 # ---------- Model meta helpers ----------
 
 def load_model_meta(run_or_weights_dir: Path) -> Dict[str, Any]:
@@ -111,7 +110,8 @@ def has_thermal_for_images(images_dir: Path) -> bool:
                         cand = d / Path(v)
                         if cand.exists():
                             return True
-                    except Exception:
+                    except Exception as e:
+                        logging.getLogger("pvrt").debug("skipping due to core.io error: %s", e)
                         continue
             # fall through to directory scan if no mapped targets exist
         except Exception:
@@ -140,9 +140,9 @@ def images_are_single_channel(images_dir: Path, max_samples: int = 50) -> bool:
     """
     try:
         from PIL import Image
-    except Exception:
+    except Exception as e:
+        logging.getLogger("pvrt").debug("core.io returning False due to: %s", e)
         return False
-
     d = Path(images_dir)
     if not d.exists() or not d.is_dir():
         return False
@@ -251,8 +251,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                             cand = base / rel
                             if cand.exists():
                                 return cand
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
                 # common candidates
                 for e in exts:
                     c1 = tdir / f"{stem}{e}"
@@ -307,9 +307,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                     try:
                         from shutil import copy2
                         copy2(thermal_p, out_p)
-                    except Exception:
-                        pass
-
+                    except Exception as e:
+                        logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
             # iterate over RGB-like files (prefer top-level images) and build thermal-only prepared images
             rgb_candidates = [p for p in sorted(src_train.iterdir()) if p.is_file() and p.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff'}]
             if not rgb_candidates:
@@ -347,8 +346,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                         except Exception:
                             try:
                                 (train_out / t.name).write_bytes(t.read_bytes())
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
                 # do the same for valid if available
                 for t in sorted((src_valid / 'thermal').iterdir() if (src_valid / 'thermal').exists() else []):
                     if not t.is_file():
@@ -380,8 +379,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                         except Exception:
                             try:
                                 (valid_out / t.name).write_bytes(t.read_bytes())
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
             else:
                 # For each RGB entry, try to find a thermal counterpart and resample to RGB size. If not found,
                 # fallback to converting the RGB to grayscale (least-preferred).
@@ -413,9 +412,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                             except Exception:
                                 try:
                                     outp.write_bytes(p.read_bytes())
-                                except Exception:
-                                    pass
-
+                                except Exception as e:
+                                    logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
                 # Mirror the same logic for validation set
                 if src_valid and src_valid.exists():
                     val_rgb = [p for p in sorted(src_valid.iterdir()) if p.is_file() and p.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff'}]
@@ -443,9 +441,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                                 except Exception:
                                     try:
                                         outp.write_bytes(p.read_bytes())
-                                    except Exception:
-                                        pass
-
+                                    except Exception as e:
+                                        logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
             # We produce 3-channel images (grayscale duplicated) for thermal-only
             # datasets to avoid single-channel model requirements. Inform callers
             # that this prepared dataset is thermal-only via the thermal_only flag.
@@ -530,9 +527,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
                     dst = dst_dir / rel
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     copy2(p, dst)
-                except Exception:
-                    pass
-
+                except Exception as e:
+                    logging.getLogger("pvrt").debug("ignored core.io error: %s", e)
     _copy_and_map(src_train, train_out)
     _copy_and_map(src_valid, valid_out)
 

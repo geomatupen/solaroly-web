@@ -43,8 +43,8 @@ def _discover_class_names_from_coco(train_dir: Path) -> List[str]:
         cats = data.get("categories", [])
         try:
             cats = sorted(cats, key=lambda c: int(c.get("id", 0)))
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("ignored yolo.train error: %s", e)
         return [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
     return []
 
@@ -169,8 +169,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                             "UI:WARN:train: YOLO merged RGBA created for 4-channel training. "
                             "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.debug("ignored yolo.train error: %s", e)
             else:
                 log.debug(f"YOLO preproc (symlink) produced no outputs; using original data root {data_root}")
         except Exception:
@@ -210,9 +210,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     try:
         test_logger = logging.getLogger("pvrt.test")
         test_logger.info(f"UI:INFO:train: YOLO starting: data={yaml_path} epochs={epochs} batch={ims_per_batch} lr0={base_lr} device=0 family={family} size={size}")
-    except Exception:
-        pass
-
+    except Exception as e:
+        log.debug("ignored yolo.train error: %s", e)
     # Start a small background poller that tails ultralytics' results.csv and
     # emits per-epoch summaries into the mini-log (pvrt.test). This gives the
     # frontend near-real-time epoch updates without modifying ultralytics internals.
@@ -322,8 +321,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         try:
             if isinstance(obj, (list, tuple)) and obj:
                 return obj[0]
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("ignored yolo.train error: %s", e)
         return obj
 
     def _get_map50_from_result(r):
@@ -344,8 +343,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                     if "map" in lk and ("0.5" in lk or "50" in lk):
                         try:
                             return float(v)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.debug("ignored yolo.train error: %s", e)
                 # nested keys like 'box' -> 'map50'
                 for v in cand_metrics.values():
                     if isinstance(v, dict):
@@ -354,17 +353,17 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                             if "map" in lk2 and ("0.5" in lk2 or "50" in lk2):
                                 try:
                                     return float(v2)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    log.debug("ignored yolo.train error: %s", e)
             # common attribute names
             for attr in ("map50", "mAP_0.5", "mAP50", "map_0.5"):
                 if hasattr(r, attr):
                     try:
                         return float(getattr(r, attr))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        log.debug("ignored yolo.train error: %s", e)
+        except Exception as e:
+            log.debug("ignored yolo.train error: %s", e)
         return None
 
     def _get_loss_history(r, save_dir: Path):
@@ -391,11 +390,10 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                 if "loss" in str(k).lower():
                                     try:
                                         losses.append(float(v))
-                                    except Exception:
-                                        pass
-        except Exception:
-            pass
-
+                                    except Exception as e:
+                                        log.debug("ignored yolo.train error: %s", e)
+        except Exception as e:
+            log.debug("ignored yolo.train error: %s", e)
         # fallback: try to read ultralytics CSV/JSON artifacts if present
         try:
             for cand in [save_dir / "results.csv", save_dir / "metrics.csv", save_dir / "results.json", save_dir / "metrics.json"]:
@@ -417,8 +415,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                             if "loss" in str(k).lower():
                                                 try:
                                                     losses.append(float(vv))
-                                                except Exception:
-                                                    pass
+                                                except Exception as e:
+                                                    log.debug("ignored yolo.train error: %s", e)
                         else:
                             # csv
                             import csv
@@ -429,15 +427,14 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                         if "loss" in str(k).lower():
                                             try:
                                                 losses.append(float(v))
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                log.debug("ignored yolo.train error: %s", e)
                     except Exception as e:
                         log.debug("skipping due to: %s", e)
                 if losses:
                     break
-        except Exception:
-            pass
-
+        except Exception as e:
+            log.debug("ignored yolo.train error: %s", e)
         return losses
 
     def _median_last_n(seq, n=20):

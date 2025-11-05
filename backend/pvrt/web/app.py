@@ -128,8 +128,8 @@ def redirect_std_to_logger():
     finally:
         try:
             sys.stdout.flush(); sys.stderr.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ignored web.app error: %s", e)
         sys.stdout, sys.stderr = old_out, old_err
 
 def _now_stamp() -> str:
@@ -522,8 +522,8 @@ def _build_anomalies_geojson_from_tiles(
                         cand = (p.parent / rel)
                         if cand.exists():
                             return cand
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("ignored web.app error: %s", e)
             # decoder naming
             for e in exts:
                 cand = tdir / f"{p.stem}_thermal{e}"
@@ -576,8 +576,8 @@ def _build_anomalies_geojson_from_tiles(
                         cand = (p.parent / rel)
                         if cand.exists():
                             return cand
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("ignored web.app error: %s", e)
             # decoder naming
             for e in exts:
                 cand = tdir / f"{p.stem}_thermal{e}"
@@ -861,8 +861,8 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                         cand = (p.parent / rel)
                         if cand.exists():
                             return cand
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("ignored web.app error: %s", e)
             # decoder naming
             for e in exts:
                 cand = tdir / f"{p.stem}_thermal{e}"
@@ -1131,8 +1131,8 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 # final fallback: ensure file exists
                 try:
                     Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8)).save(ov, format="PNG", optimize=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("ignored web.app error: %s", e)
             im_for_thumb = base
 
         # Thumb from overlay (fast write via OpenCV)
@@ -1151,9 +1151,8 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
         except Exception:
             try:
                 Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
-            except Exception:
-                pass
-
+            except Exception as e:
+                logger.debug("ignored web.app error: %s", e)
         mapper[img.name] = {
             "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
             "thumb":   f"/media/{th.relative_to(MEDIA_DIR).as_posix()}" if str(th).startswith(str(MEDIA_DIR)) else th.name,
@@ -1284,8 +1283,8 @@ def _scan_image_sizes(images_dir: Path) -> dict[str, tuple[int, int]]:
             with Image.open(p) as im:
                 w, h = im.size
             out[p.name] = (int(w), int(h))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ignored web.app error: %s", e)
     return out
 
 
@@ -1636,20 +1635,20 @@ async def api_train(
                         root_logger.debug(f"Per-run logging stopping -> {train_log_path}")
                         try:
                             pvrt_logger.removeHandler(fh)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("ignored web.app error: %s", e)
                         try:
                             root_logger.removeHandler(fh)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("ignored web.app error: %s", e)
                         try:
                             fh.flush()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("ignored web.app error: %s", e)
                         try:
                             fh.close()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("ignored web.app error: %s", e)
                 except Exception:
                     logging.getLogger("pvrt").exception("Failed to remove/close per-run file handler")
 
@@ -2260,9 +2259,8 @@ async def api_test_run(
                 if scale < 1.0:
                     im = cv2.resize(im, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
                 cv2.imwrite(str(thumb_png), im)
-        except Exception:
-            pass
-
+        except Exception as e:
+            logger.debug("ignored web.app error: %s", e)
         # Update manifest entry for this TIF so results grid shows overlay/thumb
         try:
             m = {}
@@ -2274,9 +2272,8 @@ async def api_test_run(
                 "thumb":   f"/media/{thumb_png.relative_to(MEDIA_DIR)}",
             }
             mp.write_text(json.dumps(m, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
+        except Exception as e:
+            logger.debug("ignored web.app error: %s", e)
     else:
         anom_gj, imgs_gj = _preds_to_geojson(
             images_dir=Path(ds_dir),
@@ -2571,8 +2568,8 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
             try:
                 dts = [src.dtypes[i-1] for i in vis if 1<=i<=src.count]
                 rgb_uint8 = len(dts)==3 and all(dt.lower()=="uint8" for dt in dts)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("ignored web.app error: %s", e)
         if len(vis)==3 and rgb_uint8:
             raw = vrt.read(vis, window=win, out_shape=(3,H,W), resampling=Resampling.bilinear,
                            masked=False, out_dtype="uint8")

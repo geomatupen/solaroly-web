@@ -146,11 +146,10 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         try:
             if int(channel_count) == 1:
                 tlog.info("UI:INFO:test: Using thermal grayscale images for testing (thermal-as-RGB)")
-        except Exception:
-            pass
-    except Exception:
-        pass
-
+        except Exception as e:
+            log.debug("ignored yolo.infer error: %s", e)
+    except Exception as e:
+        log.debug("ignored yolo.infer error: %s", e)
     # ensure outputs
     run_dir = Path(out_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -260,9 +259,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         out_path.write_text(json.dumps(js, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
             logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_path.stem}] wrote pred json; boxes={len(js.get('boxes', []))}")
-        except Exception:
-            pass
-
+        except Exception as e:
+            log.debug("ignored yolo.infer error: %s", e)
         # Create a simple overlay PNG for UI browsing. If we prepared a
         # temp_prep (merged) folder for thermal runs, the prediction's
         # image path will point into that folder and we can extract the
@@ -297,8 +295,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     if tpath is not None and tpath.exists():
                         try:
                             logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{p.name}] using thermal grayscale background for overlay")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.debug("ignored yolo.infer error: %s", e)
                         # Prefer tifffile for float32/16 TIFFs
                         try:
                             import tifffile
@@ -322,9 +320,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                                 timg = cv2.cvtColor(timg, cv2.COLOR_BGR2GRAY)
                             bgr = cv2.cvtColor(timg.astype(np.uint8), cv2.COLOR_GRAY2BGR)
                             has_rgb = False
-                except Exception:
-                    pass
-
+                except Exception as e:
+                    log.debug("ignored yolo.infer error: %s", e)
             if bgr is None:
                 # fallback to the predicted image (merged/synth or original)
                 if im is None:
@@ -367,8 +364,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             cv2.imwrite(str(out_overlay), vis)
             try:
                 logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("ignored yolo.infer error: %s", e)
         except Exception:
             # overlay generation is best-effort; ignore failures
             pass
