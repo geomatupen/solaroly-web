@@ -179,8 +179,9 @@ class DetectronBackend(Backend):
             # preserve label order by id when present
             try:
                 cats = sorted(cats, key=lambda c: int(c.get("id", 0)))
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                # if ids are non-numeric or items malformed, keep original order
+                log.debug("non-numeric category ids encountered while sorting categories")
             class_names = [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
 
         # Build cfg (always)
@@ -258,16 +259,13 @@ class DetectronBackend(Backend):
                 self.last_med20 = None  # matches what the console prints (20-iter median)
 
             def after_step(self):
+                hb = self.trainer.storage.history("total_loss")   # HistoryBuffer
+                s = hb.latest()                                   # Scalar or float
+                self.last_raw = float(getattr(s, "value", s))
                 try:
-                    hb = self.trainer.storage.history("total_loss")   # HistoryBuffer
-                    s = hb.latest()                                   # Scalar or float
-                    self.last_raw = float(getattr(s, "value", s))
-                    try:
-                        self.last_med20 = float(hb.median(20))
-                    except Exception:
-                        self.last_med20 = self.last_raw
+                    self.last_med20 = float(hb.median(20))
                 except Exception:
-                    pass
+                    self.last_med20 = self.last_raw
 
 
         loss_tap = _LossTap()

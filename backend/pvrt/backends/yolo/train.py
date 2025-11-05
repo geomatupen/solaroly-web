@@ -30,8 +30,8 @@ def _discover_num_classes_from_coco(train_dir: Path) -> int:
             if isinstance(data, dict) and all(k in data for k in ("images", "annotations", "categories")):
                 cats = data.get("categories", [])
                 return len(cats)
-        except Exception:
-            continue
+        except Exception as e:
+            log.debug("skipping due to: %s", e)
     return 0
 
 
@@ -126,8 +126,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                             # single-channel -> skip
                             continue
                         out.append(str(p.resolve()))
-                except Exception:
-                    continue
+                except Exception as e:
+                    log.debug("skipping due to: %s", e)
             return out
 
         try:
@@ -382,8 +382,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                 losses = [float(x) for x in v if isinstance(x, (int, float)) or (isinstance(x, str) and x.replace('.','',1).isdigit())]
                                 if losses:
                                     break
-                            except Exception:
-                                continue
+                            except Exception as e:
+                                log.debug("skipping due to: %s", e)
                 elif isinstance(h, (list, tuple)):
                     for e in h:
                         if isinstance(e, dict):
@@ -431,8 +431,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                                 losses.append(float(v))
                                             except Exception:
                                                 pass
-                    except Exception:
-                        continue
+                    except Exception as e:
+                        log.debug("skipping due to: %s", e)
                 if losses:
                     break
         except Exception:

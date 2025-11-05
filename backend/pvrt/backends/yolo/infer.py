@@ -27,21 +27,18 @@ def _serialize_prediction(r) -> Dict[str, Any]:
         "scores": [],
         "classes": [],
     }
-    try:
-        boxes = getattr(r, "boxes", None)
-        if boxes is not None:
-            for b in boxes:
-                try:
-                    xyxy = b.xyxy.cpu().numpy().tolist()[0] if hasattr(b, "xyxy") else None
-                    conf = float(b.conf.cpu().numpy()[0]) if hasattr(b, "conf") else None
-                    cls = int(b.cls.cpu().numpy()[0]) if hasattr(b, "cls") else None
-                    out["boxes"].append(xyxy)
-                    out["scores"].append(conf)
-                    out["classes"].append(cls)
-                except Exception:
-                    continue
-    except Exception:
-        pass
+    boxes = getattr(r, "boxes", None)
+    if boxes is not None:
+        for b in boxes:
+            try:
+                xyxy = b.xyxy.cpu().numpy().tolist()[0] if hasattr(b, "xyxy") else None
+                conf = float(b.conf.cpu().numpy()[0]) if hasattr(b, "conf") else None
+                cls = int(b.cls.cpu().numpy()[0]) if hasattr(b, "cls") else None
+                out["boxes"].append(xyxy)
+                out["scores"].append(conf)
+                out["classes"].append(cls)
+            except Exception:
+                continue
     return out
 
 
@@ -81,12 +78,10 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                         candidate = (rgb_path.parent / target).resolve()
                         if candidate.exists():
                             return candidate
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 2) thermal/ subfolder: decoder writes preview files (e.g. {stem}_thermal.jpg).
+                except Exception as e:
+                    log.debug("ignored infer pass: %s", e)
+        except Exception as e:
+            log.debug("ignored infer pass: %s", e)# 2) thermal/ subfolder: decoder writes preview files (e.g. {stem}_thermal.jpg).
         #     Check previews first (we no longer look for single-band TIFFs here).
         for e in exts:
             cand1 = tdir / f"{stem}_thermal{e}"

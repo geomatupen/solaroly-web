@@ -48,10 +48,8 @@ def _purge_dataset_name(name: str) -> None:
     except Exception:
         try:
             DatasetCatalog._REGISTERED.pop(name, None)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-    # MetadataCatalog
+        except Exception as e:
+            logging.getLogger("pvrt").debug("purge dataset ignore: %s", e)# MetadataCatalog
     try:
         MetadataCatalog._NAME_TO_META.pop(name, None)  # type: ignore[attr-defined]
     except Exception:
@@ -89,10 +87,11 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
             fixed_path = Path(anno).with_name(Path(anno).stem + "_pvrt_fixed.json")
             fixed_path.write_text(json.dumps(fixed), encoding='utf-8')
             anno = fixed_path
-    except Exception:
-        # If anything goes wrong, fall back to the original anno path and
-        # let register_coco_instances raise if it's truly broken.
-        pass
+    except (OSError, json.JSONDecodeError) as e:
+        # If file IO or JSON decoding fails, fall back to original anno and allow
+        # downstream registration to raise if the file is truly broken.
+        import logging
+        logging.getLogger("pvrt").warning("could not create fixed COCO JSON copy: %s", e)
 
     # 2) Purge any prior registration for this name (idempotent re-run)
     _purge_dataset_name(name)
@@ -106,8 +105,9 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
     if pairs.exists():
         try:
             meta.thermal_pairs = json.loads(pairs.read_text(encoding="utf-8"))
-        except Exception:
-            # Keep it predictable; empty dict on any parse issue
+        except (OSError, json.JSONDecodeError) as e:
+            import logging
+            logging.getLogger("pvrt").warning("failed to parse thermal/pairs.json: %s", e)
             meta.thermal_pairs = {}
     else:
         meta.thermal_pairs = {}

@@ -8,6 +8,7 @@ it easy to generate merged images if you decide to implement a custom loader.
 """
 
 from __future__ import annotations
+import logging
 from pathlib import Path
 from typing import Iterable
 import numpy as np
@@ -47,17 +48,18 @@ def merge_rgb_with_thermal(
         # pairs.json
         pj = therm_dir / "pairs.json"
         if pj.exists():
+            import json as _json
             try:
-                import json as _json
-
                 pairs = _json.loads(pj.read_text(encoding="utf-8"))
                 rel = pairs.get(p.name) if isinstance(pairs, dict) else None
                 if rel:
                     cand = images_dir / rel
                     if cand.exists():
                         return cand
-            except Exception:
-                pass
+            except (_json.JSONDecodeError, OSError) as e:
+                # malformed pairs.json or IO issue -> ignore mapping and fall back
+                import logging
+                logging.getLogger("pvrt").warning("malformed thermal/pairs.json ignored: %s", e)
 
         # common names in thermal dir
         # prefer image previews (PNG/JPG). We no longer look for single-band
@@ -118,8 +120,8 @@ def merge_rgb_with_thermal(
                             if target.exists() or target.is_symlink():
                                 try:
                                     target.unlink()
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
                             target.symlink_to(src.resolve())
                         else:
                             rgb = im.convert("RGB")
@@ -138,8 +140,8 @@ def merge_rgb_with_thermal(
                     if lbl.exists():
                         try:
                             (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
                     written += 1
 
                 elif requested_channels == 4 and use_thermal:
@@ -169,8 +171,8 @@ def merge_rgb_with_thermal(
                             if lbl.exists():
                                 try:
                                     (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
                             written += 1
                     except Exception:
                         continue
@@ -184,8 +186,8 @@ def merge_rgb_with_thermal(
                             if target.exists() or target.is_symlink():
                                 try:
                                     target.unlink()
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
                             target.symlink_to(src.resolve())
                         else:
                             rgb = im.convert("RGB")
@@ -202,8 +204,8 @@ def merge_rgb_with_thermal(
                     if lbl.exists():
                         try:
                             (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logging.getLogger("pvrt").debug("ignored preproc error: %s", e)
                     written += 1
 
         except Exception:

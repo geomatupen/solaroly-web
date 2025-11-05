@@ -42,8 +42,10 @@ def _pick_device() -> str:
 def _load_meta(d: Path) -> dict:
     p = d / "model_meta.json"
     if p.exists():
-        try: return json.loads(p.read_text(encoding="utf-8"))
-        except Exception: pass
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            logging.getLogger(_LOGGER_NAME).warning("failed to load model_meta.json: %s", e)
     return {}
 
 def _resolve_weights(d: Path) -> Path:
@@ -77,22 +79,19 @@ def _find_thermal(rgb: Path) -> Path | None:
     tdir = rgb.parent / "thermal"
 
     # 1) pairs.json mapping (decoder writes relative paths there)
-    try:
-        pjson = tdir / "pairs.json"
-        if pjson.exists():
-            import json as _json
-            try:
-                pairs = _json.loads(pjson.read_text(encoding="utf-8"))
-                target = pairs.get(rgb.name)
-                if target:
-                    candidate = (rgb.parent / target).resolve()
-                    if candidate.exists():
-                        return candidate
-            except Exception:
-                # ignore malformed pairs.json and fall through
-                pass
-    except Exception:
-        pass
+    pjson = tdir / "pairs.json"
+    if pjson.exists():
+        import json as _json
+        try:
+            pairs = _json.loads(pjson.read_text(encoding="utf-8"))
+            target = pairs.get(rgb.name)
+            if target:
+                candidate = (rgb.parent / target).resolve()
+                if candidate.exists():
+                    return candidate
+        except (json.JSONDecodeError, OSError):
+            # ignore malformed pairs.json and fall through
+            pass
 
     # 2) thermal/ subfolder: check both {stem}_thermal.* (what decoder writes) and {stem}.*
     for e in exts:
@@ -319,8 +318,8 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
     if thr is not None:
         try:
             cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            logging.getLogger(_LOGGER_NAME).debug("invalid score_thresh provided: %r", score_thresh)
 
     # --- IMPORTANT: make cfg 4ch BEFORE build_model ---
     make_cfg_4ch(cfg)  # extend PIXEL_MEAN/STD to 4ch (B,G,R,T)
@@ -335,8 +334,8 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
         ps = torch.as_tensor(cfg.MODEL.PIXEL_STD,  dtype=torch.float32, device=device).view(-1, 1, 1)
         model.pixel_mean = pm
         model.pixel_std  = ps
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(_LOGGER_NAME).warning("failed to set model pixel stats: %s", e)
 
     patch_first_conv_to_4ch(model)
     DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
