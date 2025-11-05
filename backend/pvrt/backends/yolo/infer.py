@@ -30,16 +30,12 @@ def _serialize_prediction(r) -> Dict[str, Any]:
     boxes = getattr(r, "boxes", None)
     if boxes is not None:
         for b in boxes:
-            try:
-                xyxy = b.xyxy.cpu().numpy().tolist()[0] if hasattr(b, "xyxy") else None
-                conf = float(b.conf.cpu().numpy()[0]) if hasattr(b, "conf") else None
-                cls = int(b.cls.cpu().numpy()[0]) if hasattr(b, "cls") else None
-                out["boxes"].append(xyxy)
-                out["scores"].append(conf)
-                out["classes"].append(cls)
-            except Exception as e:
-                log.debug("serialize_prediction: skipped bounding box due to: %s", e)
-                continue
+            xyxy = b.xyxy.cpu().numpy().tolist()[0] if hasattr(b, "xyxy") else None
+            conf = float(b.conf.cpu().numpy()[0]) if hasattr(b, "conf") else None
+            cls = int(b.cls.cpu().numpy()[0]) if hasattr(b, "cls") else None
+            out["boxes"].append(xyxy)
+            out["scores"].append(conf)
+            out["classes"].append(cls)
     return out
 
 
@@ -68,21 +64,15 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         stem = rgb_path.stem
 
         # 1) pairs.json mapping if present (preferred)
-        try:
-            pjson = tdir / "pairs.json"
-            if pjson.exists():
-                import json as _json
-                try:
-                    pairs = _json.loads(pjson.read_text(encoding="utf-8"))
-                    target = pairs.get(rgb_path.name)
-                    if target:
-                        candidate = (rgb_path.parent / target).resolve()
-                        if candidate.exists():
-                            return candidate
-                except Exception as e:
-                    log.debug("ignored infer pass: %s", e)
-        except Exception as e:
-            log.debug("ignored infer pass: %s", e)# 2) thermal/ subfolder: decoder writes preview files (e.g. {stem}_thermal.jpg).
+        pjson = tdir / "pairs.json"
+        if pjson.exists():
+            pairs = json.loads(pjson.read_text(encoding="utf-8"))
+            target = pairs.get(rgb_path.name)
+            if target:
+                candidate = (rgb_path.parent / target).resolve()
+                if candidate.exists():
+                    return candidate
+        # 2) thermal/ subfolder: decoder writes preview files (e.g. {stem}_thermal.jpg).
         #     Check previews first (we no longer look for single-band TIFFs here).
         for e in exts:
             cand1 = tdir / f"{stem}_thermal{e}"
@@ -128,29 +118,20 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
 
     model = YOLO(model_weights)
     # mini-log header for the run
+    tlog = logging.getLogger("pvrt.test")
+    w_sz = Path(model_weights).stat().st_size if Path(model_weights).exists() else -1
+    w_md5 = "n/a"
     try:
-        tlog = logging.getLogger("pvrt.test")
-        try:
-            w_sz = Path(model_weights).stat().st_size if Path(model_weights).exists() else -1
-            w_md5 = "n/a"
-            try:
-                import hashlib
-                w_md5 = hashlib.md5(Path(model_weights).read_bytes()).hexdigest()[:8] if Path(model_weights).exists() else "missing"
-            except Exception:
-                w_md5 = "n/a"
-        except Exception:
-            w_sz, w_md5 = -1, "n/a"
-        tlog.info(f"UI:OK:test: YOLO predict start | weights={Path(model_weights).name} md5={w_md5} | source={images_dir} | thr={score_thresh} | channels={channel_count}")
-        # If channel_count indicates a thermal-grayscale run (single-channel
-        # encoded as 3-channel RGB), log that information up front so the
-        # mini-log shows whether thermal-as-RGB is being used.
-        try:
-            if int(channel_count) == 1:
-                tlog.info("UI:INFO:test: Using thermal grayscale images for testing (thermal-as-RGB)")
-        except Exception as e:
-            log.debug("ignored yolo.infer error: %s", e)
-    except Exception as e:
-        log.debug("ignored yolo.infer error: %s", e)
+        import hashlib
+        w_md5 = hashlib.md5(Path(model_weights).read_bytes()).hexdigest()[:8] if Path(model_weights).exists() else "missing"
+    except Exception:
+        w_md5 = "n/a"
+    tlog.info(f"UI:OK:test: YOLO predict start | weights={Path(model_weights).name} md5={w_md5} | source={images_dir} | thr={score_thresh} | channels={channel_count}")
+    # If channel_count indicates a thermal-grayscale run (single-channel
+    # encoded as 3-channel RGB), log that information up front so the
+    # mini-log shows whether thermal-as-RGB is being used.
+    if int(channel_count) == 1:
+        tlog.info("UI:INFO:test: Using thermal grayscale images for testing (thermal-as-RGB)")
     # ensure outputs
     run_dir = Path(out_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -260,10 +241,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         # match by name/stem. Save as {stem}.json to align with other backends.
         out_path = out_json_dir / f"{Path(key).stem}.json"
         out_path.write_text(json.dumps(js, ensure_ascii=False, indent=2), encoding="utf-8")
-        try:
-            logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_path.stem}] wrote pred json; boxes={len(js.get('boxes', []))}")
-        except Exception as e:
-            log.debug("ignored yolo.infer error: %s", e)
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_path.stem}] wrote pred json; boxes={len(js.get('boxes', []))}")
         # Create a simple overlay PNG for UI browsing. If we prepared a
         # temp_prep (merged) folder for thermal runs, the prediction's
         # image path will point into that folder and we can extract the
@@ -296,10 +274,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                     rgb_candidate = Path(images_dir) / Path(key).name
                     tpath = _find_thermal(rgb_candidate)
                     if tpath is not None and tpath.exists():
-                        try:
-                            logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{p.name}] using thermal grayscale background for overlay")
-                        except Exception as e:
-                            log.debug("ignored yolo.infer error: %s", e)
+                        logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{p.name}] using thermal grayscale background for overlay")
                         # Prefer tifffile for float32/16 TIFFs
                         try:
                             import tifffile
@@ -366,10 +341,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             # UI expects overlays/{stem}.png (no extra suffix)
             out_overlay = overlays_dir / f"{Path(key).stem}.png"
             cv2.imwrite(str(out_overlay), vis)
-            try:
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay")
-            except Exception as e:
-                log.debug("ignored yolo.infer error: %s", e)
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay")
         except Exception as e:
             # overlay generation is best-effort; log failure at debug level and continue
             log.debug("yolo.infer: overlay generation failed: %s", e)
@@ -377,11 +349,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
     # finalize metrics
     elapsed = time.time() - t0
     device = "cpu"
-    try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception as e:
-        log.debug("yolo.infer: device probe failed, defaulting to cpu: %s", e)
-        device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     metrics = {
         "backend": "yolo",
