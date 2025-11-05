@@ -13,6 +13,16 @@ import logging
 import json
 from statistics import median
 
+# Third-party imports moved to module top per cleanup policy. ImportErrors
+# will surface at import-time (fail-fast) which is the desired behavior.
+from ultralytics import YOLO
+import yaml
+from PIL import Image
+import shutil
+import threading
+import time
+import csv
+
 log = logging.getLogger("pvrt")
 
 
@@ -25,27 +35,22 @@ def _discover_num_classes_from_coco(train_dir: Path) -> int:
         cats = data.get("categories", [])
         return len(cats)
     for j in train_dir.glob("*.json"):
-        try:
-            data = json.loads(j.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and all(k in data for k in ("images", "annotations", "categories")):
-                cats = data.get("categories", [])
-                return len(cats)
-        except json.JSONDecodeError:
-            # skip invalid JSON files
-            continue
+        data = json.loads(j.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and all(k in data for k in ("images", "annotations", "categories")):
+            cats = data.get("categories", [])
+            return len(cats)
     return 0
 
 
 def _discover_class_names_from_coco(train_dir: Path) -> List[str]:
-    import json
     cand = train_dir / "_annotations.coco.json"
     if cand.exists():
         data = json.loads(cand.read_text(encoding="utf-8"))
         cats = data.get("categories", [])
+        # keep original order if ids are non-numeric; attempt numeric sort first
         try:
             cats = sorted(cats, key=lambda c: int(c.get("id", 0)))
         except (TypeError, ValueError):
-            # keep original order if ids are non-numeric or malformed
             pass
         return [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
     return []
@@ -56,10 +61,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
 
     Returns a dict with keys: best_weights, final_weights, model_name, num_classes, class_names
     """
-    # Delay import to keep module import cheap when not training
-    from ultralytics import YOLO
-    import yaml
-    from pathlib import Path
+    # all required imports are at module top (fail-fast on missing deps)
 
     # For compatibility with the project's Detectron-style outputs we
     # expose all training artifacts directly inside `out_dir` (no
@@ -120,62 +122,42 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                     continue
                 if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
                     continue
-                try:
-                    with Image.open(p) as im:
-                        # prefer bands detection which handles many TIFF modes
-                        bands = im.getbands()
-                        if not bands or len(bands) == 1:
-                            # single-channel -> skip
-                            continue
-                        out.append(str(p.resolve()))
-                except Exception:
-                    # unreadable file: skip it
-                    continue
+                with Image.open(p) as im:
+                    bands = im.getbands()
+                    if not bands or len(bands) == 1:
+                        continue
+                    out.append(str(p.resolve()))
             return out
 
-        try:
-            from PIL import Image
-            train_list = collect_rgb_only(train_dir)
-            val_list = collect_rgb_only(val_dir)
-            # write list files into run_dir (small text files)
-            list_train = run_dir / "train_images.txt"
-            list_val = run_dir / "val_images.txt"
-            list_train.write_text("\n".join(train_list), encoding="utf-8")
-            list_val.write_text("\n".join(val_list), encoding="utf-8")
-            data_root = run_dir
-            log.info(f"YOLO preproc: wrote RGB-only train/val lists ({len(train_list)}/{len(val_list)})")
-        except Exception:
-            log.exception("Failed to produce RGB-only lists; falling back to original data root")
-            data_root = train_dir.parent.resolve()
+        train_list = collect_rgb_only(train_dir)
+        val_list = collect_rgb_only(val_dir)
+        # write list files into run_dir (small text files)
+        list_train = run_dir / "train_images.txt"
+        list_val = run_dir / "val_images.txt"
+        list_train.write_text("\n".join(train_list), encoding="utf-8")
+        list_val.write_text("\n".join(val_list), encoding="utf-8")
+        data_root = run_dir
+        log.info(f"YOLO preproc: wrote RGB-only train/val lists ({len(train_list)}/{len(val_list)})")
     else:
         # For non-3-channel runs (thermal-based training) we still need to
         # prepare per-run inputs. Use the symlinked merged tree to avoid
         # duplicating bytes while presenting a consistent dataset to the
         # trainer.
-        try:
-            from .preproc import merge_rgb_with_thermal
-            merged_root = run_dir / "merged"
-            merged_root.mkdir(parents=True, exist_ok=True)
-            tcount = merge_rgb_with_thermal(train_dir, merged_root / "train", requested_channels=requested_channels, use_thermal=use_thermal, symlink=True)
-            vcount = merge_rgb_with_thermal(val_dir, merged_root / "valid", requested_channels=requested_channels, use_thermal=use_thermal, symlink=True)
-            if (tcount or vcount):
-                data_root = merged_root
-                log.info(f"YOLO preproc (symlink): prepared dataset: train={tcount}, valid={vcount}; using {merged_root}")
-                # NOTE: merged RGBA files embed thermal as the alpha channel.
-                # Ultralytics' default loader will usually ignore alpha; to
-                # actually train on a 4th channel you must provide a custom
-                # dataloader/loader hook that reads the alpha channel as input.
-                # We emit a prominent mini-log warning so the user is informed.
-                if requested_channels == 4 and use_thermal:
-                    logging.getLogger("pvrt.test").warning(
-                        "UI:WARN:train: YOLO merged RGBA created for 4-channel training. "
-                        "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
-                    )
-            else:
-                log.debug(f"YOLO preproc (symlink) produced no outputs; using original data root {data_root}")
-        except Exception:
-            log.exception("YOLO preproc (symlink) failed; falling back to original data root")
-            data_root = train_dir.parent.resolve()
+        from .preproc import merge_rgb_with_thermal
+        merged_root = run_dir / "merged"
+        merged_root.mkdir(parents=True, exist_ok=True)
+        tcount = merge_rgb_with_thermal(train_dir, merged_root / "train", requested_channels=requested_channels, use_thermal=use_thermal, symlink=True)
+        vcount = merge_rgb_with_thermal(val_dir, merged_root / "valid", requested_channels=requested_channels, use_thermal=use_thermal, symlink=True)
+        if (tcount or vcount):
+            data_root = merged_root
+            log.info(f"YOLO preproc (symlink): prepared dataset: train={tcount}, valid={vcount}; using {merged_root}")
+            if requested_channels == 4 and use_thermal:
+                logging.getLogger("pvrt.test").warning(
+                    "UI:WARN:train: YOLO merged RGBA created for 4-channel training. "
+                    "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
+                )
+        else:
+            log.debug(f"YOLO preproc (symlink) produced no outputs; using original data root {data_root}")
 
     # Create a temporary data.yaml compatible with ultralytics
     data_yaml = {
@@ -186,6 +168,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         "names": class_names or {i: f"class_{i}" for i in range(num_classes)}
     }
     yaml_path = run_dir / "data.yaml"
+    # prefer YAML, fallback to JSON if yaml.safe_dump fails (rare)
     try:
         yaml.safe_dump(data_yaml, yaml_path)
     except Exception:
@@ -207,16 +190,11 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
 
     # train
     # Log a compact header into the mini-log so users see major run parameters
-    try:
-        test_logger = logging.getLogger("pvrt.test")
-        test_logger.info(f"UI:INFO:train: YOLO starting: data={yaml_path} epochs={epochs} batch={ims_per_batch} lr0={base_lr} device=0 family={family} size={size}")
-    except Exception as e:
-        log.debug("ignored yolo.train error: %s", e)
+    test_logger = logging.getLogger("pvrt.test")
+    test_logger.info(f"UI:INFO:train: YOLO starting: data={yaml_path} epochs={epochs} batch={ims_per_batch} lr0={base_lr} device=0 family={family} size={size}")
     # Start a small background poller that tails ultralytics' results.csv and
     # emits per-epoch summaries into the mini-log (pvrt.test). This gives the
     # frontend near-real-time epoch updates without modifying ultralytics internals.
-    import threading, time, csv
-
     stop_event = threading.Event()
     last_rows = {"n": 0}
 
@@ -224,37 +202,32 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         tlog = logging.getLogger("pvrt.test")
         results_csv = run_dir / "results.csv"
         while not stop_event.is_set():
-            try:
-                if results_csv.exists():
-                    with open(results_csv, newline='') as fh:
-                        rdr = list(csv.DictReader(fh))
-                    n = len(rdr)
-                    if n > last_rows["n"]:
-                        for i in range(last_rows["n"], n):
-                            row = rdr[i]
-                            # attempt to extract epoch, map50, loss
-                            epoch = row.get("epoch") or row.get("Epoch") or str(i + 1)
-                            # common mAP column names
-                            map_col = None
-                            for k in row.keys():
-                                lk = str(k).lower()
-                                if "map" in lk and ("0.5" in lk or "50" in lk or "map50" in lk):
-                                    map_col = k
-                                    break
-                            loss_col = None
-                            for k in row.keys():
-                                if "loss" in str(k).lower():
-                                    loss_col = k
-                                    break
-                            parts = [f"epoch={epoch}"]
-                            if map_col and row.get(map_col) is not None:
-                                parts.append(f"map50={row.get(map_col)}")
-                            if loss_col and row.get(loss_col) is not None:
-                                parts.append(f"loss={row.get(loss_col)}")
-                            tlog.info("UI:INFO:train: YOLO " + " ".join(parts))
-                        last_rows["n"] = n
-            except Exception:
-                logging.getLogger("pvrt").exception("Failed while tailing YOLO results.csv")
+            if results_csv.exists():
+                with open(results_csv, newline='') as fh:
+                    rdr = list(csv.DictReader(fh))
+                n = len(rdr)
+                if n > last_rows["n"]:
+                    for i in range(last_rows["n"], n):
+                        row = rdr[i]
+                        epoch = row.get("epoch") or row.get("Epoch") or str(i + 1)
+                        map_col = None
+                        for k in row.keys():
+                            lk = str(k).lower()
+                            if "map" in lk and ("0.5" in lk or "50" in lk or "map50" in lk):
+                                map_col = k
+                                break
+                        loss_col = None
+                        for k in row.keys():
+                            if "loss" in str(k).lower():
+                                loss_col = k
+                                break
+                        parts = [f"epoch={epoch}"]
+                        if map_col and row.get(map_col) is not None:
+                            parts.append(f"map50={row.get(map_col)}")
+                        if loss_col and row.get(loss_col) is not None:
+                            parts.append(f"loss={row.get(loss_col)}")
+                        tlog.info("UI:INFO:train: YOLO " + " ".join(parts))
+                    last_rows["n"] = n
             stop_event.wait(2.0)
 
     poller = threading.Thread(target=_tail_results_csv, daemon=True)
@@ -304,137 +277,106 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     found_final = next((p for p in final_candidates if p.exists()), None)
 
     # copy/rename into run_dir as Detectron-style filenames (no nested folders)
-    try:
-        import shutil
-        if found_best:
-            shutil.copy2(str(found_best), str(run_dir / "model_best.pt"))
-            logging.getLogger("pvrt.test").info(f"UI:OK:train: YOLO saved best weights -> {run_dir / 'model_best.pt'}")
-        if found_final:
-            shutil.copy2(str(found_final), str(run_dir / "model_final.pt"))
-            logging.getLogger("pvrt.test").info(f"UI:OK:train: YOLO saved final weights -> {run_dir / 'model_final.pt'}")
-    except Exception:
-        log.exception("Failed to copy/rename ultralytics weights into run root")
+    if found_best:
+        shutil.copy2(str(found_best), str(run_dir / "model_best.pt"))
+        logging.getLogger("pvrt.test").info(f"UI:OK:train: YOLO saved best weights -> {run_dir / 'model_best.pt'}")
+    if found_final:
+        shutil.copy2(str(found_final), str(run_dir / "model_final.pt"))
+        logging.getLogger("pvrt.test").info(f"UI:OK:train: YOLO saved final weights -> {run_dir / 'model_final.pt'}")
 
     # --- attempt to extract robust training statistics for model_meta.json ---
     def _first_result(obj):
         # ultralytics may return a Results object or a list-like container
-        try:
-            if isinstance(obj, (list, tuple)) and obj:
-                return obj[0]
-        except Exception as e:
-            log.debug("ignored yolo.train error: %s", e)
+        if isinstance(obj, (list, tuple)) and obj:
+            return obj[0]
         return obj
 
     def _get_map50_from_result(r):
-        try:
-            # try common attributes/dicts
-            cand_metrics = None
-            if hasattr(r, "metrics") and isinstance(r.metrics, dict):
-                cand_metrics = r.metrics
-            elif isinstance(r, dict):
-                cand_metrics = r
-            elif hasattr(r, "results") and isinstance(r.results, dict):
-                cand_metrics = r.results
+        # try common attributes/dicts
+        cand_metrics = None
+        if hasattr(r, "metrics") and isinstance(r.metrics, dict):
+            cand_metrics = r.metrics
+        elif isinstance(r, dict):
+            cand_metrics = r
+        elif hasattr(r, "results") and isinstance(r.results, dict):
+            cand_metrics = r.results
 
-            if isinstance(cand_metrics, dict):
-                # look for any key that describes mAP@0.5
-                for k, v in cand_metrics.items():
-                    lk = str(k).lower()
-                    if "map" in lk and ("0.5" in lk or "50" in lk):
-                        try:
-                            return float(v)
-                        except Exception as e:
-                            log.debug("ignored yolo.train error: %s", e)
-                # nested keys like 'box' -> 'map50'
-                for v in cand_metrics.values():
-                    if isinstance(v, dict):
-                        for k2, v2 in v.items():
-                            lk2 = str(k2).lower()
-                            if "map" in lk2 and ("0.5" in lk2 or "50" in lk2):
-                                try:
-                                    return float(v2)
-                                except Exception as e:
-                                    log.debug("ignored yolo.train error: %s", e)
-            # common attribute names
-            for attr in ("map50", "mAP_0.5", "mAP50", "map_0.5"):
-                if hasattr(r, attr):
+        if isinstance(cand_metrics, dict):
+            for k, v in cand_metrics.items():
+                lk = str(k).lower()
+                if "map" in lk and ("0.5" in lk or "50" in lk):
                     try:
-                        return float(getattr(r, attr))
-                    except Exception as e:
-                        log.debug("ignored yolo.train error: %s", e)
-        except Exception as e:
-            log.debug("ignored yolo.train error: %s", e)
+                        return float(v)
+                    except (TypeError, ValueError):
+                        continue
+            for v in cand_metrics.values():
+                if isinstance(v, dict):
+                    for k2, v2 in v.items():
+                        lk2 = str(k2).lower()
+                        if "map" in lk2 and ("0.5" in lk2 or "50" in lk2):
+                            try:
+                                return float(v2)
+                            except (TypeError, ValueError):
+                                continue
+        for attr in ("map50", "mAP_0.5", "mAP50", "map_0.5"):
+            if hasattr(r, attr):
+                try:
+                    return float(getattr(r, attr))
+                except (TypeError, ValueError):
+                    continue
         return None
 
     def _get_loss_history(r, save_dir: Path):
         # try common locations for loss history in the results object
         losses = []
-        try:
-            if hasattr(r, "history") and r.history:
-                # history may be a list of dicts or dict of lists
-                h = r.history
-                if isinstance(h, dict):
-                    # try to find the first list-like value of numeric items
-                    for v in h.values():
-                        if isinstance(v, (list, tuple)) and v:
-                            try:
-                                losses = [float(x) for x in v if isinstance(x, (int, float)) or (isinstance(x, str) and x.replace('.','',1).isdigit())]
-                                if losses:
-                                    break
-                            except Exception as e:
-                                log.debug("skipping due to: %s", e)
-                elif isinstance(h, (list, tuple)):
-                    for e in h:
-                        if isinstance(e, dict):
-                            for k, v in e.items():
+        if hasattr(r, "history") and r.history:
+            h = r.history
+            if isinstance(h, dict):
+                for v in h.values():
+                    if isinstance(v, (list, tuple)) and v:
+                        losses = [float(x) for x in v if isinstance(x, (int, float)) or (isinstance(x, str) and x.replace('.','',1).isdigit())]
+                        if losses:
+                            pass
+            elif isinstance(h, (list, tuple)):
+                for e in h:
+                    if isinstance(e, dict):
+                        for k, v in e.items():
+                            if "loss" in str(k).lower():
+                                try:
+                                    losses.append(float(v))
+                                except (TypeError, ValueError):
+                                    continue
+        # fallback: try to read ultralytics CSV/JSON artifacts if present
+        for cand in [save_dir / "results.csv", save_dir / "metrics.csv", save_dir / "results.json", save_dir / "metrics.json"]:
+            if cand.exists():
+                if cand.suffix.lower() == ".json":
+                    j = json.loads(cand.read_text(encoding="utf-8"))
+                    if isinstance(j, dict):
+                        for v in j.values():
+                            if isinstance(v, list) and v and all(isinstance(x, (int, float)) for x in v[:5]):
+                                losses = [float(x) for x in v]
+                                break
+                    elif isinstance(j, list):
+                        for entry in j:
+                            if isinstance(entry, dict):
+                                for k, vv in entry.items():
+                                    if "loss" in str(k).lower():
+                                        try:
+                                            losses.append(float(vv))
+                                        except (TypeError, ValueError):
+                                            continue
+                else:
+                    with open(cand, newline='') as fh:
+                        rdr = csv.DictReader(fh)
+                        for row in rdr:
+                            for k, v in row.items():
                                 if "loss" in str(k).lower():
                                     try:
                                         losses.append(float(v))
-                                    except Exception as e:
-                                        log.debug("ignored yolo.train error: %s", e)
-        except Exception as e:
-            log.debug("ignored yolo.train error: %s", e)
-        # fallback: try to read ultralytics CSV/JSON artifacts if present
-        try:
-            for cand in [save_dir / "results.csv", save_dir / "metrics.csv", save_dir / "results.json", save_dir / "metrics.json"]:
-                if cand.exists():
-                    try:
-                        if cand.suffix.lower() == ".json":
-                            j = json.loads(cand.read_text(encoding="utf-8"))
-                            # j may be a dict with 'metrics' or a list of per-epoch dicts
-                            if isinstance(j, dict):
-                                # try to find loss series
-                                for v in j.values():
-                                    if isinstance(v, list) and v and all(isinstance(x, (int, float)) for x in v[:5]):
-                                        losses = [float(x) for x in v]
-                                        break
-                            elif isinstance(j, list):
-                                for entry in j:
-                                    if isinstance(entry, dict):
-                                        for k, vv in entry.items():
-                                            if "loss" in str(k).lower():
-                                                try:
-                                                    losses.append(float(vv))
-                                                except Exception as e:
-                                                    log.debug("ignored yolo.train error: %s", e)
-                        else:
-                            # csv
-                            import csv
-                            with open(cand, newline='') as fh:
-                                rdr = csv.DictReader(fh)
-                                for row in rdr:
-                                    for k, v in row.items():
-                                        if "loss" in str(k).lower():
-                                            try:
-                                                losses.append(float(v))
-                                            except Exception as e:
-                                                log.debug("ignored yolo.train error: %s", e)
-                    except Exception as e:
-                        log.debug("skipping due to: %s", e)
-                if losses:
-                    break
-        except Exception as e:
-            log.debug("ignored yolo.train error: %s", e)
+                                    except (TypeError, ValueError):
+                                        continue
+            if losses:
+                break
         return losses
 
     def _median_last_n(seq, n=20):
@@ -500,64 +442,53 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         log.exception("Failed to extract training statistics from ultralytics results")
 
     # If ultralytics wrote a results.csv we can get precise per-epoch mAP and epoch indices.
-    try:
-        import csv
-        csv_cand = save_dir / "results.csv"
-        if csv_cand.exists():
-            with open(csv_cand, newline='') as fh:
-                rdr = csv.DictReader(fh)
-                rows = list(rdr)
-                # find a column name that looks like mAP50 (case-insensitive)
-                map_col = None
-                for col in rdr.fieldnames or []:
-                    if col and 'map' in col.lower() and ('0.5' in col.lower() or '50' in col.lower()):
-                        map_col = col
-                        break
-                # also find epoch column
-                epoch_col = None
-                for col in rdr.fieldnames or []:
-                    if col and col.lower() in {'epoch', 'ep', 'e'}:
-                        epoch_col = col
-                        break
+    csv_cand = save_dir / "results.csv"
+    if csv_cand.exists():
+        with open(csv_cand, newline='') as fh:
+            rdr = csv.DictReader(fh)
+            rows = list(rdr)
+            map_col = None
+            for col in rdr.fieldnames or []:
+                if col and 'map' in col.lower() and ('0.5' in col.lower() or '50' in col.lower()):
+                    map_col = col
+                    break
+            epoch_col = None
+            for col in rdr.fieldnames or []:
+                if col and col.lower() in {'epoch', 'ep', 'e'}:
+                    epoch_col = col
+                    break
 
-                if rows:
-                    # final = last row
-                    last = rows[-1]
-                    if epoch_col and epoch_col in last:
-                        try:
-                            final_entry['iter'] = int(float(last[epoch_col]))
-                        except Exception:
-                            final_entry['iter'] = None
-                    # read final mAP50 if available
-                    if map_col and map_col in last:
-                        try:
-                            final_entry['val_bbox_AP50'] = float(last[map_col])
-                        except Exception:
-                            final_entry['val_bbox_AP50'] = final_entry.get('val_bbox_AP50')
+            if rows:
+                last = rows[-1]
+                if epoch_col and epoch_col in last:
+                    try:
+                        final_entry['iter'] = int(float(last[epoch_col]))
+                    except (TypeError, ValueError):
+                        final_entry['iter'] = None
+                if map_col and map_col in last:
+                    try:
+                        final_entry['val_bbox_AP50'] = float(last[map_col])
+                    except (TypeError, ValueError):
+                        final_entry['val_bbox_AP50'] = final_entry.get('val_bbox_AP50')
 
-                    # determine best epoch by max map_col
-                    if map_col:
-                        best_idx = None
-                        best_val = None
-                        for r in rows:
+                if map_col:
+                    best_idx = None
+                    best_val = None
+                    for r in rows:
+                        try:
+                            v = float(r.get(map_col, 0) or 0)
+                        except (TypeError, ValueError):
+                            v = 0.0
+                        if best_val is None or v > best_val:
+                            best_val = v
                             try:
-                                v = float(r.get(map_col, 0) or 0)
-                            except Exception:
-                                v = 0.0
-                            if best_val is None or v > best_val:
-                                best_val = v
-                                try:
-                                    best_idx = int(float(r.get(epoch_col))) if epoch_col and r.get(epoch_col) is not None else None
-                                except Exception:
-                                    best_idx = None
-                        if best_idx is not None:
-                            best_entry['iter'] = best_idx
-                        if best_val is not None:
-                            best_entry['val_bbox_AP50'] = float(best_val)
-    except Exception:
-        log.exception('Failed to parse results.csv for precise epoch/mAP values')
-    except Exception:
-        log.exception("Failed to extract training statistics from ultralytics results")
+                                best_idx = int(float(r.get(epoch_col))) if epoch_col and r.get(epoch_col) is not None else None
+                            except (TypeError, ValueError):
+                                best_idx = None
+                    if best_idx is not None:
+                        best_entry['iter'] = best_idx
+                    if best_val is not None:
+                        best_entry['val_bbox_AP50'] = float(best_val)
 
     return {
         "best_weights": str(run_dir / "model_best.pt") if (run_dir / "model_best.pt").exists() else (str(found_best) if found_best else ""),

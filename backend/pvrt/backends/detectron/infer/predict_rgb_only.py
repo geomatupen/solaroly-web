@@ -27,7 +27,7 @@ def _log() -> logging.Logger:
 def _pick_device() -> str:
     try:
         return "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception as e:
+    except Exception:
         return "cpu"
 
 def _load_meta(d: Path) -> dict:
@@ -35,7 +35,7 @@ def _load_meta(d: Path) -> dict:
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             return {}
     return {}
 
@@ -71,7 +71,7 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
             continue
         try:
             x1, y1, x2, y2 = map(int, bx)
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             logging.getLogger("pvrt").debug("skipping malformed bbox %r: %s", bx, e)
             continue
 
@@ -178,17 +178,20 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     # thr = meta.get("score_thresh_test", 0.6)
     try:
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
-    except Exception:
+    except (TypeError, ValueError):
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
 
     predictor = DefaultPredictor(cfg)
 
-    # header log
-    try:
-        w_sz = wpth.stat().st_size if wpth.exists() else -1
-        w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8] if wpth.exists() else "missing"
-    except Exception:
-        w_sz, w_md5 = -1, "n/a"
+    # header log: compute file size and a short MD5 when possible
+    if wpth.exists():
+        w_sz = wpth.stat().st_size
+        try:
+            w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8]
+        except (OSError, IOError):
+            w_md5 = "n/a"
+    else:
+        w_sz, w_md5 = -1, "missing"
 
     exts = {".jpg",".jpeg",".png",".tif",".tiff",".bmp"}
     imgs = [p for p in sorted(images_dir.iterdir()) if p.suffix.lower() in exts]

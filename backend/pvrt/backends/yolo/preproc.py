@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable
 import numpy as np
 from PIL import Image
+import json
 
 
 def merge_rgb_with_thermal(
@@ -48,17 +49,15 @@ def merge_rgb_with_thermal(
         # pairs.json
         pj = therm_dir / "pairs.json"
         if pj.exists():
-            import json as _json
             try:
-                pairs = _json.loads(pj.read_text(encoding="utf-8"))
+                pairs = json.loads(pj.read_text(encoding="utf-8"))
                 rel = pairs.get(p.name) if isinstance(pairs, dict) else None
                 if rel:
                     cand = images_dir / rel
                     if cand.exists():
                         return cand
-            except (_json.JSONDecodeError, OSError) as e:
-                # malformed pairs.json or IO issue -> ignore mapping and fall back
-                import logging
+            except (json.JSONDecodeError, OSError) as e:
+                # malformed pairs.json or IO issue -> warn and fall back
                 logging.getLogger("pvrt").warning("malformed thermal/pairs.json ignored: %s", e)
 
         # common names in thermal dir
@@ -113,36 +112,19 @@ def merge_rgb_with_thermal(
                     # the filesystem doesn't support symlinks, fall back to
                     # writing a converted PNG.
                     target = out_path.with_suffix(src.suffix)
-                    try:
-                        if symlink:
-                            # remove existing target if any
-                            if target.exists() or target.is_symlink():
-                                try:
-                                    target.unlink()
-                                except Exception:
-                                    # ignore unlink failures
-                                    pass
-                            target.symlink_to(src.resolve())
-                        else:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                    except Exception:
-                        # fallback: write converted PNG
-                        try:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                        except Exception:
-                            continue
+                    if symlink:
+                        # remove existing target if any
+                        if target.exists() or target.is_symlink():
+                            target.unlink()
+                        target.symlink_to(src.resolve())
+                    else:
+                        rgb = im.convert("RGB")
+                        target = out_path.with_suffix(".png")
+                        rgb.save(target)
                     # copy label if exists
                     lbl = src.with_suffix(".txt")
                     if lbl.exists():
-                        try:
-                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception:
-                            # ignore label copy failures
-                            pass
+                        (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
                     written += 1
 
                 elif requested_channels == 4 and use_thermal:
@@ -154,62 +136,39 @@ def merge_rgb_with_thermal(
                     # RGBA file; symlinking is not possible because the file
                     # doesn't exist beforehand. Always write the RGBA PNG for
                     # requested_channels==4.
-                    try:
-                        rgb = im.convert("RGB")
-                        with Image.open(t) as therm:
-                            therm_l = therm.convert("L")
-                            a = np.array(therm_l).astype(np.float32)
-                            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
-                            if hi <= lo:
-                                hi = lo + 1.0
-                            a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
-                            alpha = Image.fromarray(a, mode="L")
-                            rgba = Image.merge("RGBA", (*rgb.split(), alpha))
-                            target = out_path.with_suffix(".png")
-                            # save RGBA
-                            rgba.save(target)
-                            lbl = src.with_suffix(".txt")
-                            if lbl.exists():
-                                try:
-                                    (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                                except Exception:
-                                    # ignore label copy failures
-                                    pass
-                            written += 1
-                    except Exception:
-                        continue
+                    rgb = im.convert("RGB")
+                    with Image.open(t) as therm:
+                        therm_l = therm.convert("L")
+                        a = np.array(therm_l).astype(np.float32)
+                        lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+                        if hi <= lo:
+                            hi = lo + 1.0
+                        a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+                        alpha = Image.fromarray(a, mode="L")
+                        rgba = Image.merge("RGBA", (*rgb.split(), alpha))
+                        target = out_path.with_suffix(".png")
+                        # save RGBA
+                        rgba.save(target)
+                        lbl = src.with_suffix(".txt")
+                        if lbl.exists():
+                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                        written += 1
                 else:
                     # any other combination: treat as 3-channel RGB behaviour
                     # (covers requested==1 coerced to 3 or other unsupported values)
                     # try to symlink/convert as RGB as above
                     target = out_path.with_suffix(src.suffix)
-                    try:
-                        if symlink:
-                            if target.exists() or target.is_symlink():
-                                try:
-                                    target.unlink()
-                                except Exception:
-                                    # ignore unlink failures
-                                    pass
-                            target.symlink_to(src.resolve())
-                        else:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                    except Exception:
-                        try:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                        except Exception:
-                            continue
+                    if symlink:
+                        if target.exists() or target.is_symlink():
+                            target.unlink()
+                        target.symlink_to(src.resolve())
+                    else:
+                        rgb = im.convert("RGB")
+                        target = out_path.with_suffix(".png")
+                        rgb.save(target)
                     lbl = src.with_suffix(".txt")
                     if lbl.exists():
-                        try:
-                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception:
-                            # ignore label copy failures
-                            pass
+                        (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
                     written += 1
 
         # NOTE: let exceptions propagate for problematic files so callers

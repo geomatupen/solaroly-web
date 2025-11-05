@@ -45,6 +45,7 @@ from detectron2.utils.logger import setup_logger
 
 from shutil import copy2
 import math
+import json
 
 # use your previous helpers.py to read class count from COCO (source of truth)
 from ...core.helpers import get_num_classes
@@ -124,7 +125,7 @@ class DetectronBackend(Backend):
         # support 1-channel models; coerce any '1' to 3.
         try:
             requested_channels = int(getattr(cfg_in, "channel_count", 3))
-        except Exception:
+        except (TypeError, ValueError):
             requested_channels = 3
         if requested_channels == 1:
             log.warning("UI:WARN:train: requested_channels=1 is deprecated; coercing to 3")
@@ -169,15 +170,13 @@ class DetectronBackend(Backend):
 
         # fallback to COCO if still empty (prevents blank in thermal)
         if not class_names:
-            import json
             ann_json = _find_coco_json(train_dir)
             data = json.loads(Path(ann_json).read_text(encoding="utf-8"))
             cats = data.get("categories", []) if isinstance(data.get("categories", []), list) else []
-            # preserve label order by id when present
             try:
                 cats = sorted(cats, key=lambda c: int(c.get("id", 0)))
             except (TypeError, ValueError):
-                # if ids are non-numeric or items malformed, keep original order
+                # keep original order if ids are non-numeric
                 log.debug("non-numeric category ids encountered while sorting categories")
             class_names = [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
 
@@ -258,8 +257,7 @@ class DetectronBackend(Backend):
                 self.last_raw = float(getattr(s, "value", s))
                 try:
                     self.last_med20 = float(hb.median(20))
-                except Exception as e:
-                    log.debug("ignored detectron.backend error computing median(20): %s", e)
+                except (TypeError, ValueError):
                     self.last_med20 = self.last_raw
 
 
@@ -369,24 +367,21 @@ class DetectronBackend(Backend):
         
 
         # Ensure final checkpoint exists and model_final.pth is made a copy of the best (if any)
-        try:
-            best = Path(out_dir) / "model_best.pth"
-            if best.exists():
-                copy2(best, Path(out_dir) / "model_final.pth")
-                log.info("PHASE:save model_final <- model_best")
-            else:
-                trainer.checkpointer.save("model_final")
-                log.info("PHASE:save model_final (no best found)")
-        except Exception as e:
-            log.warning(f"PHASE:save FAILED (non-fatal): {e}")
-        finally:
-            final_ap50_pct = _latest["ap50_pct"]
-            if final_ap50_pct is None:
-                try:
-                    s = trainer.storage.history("val/AP50_pct").latest()
-                    final_ap50_pct = float(getattr(s, "value", s))
-                except Exception:
-                    final_ap50_pct = None
+        best = Path(out_dir) / "model_best.pth"
+        if best.exists():
+            copy2(best, Path(out_dir) / "model_final.pth")
+            log.info("PHASE:save model_final <- model_best")
+        else:
+            trainer.checkpointer.save("model_final")
+            log.info("PHASE:save model_final (no best found)")
+
+        final_ap50_pct = _latest["ap50_pct"]
+        if final_ap50_pct is None:
+            try:
+                s = trainer.storage.history("val/AP50_pct").latest()
+                final_ap50_pct = float(getattr(s, "value", s))
+            except (TypeError, ValueError, AttributeError):
+                final_ap50_pct = None
 
             _normalize_and_save_meta(out_dir, {
                 "final_model": {
@@ -402,7 +397,6 @@ class DetectronBackend(Backend):
         MODEL_NAME = Path(MODEL_YAML).stem
         # Append channel suffix for rgbt runs so frontend can distinguish 3ch vs 4ch
         ch = int(getattr(cfg_in, "channel_count", 3))
-        # coerce any 1 to 3 for naming consistency
         if ch == 1:
             ch = 3
         if thermal_ok:
@@ -452,7 +446,7 @@ class DetectronBackend(Backend):
             # Decide effective channels for inference
             try:
                 requested = int(getattr(cfg_in, "channel_count", 3))
-            except Exception:
+            except (TypeError, ValueError):
                 requested = 3
             model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
             # if model_mode rgbt and thermal files exist, inference will be 4 unless 1 requested
@@ -460,7 +454,7 @@ class DetectronBackend(Backend):
             # model's recorded channel_count (if any)
             try:
                 model_chan = int(meta.get("channel_count", 0) or 0)
-            except Exception:
+            except (TypeError, ValueError):
                 model_chan = 0
             if use_thermal:
                 # mirror training semantics: only 3 or 4 channels supported. Requested 1 is treated as 3.

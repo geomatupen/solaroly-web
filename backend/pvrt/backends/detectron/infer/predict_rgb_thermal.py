@@ -36,8 +36,8 @@ def _log() -> logging.Logger:
 def _pick_device() -> str:
     try:
         return "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception as e:
-        logging.getLogger(_LOGGER_NAME).debug("pick_device probe failed: %s", e)
+    except Exception:
+        logging.getLogger(_LOGGER_NAME).debug("pick_device probe failed")
         return "cpu"
 
 def _load_meta(d: Path) -> dict:
@@ -298,7 +298,7 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
 
     try:
         nc = int(getattr(cfg.MODEL.ROI_HEADS, "NUM_CLASSES", 0) or 0)
-    except Exception:
+    except (TypeError, ValueError):
         nc = 0
     m_nc = int(meta.get("num_classes", 0) or 0)
     if nc <= 0 and m_nc > 0:
@@ -324,7 +324,7 @@ def _build_model_4ch(weights_dir: Path, score_thresh: float):
         ps = torch.as_tensor(cfg.MODEL.PIXEL_STD,  dtype=torch.float32, device=device).view(-1, 1, 1)
         model.pixel_mean = pm
         model.pixel_std  = ps
-    except Exception as e:
+    except (TypeError, ValueError, RuntimeError) as e:
         logging.getLogger(_LOGGER_NAME).warning("failed to set model pixel stats: %s", e)
 
     patch_first_conv_to_4ch(model)
@@ -379,12 +379,15 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     # are no longer supported; all thermal runs use RGB+thermal.
     model, cfg, names, wpth = _build_model_4ch(wdir, score_thresh)
 
-    # one-time header
-    try:
-        w_sz  = wpth.stat().st_size if wpth.exists() else -1
-        w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8] if wpth.exists() else "missing"
-    except Exception:
-        w_sz, w_md5 = -1, "n/a"
+    # one-time header: attempt to compute size and short md5; fallback on IO errors
+    if wpth.exists():
+        w_sz = wpth.stat().st_size
+        try:
+            w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8]
+        except (OSError, IOError):
+            w_md5 = "n/a"
+    else:
+        w_sz, w_md5 = -1, "missing"
 
     exts = {".jpg",".jpeg",".png",".tif",".tiff",".bmp"}
     imgs = [p for p in sorted(images.iterdir()) if p.suffix.lower() in exts]
@@ -467,7 +470,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
                     try:
                         import tifffile
                         timg = tifffile.imread(str(tpath))
-                    except Exception:
+                    except (ImportError, OSError):
                         timg = cv2.imread(str(tpath), cv2.IMREAD_UNCHANGED)
                     if timg is not None:
                         # If float or higher-bit-depth, normalize to 0..255
@@ -480,7 +483,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
                                 else:
                                     tnorm = np.zeros_like(timg, dtype=np.float32)
                                 timg8 = (np.clip(tnorm * 255.0, 0, 255)).astype(np.uint8)
-                            except Exception:
+                            except (TypeError, ValueError):
                                 timg8 = np.clip(timg, 0, 255).astype(np.uint8)
                             timg = timg8
                         if timg.ndim == 3:
@@ -490,6 +493,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
                     gray = (np.clip(th * 255.0, 0, 255).astype(np.uint8))
                 bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
             except Exception:
+                # fallback when reading the preferred thermal file fails
                 gray = (np.clip(th * 255.0, 0, 255).astype(np.uint8))
                 bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
             # draw simple box overlays on the actual thermal grayscale image
