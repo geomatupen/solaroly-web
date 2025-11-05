@@ -36,7 +36,8 @@ def _log() -> logging.Logger:
 def _pick_device() -> str:
     try:
         return "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
+    except Exception as e:
+        logging.getLogger(_LOGGER_NAME).debug("pick_device probe failed: %s", e)
         return "cpu"
 
 def _load_meta(d: Path) -> dict:
@@ -82,16 +83,12 @@ def _find_thermal(rgb: Path) -> Path | None:
     pjson = tdir / "pairs.json"
     if pjson.exists():
         import json as _json
-        try:
-            pairs = _json.loads(pjson.read_text(encoding="utf-8"))
-            target = pairs.get(rgb.name)
-            if target:
-                candidate = (rgb.parent / target).resolve()
-                if candidate.exists():
-                    return candidate
-        except (json.JSONDecodeError, OSError):
-            # ignore malformed pairs.json and fall through
-            pass
+        pairs = _json.loads(pjson.read_text(encoding="utf-8"))
+        target = pairs.get(rgb.name)
+        if target:
+            candidate = (rgb.parent / target).resolve()
+            if candidate.exists():
+                return candidate
 
     # 2) thermal/ subfolder: check both {stem}_thermal.* (what decoder writes) and {stem}.*
     for e in exts:
@@ -126,47 +123,43 @@ def _read_rgb_and_thermal_from_path(p: Path):
     """
     # 1) In-band thermal (GeoTIFF)
     if RIO_OK_TH and p.suffix.lower() in (".tif", ".tiff"):
-        try:
-            with rasterio.open(p) as ds:
-                nb = ds.count
+        with rasterio.open(p) as ds:
+            nb = ds.count
 
-                # Build RGB (favor bands 1,2,3 if available; fall back to single-band gray → 3ch)
-                rgb_bands = [b for b in (1, 2, 3) if b <= nb]
-                if len(rgb_bands) >= 1:
-                    arr = ds.read(rgb_bands)                 # C,H,W
-                    arr = arr.astype("float32")
-                    arr = arr.transpose(1, 2, 0)             # H,W,C
+            # Build RGB (favor bands 1,2,3 if available; fall back to single-band gray → 3ch)
+            rgb_bands = [b for b in (1, 2, 3) if b <= nb]
+            if len(rgb_bands) >= 1:
+                arr = ds.read(rgb_bands)                 # C,H,W
+                arr = arr.astype("float32")
+                arr = arr.transpose(1, 2, 0)             # H,W,C
 
-                    # Robust 2–98% stretch per channel → uint8
-                    out = np.empty_like(arr, dtype=np.uint8)
-                    if out.ndim == 2:
-                        arr = arr[..., None]; out = np.empty((*arr.shape[:2], 1), dtype=np.uint8)
-                    for c in range(arr.shape[2]):
-                        band = arr[..., c]
-                        vals = band.reshape(-1)
-                        if vals.size == 0:
-                            out[..., c] = 0; continue
-                        lo = np.percentile(vals, 2.0); hi = np.percentile(vals, 98.0)
-                        if hi <= lo: hi = lo + 1.0
-                        x = (band - lo) * (255.0/(hi-lo))
-                        out[..., c] = np.clip(x, 0, 255).astype(np.uint8)
-                    if out.shape[2] == 1:
-                        out = np.repeat(out, 3, axis=2)
-                    # Detectron code expects BGR
-                    bgr = out[..., ::-1].copy()
-                else:
-                    bgr = None
+                # Robust 2–98% stretch per channel → uint8
+                out = np.empty_like(arr, dtype=np.uint8)
+                if out.ndim == 2:
+                    arr = arr[..., None]; out = np.empty((*arr.shape[:2], 1), dtype=np.uint8)
+                for c in range(arr.shape[2]):
+                    band = arr[..., c]
+                    vals = band.reshape(-1)
+                    if vals.size == 0:
+                        out[..., c] = 0; continue
+                    lo = np.percentile(vals, 2.0); hi = np.percentile(vals, 98.0)
+                    if hi <= lo: hi = lo + 1.0
+                    x = (band - lo) * (255.0/(hi-lo))
+                    out[..., c] = np.clip(x, 0, 255).astype(np.uint8)
+                if out.shape[2] == 1:
+                    out = np.repeat(out, 3, axis=2)
+                # Detectron code expects BGR
+                bgr = out[..., ::-1].copy()
+            else:
+                bgr = None
 
-                # Band-4 thermal if present
-                therm = None
-                if nb >= 4:
-                    therm = ds.read(4)   # raw numeric array (any dtype); normalized later
+            # Band-4 thermal if present
+            therm = None
+            if nb >= 4:
+                therm = ds.read(4)   # raw numeric array (any dtype); normalized later
 
-                if bgr is not None:
-                    return bgr, therm
-        except Exception:
-            # fall through to sidecar
-            pass
+            if bgr is not None:
+                return bgr, therm
 
     # 2) Sidecar thermal (your current behavior)
     bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)

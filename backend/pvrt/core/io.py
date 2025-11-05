@@ -99,24 +99,19 @@ def has_thermal_for_images(images_dir: Path) -> bool:
     # 1) Explicit pairing file
     pairs = d / "thermal" / "pairs.json"
     if pairs.exists():
-        try:
-            j = read_json_safe(pairs)
-            # Only treat pairs.json as positive signal if at least one mapped
-            # thermal target actually exists on disk. This avoids false-positives
-            # when pairs.json references legacy TIFFs that were removed.
-            if isinstance(j, dict):
-                for v in j.values():
-                    try:
-                        cand = d / Path(v)
-                        if cand.exists():
-                            return True
-                    except Exception as e:
-                        logging.getLogger("pvrt").debug("skipping due to core.io error: %s", e)
-                        continue
-            # fall through to directory scan if no mapped targets exist
-        except Exception:
-            # ignore parse errors, fall through to scan
-            pass
+        j = read_json_safe(pairs)
+        # Only treat pairs.json as positive signal if at least one mapped
+        # thermal target actually exists on disk. This avoids false-positives
+        # when pairs.json references legacy TIFFs that were removed.
+        if isinstance(j, dict):
+            for v in j.values():
+                try:
+                    cand = d / Path(v)
+                    if cand.exists():
+                        return True
+                except Exception as e:
+                    logging.getLogger("pvrt").debug("skipping due to core.io error: %s", e)
+                    continue
 
     # 2) Subdir scan
     for name in THERMAL_DIR_CANDIDATES:
@@ -222,12 +217,11 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
     # use the existing folders in-place. This keeps your workspace small and
     # avoids duplicating large images. Backends are expected to handle paired
     # thermal/ files when present.
-    try:
-        # If a caller explicitly requests a 1-channel (thermal-only) run and the
-        # source dataset contains thermal files, prepare a per-run folder where
-        # thermal files are resampled/duplicated to exact image sizes so downstream
-        # training/inference can rely on pixel alignment. This avoids mutating the
-        # original dataset and keeps behavior explicit.
+    # If a caller explicitly requests a 1-channel (thermal-only) run and the
+    # source dataset contains thermal files, prepare a per-run folder where
+    # thermal files are resampled/duplicated to exact image sizes so downstream
+    # training/inference can rely on pixel alignment. This avoids mutating the
+    # original dataset and keeps behavior explicit.
         if channel_count == 1 and has_thermal_for_images(src_train):
             # Build prepared output dirs
             from PIL import Image
@@ -451,9 +445,8 @@ def prepare_dataset_for_run(src_train: Path, src_valid: Path, dest_run: Path, se
         # For other cases (e.g., channel_count==4) keep the previous fast-return behavior
         if channel_count in (4,) and has_thermal_for_images(src_train):
             return {"train_dir": str(src_train), "valid_dir": str(src_valid), "selected_bands": sel, "channel_count": channel_count}
-    except Exception:
-        # if any check fails, fall through to perform prepare work
-        pass
+    # NOTE: do not silently swallow unexpected exceptions here; allow errors to
+    # propagate so callers can detect and fix issues during dataset preparation.
 
     def _copy_and_map(src_dir: Path, dst_dir: Path):
         # copy images by mapping selected bands -> output channels
