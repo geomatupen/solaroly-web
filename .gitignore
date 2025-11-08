@@ -42,3 +42,16 @@ build/
 
 # macOS
 .DS_Store
+
+# Model weights and large artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Ignore compiled Python artifacts (ensure any remaining tracked are cleaned from index)
+*.pyc
+__pycache__/
+
+# Media session artifacts (already covered by media/, keep explicit)
+media/sessions/
