@@ -25,14 +25,18 @@ def _log() -> logging.Logger:
     return lg
 
 def _pick_device() -> str:
-    try: return "cuda" if torch.cuda.is_available() else "cpu"
-    except: return "cpu"
+    try:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
 
 def _load_meta(d: Path) -> dict:
     p = d / "model_meta.json"
     if p.exists():
-        try: return json.loads(p.read_text(encoding="utf-8"))
-        except: pass
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
     return {}
 
 def _resolve_weights(d: Path) -> Path:
@@ -67,7 +71,8 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
             continue
         try:
             x1, y1, x2, y2 = map(int, bx)
-        except Exception:
+        except (TypeError, ValueError) as e:
+            logging.getLogger("pvrt").debug("skipping malformed bbox %r: %s", bx, e)
             continue
 
         # clamp to image bounds
@@ -171,17 +176,22 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
         names = [f"cls_{i}" for i in range(getattr(cfg.MODEL.ROI_HEADS,"NUM_CLASSES",0) or 0)]
 
     # thr = meta.get("score_thresh_test", 0.6)
-    try:    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
-    except: cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
+    try:
+        cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = float(score_thresh)
+    except (TypeError, ValueError):
+        cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
 
     predictor = DefaultPredictor(cfg)
 
-    # header log
-    try:
-        w_sz  = wpth.stat().st_size if wpth.exists() else -1
-        w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8] if wpth.exists() else "missing"
-    except Exception:
-        w_sz, w_md5 = -1, "n/a"
+    # header log: compute file size and a short MD5 when possible
+    if wpth.exists():
+        w_sz = wpth.stat().st_size
+        try:
+            w_md5 = hashlib.md5(wpth.read_bytes()).hexdigest()[:8]
+        except (OSError, IOError):
+            w_md5 = "n/a"
+    else:
+        w_sz, w_md5 = -1, "missing"
 
     exts = {".jpg",".jpeg",".png",".tif",".tiff",".bmp"}
     imgs = [p for p in sorted(images_dir.iterdir()) if p.suffix.lower() in exts]
@@ -255,11 +265,11 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     }
     # Add mask AP if available
     if hasattr(inst, "pred_masks") and hasattr(inst, "scores") and hasattr(inst, "pred_classes"):
-        # Placeholder: actual mask AP computation should be added here if available
-        metrics["mask_ap"] = None  # TODO: replace with real mask AP if computed
+        # mask AP not computed in this runner
+        metrics["mask_ap"] = None
     write_metrics_json(out_dir, metrics)
 
     # ONE summary line + completion line
     log.info(f"UI:INFO:test: predictions_total={total}")
-    # log.info("UI:OK:test: Test complete")
+    log.info("UI:OK:test: Test complete")
     return out_dir

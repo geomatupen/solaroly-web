@@ -11,7 +11,7 @@ from detectron2.data import build_detection_train_loader, build_detection_test_l
 from detectron2.evaluation import COCOEvaluator
 from .aug_utils import build_geometric_augs, build_rgb_photometric_augs
 
-# Reuse your tolerant mapper that guarantees aligned RGB+Thermal - 4 channels
+# Reuse the tolerant mapper that guarantees aligned RGB+Thermal (4 channels)
 from .mapper_rgb_thermal_tolerant import RGBThermalDatasetMapper
 import logging
 log = logging.getLogger("pvrt")
@@ -91,12 +91,12 @@ class RTolerantTrainer(DefaultTrainer):
     """
     Trainer for RGB+Thermal (4-channel) pipelines.
 
-    What it does:
-    - Uses your RGBThermalDatasetMapper to produce 4-channel training tensors.
-    - Forces axis-aligned anchors to avoid rotated-box mismatches.
-    - Patches the model's first conv to accept 4 channels.
-    - Ensures pixel_mean/STD buffers are 4-channel.
-    - Leaves augments, solver, and evaluation to cfg (standard Detectron2).
+    Responsibilities:
+    - Use the tolerant RGBThermalDatasetMapper to produce 4-channel training tensors.
+    - Force axis-aligned anchors to avoid rotated-box mismatches.
+    - Patch the model's first conv to accept 4 channels.
+    - Ensure pixel_mean/STD buffers are 4-channel.
+    - Leave augmentations, solver, and evaluation to the provided cfg (Detectron2 defaults).
     """
 
     @classmethod

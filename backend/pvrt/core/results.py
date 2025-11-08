@@ -18,18 +18,22 @@ def ensure_results_layout(root: Path | str) -> Dict[str, Path]:
     """
     Create a consistent results folder layout and return handy paths.
 
-    Returns a dict with keys:
-      - "root":    <root>
-      - "preds":   <root>/preds
-      - "overlays": <root>/overlays         # NOTE: singular 'overlay' (your existing folder)
+        Returns a dict with keys:
+            - "root":    <root>
+            - "preds":   <root>/preds
+            - "overlays": <root>/overlays
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     preds = root / "preds"
-    ovl   = root / "overlays"   # <-- singular, matches your project
+    ovl   = root / "overlays"
     preds.mkdir(exist_ok=True)
     ovl.mkdir(exist_ok=True)
-    return {"root": root, "preds": preds, "overlays": ovl}
+    # Add a dedicated folder for exact normalized thermal previews so
+    # inference runs can save the same uint8 images that the model sees.
+    thr = root / "thermal"
+    thr.mkdir(exist_ok=True)
+    return {"root": root, "preds": preds, "overlays": ovl, "thermal": thr}
 
 # -------------------------
 # JSON writers
@@ -78,8 +82,8 @@ def write_metrics_json(out_root: Path | str, metrics: Dict[str, Any]) -> Path:
 
 def save_overlay_png(overlays_dir: Path | str, stem: str, bgr_image) -> Path:
     """
-    Save ONE PNG overlay image named <stem>.png into the 'overlay' folder.
-    Ensures uint8 and overwrites existing file.
+    Save a PNG overlay image named <stem>.png into the 'overlays' folder.
+    Ensures the image is uint8 and overwrites any existing file.
     """
     overlays_dir = Path(overlays_dir)
     overlays_dir.mkdir(parents=True, exist_ok=True)
@@ -122,11 +126,8 @@ def save_overlay_jpg(
     # Try to copy EXIF (incl. GPS) from the original image
     exif_bytes = None
     if exif_source is not None:
-        try:
-            with Image.open(str(exif_source)) as src:
-                exif_bytes = src.info.get("exif")
-        except Exception:
-            exif_bytes = None  # fall back silently
+        with Image.open(str(exif_source)) as src:
+            exif_bytes = src.info.get("exif")
 
     save_kwargs = {"quality": quality, "subsampling": 0}
     if exif_bytes:

@@ -61,7 +61,8 @@ class LogBroker:
             for q in list(self._subs):
                 try:
                     self._loop.call_soon_threadsafe(q.put_nowait, line)
-                except Exception:
+                except (RuntimeError, asyncio.QueueFull):
+                    # If the loop is shutting down or the queue is full, drop this subscriber.
                     self._subs.discard(q)
 
     # --- subscribers --------------------------------------------------------
@@ -69,7 +70,7 @@ class LogBroker:
     async def subscribe(self) -> asyncio.Queue[str]:
         """
         Return a Queue of log lines, seeded with recent history.
-        Your /api/logs route can await this and pass it to sse_response().
+        Callers can await this and pass the returned queue to sse_response().
         """
         q: asyncio.Queue[str] = asyncio.Queue()
         # prime with history
@@ -115,6 +116,7 @@ class SSELogHandler(logging.Handler):
         try:
             msg = self.format(record)
         except Exception:
+            # Formatting can fail for many reasons; fall back to raw message.
             msg = record.getMessage()
         self.broker.publish(msg)
 
@@ -185,7 +187,10 @@ def sse_response(
 
 def set_event_loop(_loop: asyncio.AbstractEventLoop) -> None:
     """
-    Deprecated no-op kept for backwards compatibility.
+    Deprecated shim kept for backwards compatibility.
     Call broker.set_loop(loop) in app startup instead.
     """
+    # Keep the function for backwards compatibility but emit a visible
+    # deprecation warning so callers migrate to broker.set_loop(loop).
+    logging.getLogger("pvrt").warning("set_event_loop is deprecated; call broker.set_loop(loop) instead.")
     return

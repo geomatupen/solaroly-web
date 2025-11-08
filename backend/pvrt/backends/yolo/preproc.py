@@ -1,17 +1,20 @@
 """Simple preprocessor to merge RGB images with thermal band into 4-channel PNGs.
 
 This writes RGBA PNGs where the alpha channel contains the (rescaled) thermal band.
-This is a convenience helper; most training frameworks (including ultralytics) do
-not automatically treat alpha as a model input channel — you'll need a custom
-dataloader to actually load 4-channel inputs. The function is provided to make
-it easy to generate merged images if you decide to implement a custom loader.
+This is a convenience helper; most training frameworks (including ultralytics)
+do not automatically treat alpha as a model input channel — a custom
+dataloader is required to load 4-channel inputs. The function makes it easy
+to generate merged images if a custom loader is implemented.
 """
 
 from __future__ import annotations
+import logging
 from pathlib import Path
 from typing import Iterable
 import numpy as np
 from PIL import Image
+import json
+from ...core.thermal import normalize_thermal
 
 
 def merge_rgb_with_thermal(
@@ -20,6 +23,7 @@ def merge_rgb_with_thermal(
     requested_channels: int = 3,
     use_thermal: bool = False,
     symlink: bool = False,
+    thermal_as_rgb: bool = False,
 ) -> int:
     """Prepare a YOLO-friendly dataset targeted at `requested_channels`.
 
@@ -48,16 +52,15 @@ def merge_rgb_with_thermal(
         pj = therm_dir / "pairs.json"
         if pj.exists():
             try:
-                import json as _json
-
-                pairs = _json.loads(pj.read_text(encoding="utf-8"))
+                pairs = json.loads(pj.read_text(encoding="utf-8"))
                 rel = pairs.get(p.name) if isinstance(pairs, dict) else None
                 if rel:
                     cand = images_dir / rel
                     if cand.exists():
                         return cand
-            except Exception:
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                # malformed pairs.json or IO issue -> warn and fall back
+                logging.getLogger("pvrt").warning("malformed thermal/pairs.json ignored: %s", e)
 
         # common names in thermal dir
         # prefer image previews (PNG/JPG). We no longer look for single-band
@@ -96,51 +99,87 @@ def merge_rgb_with_thermal(
         out_path = out_dir / rel
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            with Image.open(src) as im:
+        with Image.open(src) as im:
                 mode = im.mode
                 # determine if this is a single-channel thermal image
                 is_single = mode in ("L", "I;16", "I")
 
                 if requested_channels == 3:
-                    # include only RGB-capable images
-                    if is_single:
-                        # skip single-channel thermal-only files
-                        continue
-                    # prefer to create a symlink to the original RGB file to
-                    # avoid duplicating image bytes. If symlink is False or
-                    # the filesystem doesn't support symlinks, fall back to
-                    # writing a converted PNG.
-                    target = out_path.with_suffix(src.suffix)
-                    try:
+                    # Two modes for 3-channel output:
+                    # - thermal_as_rgb == False: include only RGB-capable images
+                    # - thermal_as_rgb == True: produce 3-channel grayscale
+                    #   images from thermal previews when available; skip
+                    #   images without thermal previews so the trainer sees a
+                    #   consistent thermal-only dataset.
+                    if not thermal_as_rgb:
+                        # include only RGB-capable images
+                        if is_single:
+                            # skip single-channel thermal-only files
+                            continue
+                        # prefer to create a symlink to the original RGB file to
+                        # avoid duplicating image bytes. If symlink is False or
+                        # the filesystem doesn't support symlinks, fall back to
+                        # writing a converted PNG.
+                        target = out_path.with_suffix(src.suffix)
                         if symlink:
                             # remove existing target if any
                             if target.exists() or target.is_symlink():
-                                try:
-                                    target.unlink()
-                                except Exception:
-                                    pass
+                                target.unlink()
                             target.symlink_to(src.resolve())
                         else:
                             rgb = im.convert("RGB")
                             target = out_path.with_suffix(".png")
                             rgb.save(target)
-                    except Exception:
-                        # fallback: write converted PNG
-                        try:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                        except Exception:
-                            continue
-                    # copy label if exists
-                    lbl = src.with_suffix(".txt")
-                    if lbl.exists():
-                        try:
+                        # copy label if exists
+                        lbl = src.with_suffix(".txt")
+                        if lbl.exists():
                             (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                        written += 1
+                    else:
+                        # thermal_as_rgb: produce 3-channel grayscale images
+                        # for images that have thermal previews; skip others.
+                        t = find_thermal(src)
+                        if t is None or not t.exists():
+                            continue
+                        # If caller asked for symlinks and the thermal preview is
+                        # already a 3-channel image we can symlink directly to
+                        # avoid duplicating bytes. Otherwise, compose a 3-channel
+                        # grayscale image using the canonical normalizer and write
+                        # the output into the destination.
+                        try:
+                            with Image.open(t) as ti:
+                                bands = ti.getbands()
+                                is_rgb_preview = bands and len(bands) >= 3
                         except Exception:
-                            pass
-                    written += 1
+                            is_rgb_preview = False
+
+                        if symlink and is_rgb_preview:
+                            # create parent dirs then symlink the preview file
+                            target = out_path.with_suffix(t.suffix)
+                            if target.exists() or target.is_symlink():
+                                target.unlink()
+                            try:
+                                target.symlink_to(t.resolve())
+                            except Exception:
+                                # fallback to copying if symlink creation fails
+                                with Image.open(t) as ti:
+                                    ti.convert("RGB").save(target.with_suffix('.png'))
+                        else:
+                            # compose grayscale 3-channel image from thermal preview
+                            # Use shared normalization helper which handles TIFF numeric
+                            # arrays (via tifffile when available) and uint8 previews.
+                            try:
+                                a8 = normalize_thermal(t)
+                            except Exception:
+                                a8 = np.array(Image.open(t).convert("L"))
+                            gray = Image.fromarray(a8, mode="L")
+                            rgb_out = Image.merge("RGB", (gray, gray, gray))
+                            target = out_path.with_suffix(".png")
+                            rgb_out.save(target)
+                        lbl = src.with_suffix(".txt")
+                        if lbl.exists():
+                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                        written += 1
 
                 elif requested_channels == 4 and use_thermal:
                     # require thermal sidecar
@@ -151,63 +190,42 @@ def merge_rgb_with_thermal(
                     # RGBA file; symlinking is not possible because the file
                     # doesn't exist beforehand. Always write the RGBA PNG for
                     # requested_channels==4.
+                    rgb = im.convert("RGB")
+                    # Similar normalization for RGBA alpha channel: prefer
+                    # reading TIFFs as numeric arrays and normalizing; for
+                    # JPG/PNG previews use the existing 8-bit values.
                     try:
-                        rgb = im.convert("RGB")
-                        with Image.open(t) as therm:
-                            therm_l = therm.convert("L")
-                            a = np.array(therm_l).astype(np.float32)
-                            lo, hi = np.percentile(a, 2), np.percentile(a, 98)
-                            if hi <= lo:
-                                hi = lo + 1.0
-                            a = np.clip((a - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
-                            alpha = Image.fromarray(a, mode="L")
-                            rgba = Image.merge("RGBA", (*rgb.split(), alpha))
-                            target = out_path.with_suffix(".png")
-                            # save RGBA
-                            rgba.save(target)
-                            lbl = src.with_suffix(".txt")
-                            if lbl.exists():
-                                try:
-                                    (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                                except Exception:
-                                    pass
-                            written += 1
+                        a8 = normalize_thermal(t)
                     except Exception:
-                        continue
+                        a8 = np.array(Image.open(t).convert("L"))
+                    alpha = Image.fromarray(a8, mode="L")
+                    rgba = Image.merge("RGBA", (*rgb.split(), alpha))
+                    target = out_path.with_suffix(".png")
+                    # save RGBA
+                    rgba.save(target)
+                    lbl = src.with_suffix(".txt")
+                    if lbl.exists():
+                        (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
+                    written += 1
                 else:
                     # any other combination: treat as 3-channel RGB behaviour
                     # (covers requested==1 coerced to 3 or other unsupported values)
                     # try to symlink/convert as RGB as above
                     target = out_path.with_suffix(src.suffix)
-                    try:
-                        if symlink:
-                            if target.exists() or target.is_symlink():
-                                try:
-                                    target.unlink()
-                                except Exception:
-                                    pass
-                            target.symlink_to(src.resolve())
-                        else:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                    except Exception:
-                        try:
-                            rgb = im.convert("RGB")
-                            target = out_path.with_suffix(".png")
-                            rgb.save(target)
-                        except Exception:
-                            continue
+                    if symlink:
+                        if target.exists() or target.is_symlink():
+                            target.unlink()
+                        target.symlink_to(src.resolve())
+                    else:
+                        rgb = im.convert("RGB")
+                        target = out_path.with_suffix(".png")
+                        rgb.save(target)
                     lbl = src.with_suffix(".txt")
                     if lbl.exists():
-                        try:
-                            (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                        except Exception:
-                            pass
+                        (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
                     written += 1
 
-        except Exception:
-            # ignore problematic files
-            continue
+        # NOTE: let exceptions propagate for problematic files so callers
+        # can see and handle failures instead of silently skipping them.
 
     return written
