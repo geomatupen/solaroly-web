@@ -20,6 +20,7 @@ RIO_OK_TH = True
 # widen model to 4ch and extend pixel stats
 from ..utils.model_patch import make_cfg_4ch, patch_first_conv_to_4ch
 from ....core.io import load_model_meta, input_mode_from_meta, THERMAL_EXTS
+from ....core.thermal import normalize_thermal
 from .predict_rgb_only import predict_folder as run_rgb
 
 _LOGGER_NAME = "pvrt.test"
@@ -161,7 +162,7 @@ def _read_rgb_and_thermal_from_path(p: Path):
             if bgr is not None:
                 return bgr, therm
 
-    # 2) Sidecar thermal (your current behavior)
+    # 2) Sidecar thermal (previous behavior)
     bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
     therm = None
     th_path = _find_thermal(p)
@@ -174,16 +175,9 @@ def _read_rgb_and_thermal_from_path(p: Path):
     return bgr, therm
 
 
-def _normalize_thermal(arr: np.ndarray) -> np.ndarray:
-    th = arr.astype(np.float32)
-    if th.ndim == 3: th = th[...,0]
-    vmax = float(np.nanmax(th)) if th.size else 0.0
-    if vmax > 1.5:   # looks like °C
-        th = np.clip(th, 0.0, 100.0) / 100.0
-    else:            # already 0..1, or constant
-        tmin, tmax = float(np.nanmin(th)), float(np.nanmax(th))
-        th = (th - tmin) / (tmax - tmin) if tmax > tmin else th*0.0
-    return th
+# Use shared normalization helper from core.thermal
+# def _normalize_thermal(arr: np.ndarray) -> np.ndarray:
+#     (replaced by normalize_thermal)
 
 def _palette_bgr():  # high contrast on false-color
     return [(0,255,255),(255,0,255),(255,255,0),(0,128,255),(0,255,0),(255,0,0),(128,0,255),(0,0,255)]
@@ -354,12 +348,11 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     meta = load_model_meta(Path(weights_dir))
     model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
 
-    # If model_mode is NOT rgbt but user forced thermal via bridge, we fallback earlier.
+    # If model_mode is NOT rgbt but the caller requested thermal via the bridge, fallback earlier.
     if model_mode not in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"}:
-        log.warning(
-            f"UI:WARN:test: thermal path received RGB model (model_mode={model_mode!r}) - FALLBACK to RGB"
-        )
-        
+        # Model does not support thermal inputs; fallback to RGB predictor.
+        log.warning(f"UI:WARN:test: thermal requested but model is RGB-only (model_mode={model_mode}); falling back to RGB")
+
         return run_rgb(
             images_dir=images_dir,
             out_dir=out_dir,
@@ -369,11 +362,13 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
 
     # Log which channel configuration will be used for inference
     # Detectron thermal predictor now assumes RGB+Thermal (4-channel) inputs.
-    log.info("UI:INFO:test: Running the mode RGB+Thermal (4ch)")
+    log.info("UI:INFO:test: Running RGB+Thermal (4-channel) inference")
 
     layout      = ensure_results_layout(out)
     preds_dir   = layout["preds"]
     overlays_dir= layout["overlays"]
+    # canonical location for exact uint8 normalized thermal previews
+    thermal_dir = layout.get("thermal", out / "thermal")
 
     # Build a 4-channel model (RGB + thermal). 1-channel thermal-only runs
     # are no longer supported; all thermal runs use RGB+thermal.
@@ -394,8 +389,8 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     n    = len(imgs)
 
     mode_str = "RGB+Thermal (4ch)"
-    log.info(f"UI:OK:test: Testing started ({mode_str})")
-    log.info(f"UI:INFO:test: Images={n} | Device={cfg.MODEL.DEVICE} | Thr={getattr(cfg.MODEL.ROI_HEADS,'SCORE_THRESH_TEST',None)} | WeightsMD5={w_md5}")
+    log.info(f"UI:OK:test: Testing started: {mode_str}")
+    log.info(f"UI:INFO:test: Images={n} | Device={cfg.MODEL.DEVICE} | Thr={getattr(cfg.MODEL.ROI_HEADS, 'SCORE_THRESH_TEST', None)} | WeightsMD5={w_md5}")
 
     total, with_dets = 0, 0
     # ensure variables referenced after the loop exist even if no images processed
@@ -414,7 +409,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
             log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections ({reason})")
             continue
         H, W = bgr.shape[:2]
-        th = _normalize_thermal(therm)
+        th = normalize_thermal(therm).astype(np.float32) / 255.0
         if th.shape[:2] != (H, W):
             th = cv2.resize(th, (W, H), interpolation=cv2.INTER_LINEAR)
         ch4 = np.dstack([bgr.astype(np.float32), (th * 255.0)]).astype(np.float32)  # BGRT
@@ -452,11 +447,10 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
             preds_dir, p.stem, boxes, scores, classes,
             extra={"file": p.name, "masks": masks, "polygons": polygons}
         )
-        # For thermal-only runs where BGR may be missing, synthesize a visualization.
+        # For runs where BGR may be missing, synthesize a visualization.
         # Use a grayscale background for single-band visualization instead of a
-        # false-color map so the image appears as a single-channel gray image
-        # (user requested). When RGB is available we still blend falsecolor
-        # thermal for enhanced contrast.
+        # false-color map so the image appears as a single-channel gray image.
+        # When RGB is available we blend falsecolor thermal for enhanced contrast.
         if bgr is None:
             # Prefer using the actual thermal file from the `thermal/` folder
             # (decoder produces grayscale TIFFs) so overlays match the raw
@@ -491,8 +485,27 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
                         gray = timg.astype(np.uint8)
                 if gray is None:
                     gray = (np.clip(th * 255.0, 0, 255).astype(np.uint8))
-                bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-            except Exception:
+                    bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                    # also save the exact uint8 normalized thermal preview for
+                    # parity with training previews. Use the canonical filename
+                    # <stem>.png inside the results thermal folder. Additionally
+                    # write a small display-enhanced copy for UI browsing so
+                    # thumbnails/overlays are more legible without changing
+                    # the canonical training artifact.
+                    try:
+                        from ....core.thermal import enhance_preview_for_display
+                        thermal_dir.mkdir(parents=True, exist_ok=True)
+                        t_out = thermal_dir / f"{p.stem}.png"
+                        cv2.imwrite(str(t_out), gray)
+                        # write enhanced visual copy into a sibling "vis" folder
+                        vis_dir = thermal_dir / "vis"
+                        vis_dir.mkdir(parents=True, exist_ok=True)
+                        vis_img = enhance_preview_for_display(gray)
+                        cv2.imwrite(str(vis_dir / f"{p.stem}.png"), vis_img)
+                    except Exception:
+                        # non-fatal: we still produce overlays; don't crash inference
+                        _log().debug("failed to save normalized or enhanced thermal preview for %s", p.name)
+            except (FileNotFoundError, OSError, ValueError, TypeError):
                 # fallback when reading the preferred thermal file fails
                 gray = (np.clip(th * 255.0, 0, 255).astype(np.uint8))
                 bgr_vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -524,12 +537,12 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
     }
     # Add mask AP if available
     if hasattr(inst, "pred_masks") and hasattr(inst, "scores") and hasattr(inst, "pred_classes"):
-        # Placeholder: actual mask AP computation should be added here if available
-        metrics["mask_ap"] = None  # TODO: replace with real mask AP if computed
+        # mask AP not computed in this runner
+        metrics["mask_ap"] = None
     write_metrics_json(out, metrics)
 
-    log.info(f"UI:INFO:test: predictions_total={total}")
-    # log.info("UI:OK:test: Test complete")
+    log.info("predictions_total=%d", total)
+    # log.info("OK:test: Test complete")
     return out
 
 def _draw_overlay_rgbt_with_masks(bgr, th01, boxes, scores, classes, masks, names):

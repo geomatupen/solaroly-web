@@ -36,7 +36,7 @@ try:
     import mercantile
     from pyproj import Transformer
     RIO_OK = True
-except (ImportError, ModuleNotFoundError):
+except Exception:
     RIO_OK = False
 
 # --- Backend-agnostic bridge and registry ---
@@ -45,10 +45,10 @@ from .bridge import train_entry, predict_entry
 from ..backends.detectron.backend import register as register_detectron
 from ..backends.yolo.backend import register as register_yolo
 
-# --- SSE/logging bridge ---
+# --- SSE/logging bridge (your existing file) ---
 from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
 
-# --- Reuse data helpers (RJPEG decode & scanning) ---
+# --- Reuse your data helpers (RJPEG decode & scanning) ---
 from ..dataops.scan_decode_split import (
     ensure_dirp_init, scan_split_decode_thermal, # safe to call only if thermal requested
 )
@@ -70,11 +70,6 @@ MEDIA_DIR    = PROJECT_ROOT / "media"              # browsable artifacts (thumbs
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 IMAGE_EXTS = {".jpg",".jpeg",".png",".tif",".tiff",".bmp",".webp",".JPG",".JPEG",".PNG",".TIF",".TIFF",".BMP",".WEBP"}
-
-# Common non-fatal exceptions we allow to be handled locally across web helpers.
-# This intentionally excludes BaseException-derived types such as KeyboardInterrupt
-# and SystemExit so they propagate.
-COMMON_EXCEPTIONS = (FileNotFoundError, OSError, json.JSONDecodeError, ValueError, ImportError)
 
 # --------------- FastAPI app & CORS ----------------
 app = FastAPI(title="PVRT API", version="1.0.0")
@@ -131,7 +126,11 @@ def redirect_std_to_logger():
     try:
         yield
     finally:
-        sys.stdout.flush(); sys.stderr.flush()
+        try:
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception as e:
+            # ignore flush errors silently
+            pass
         sys.stdout, sys.stderr = old_out, old_err
 
 def _now_stamp() -> str:
@@ -149,7 +148,10 @@ def _is_image(p: Path) -> bool:
 def _read_model_meta(run_dir: Path) -> dict:
     meta = run_dir / "model_meta.json"
     if meta.exists():
-        return json.loads(meta.read_text(encoding="utf-8"))
+        try:
+            return json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
     return {}
 
 def _list_models() -> List[str]:
@@ -184,7 +186,7 @@ def _unique_dataset_dir(base_name: str) -> Path:
 
 
 # ---- session helpers ----
-from typing import Any
+from typing import Any  # you already import Dict, List, etc.
 
 def _as_session_dir(ses) -> Path:
     """
@@ -203,15 +205,53 @@ def _load_metrics(ses) -> Dict[str, Any]:
     """
     ses_dir = _as_session_dir(ses)
     mp = ses_dir / "metrics.json"
-    return json.loads(mp.read_text(encoding="utf-8")) if mp.exists() else {}
+    try:
+        return json.loads(mp.read_text(encoding="utf-8")) if mp.exists() else {}
+    except Exception:
+        return {}
 
 
 def _tif_band_count(p: Path) -> int:
     if not RIO_OK:
         return 0
-    import rasterio
-    with rasterio.open(p) as ds:
-        return int(ds.count)
+    try:
+        import rasterio
+        with rasterio.open(p) as ds:
+            return int(ds.count)
+    except Exception:
+        return 0
+
+
+def _save_zip_as_dataset(zip_file: UploadFile, preferred_base: str | None = None) -> Path:
+    base = _safe_name(preferred_base or Path(zip_file.filename or "dataset.zip").stem) or "dataset"
+    ds_dir = _unique_dataset_dir(base)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+
+    buf = zip_file.file.read()
+    with zipfile.ZipFile(io.BytesIO(buf)) as zf:
+        zf.extractall(ds_dir)
+
+    # flatten one-level if typical zip has top folder
+    kids = list(ds_dir.iterdir())
+    if len(kids) == 1 and kids[0].is_dir():
+        inner = kids[0]
+        for p in inner.iterdir():
+            shutil.move(str(p), str(ds_dir))
+        inner.rmdir()
+    return ds_dir
+
+def _save_images_as_dataset(files: List[UploadFile], preferred_base: str | None = None) -> Path:
+    base = _safe_name(preferred_base or "images") or "images"
+    ds_dir = _unique_dataset_dir(base)
+    ds_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in files:
+        if not f.filename:
+            continue
+        ext = Path(f.filename).suffix.lower()
+        if ext in IMAGE_EXTS:
+            (ds_dir / Path(f.filename).name).write_bytes(f.file.read())
+    return ds_dir
 
 # --- ADD: small GeoTIFF helpers ---
 def _iter_geotiffs(dirpath: Path):
@@ -219,7 +259,11 @@ def _iter_geotiffs(dirpath: Path):
         if p.is_file() and p.suffix.lower() in (".tif", ".tiff"):
             yield p
 
-
+# def _count_top_level_images(d: Path) -> int:
+#     """Count images directly under d (non-recursive)."""
+#     if not d.exists() or not d.is_dir():
+#         return 0
+#     return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
 
 def _render_tif_overlay_preview(
     tif_path,                 # source GeoTIFF (RGB or single-band)
@@ -332,10 +376,13 @@ def _tile_tif_to_dir(tif_path, tiles_dir, tile_size=1024, stride=None):
     from pathlib import Path
 
     def _crs_id(crs):
-        if crs is None:
-            return "None"
-        epsg = crs.to_epsg()
-        return f"EPSG:{epsg}" if epsg else crs.to_string()
+        try:
+            if crs is None:
+                return "None"
+            epsg = crs.to_epsg()
+            return f"EPSG:{epsg}" if epsg else crs.to_string()
+        except Exception:
+            return str(crs)
 
     logger = logging.getLogger("pvrt")
     tiles_dir = Path(tiles_dir)
@@ -428,17 +475,20 @@ def _build_anomalies_geojson_from_tiles(
     # -- source CRS + footprint (WGS84) for clipping / fallback --
     src_crs = None
     tif_footprint_wgs84 = None
-    with rasterio.open(tif_path) as src_ds:
-        src_crs = src_ds.crs
-        b = src_ds.bounds
-        logger.info(f"Stitcher: source='{tif_path.name}' CRS={_crs_id(src_crs)} bounds={b}")
-        tf_src_to_wgs = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
-        xs = [b.left, b.right, b.right, b.left]
-        ys = [b.bottom, b.bottom, b.top,  b.top]
-        lon, lat = tf_src_to_wgs.transform(xs, ys)
-        left, right = min(lon), max(lon)
-        bottom, top = min(lat), max(lat)
-    tif_footprint_wgs84 = shp_box(left, bottom, right, top)
+    try:
+        with rasterio.open(tif_path) as src_ds:
+            src_crs = src_ds.crs
+            b = src_ds.bounds
+            logger.info(f"Stitcher: source='{tif_path.name}' CRS={_crs_id(src_crs)} bounds={b}")
+            tf_src_to_wgs = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+            xs = [b.left, b.right, b.right, b.left]
+            ys = [b.bottom, b.bottom, b.top,  b.top]
+            lon, lat = tf_src_to_wgs.transform(xs, ys)
+            left, right = min(lon), max(lon)
+            bottom, top = min(lat), max(lat)
+        tif_footprint_wgs84 = shp_box(left, bottom, right, top)
+    except Exception as e:
+        logger.warning(f"Stitcher: failed to read source CRS/bounds for '{tif_path.name}': {e}")
 
     feats = []
     preds_json_dir = preds_dir / "preds"
@@ -448,44 +498,54 @@ def _build_anomalies_geojson_from_tiles(
     # thermal TIFF exists. Default to None (unknown) so behavior is
     # conservative and preserves reuse when we can't read metrics.
     run_channel_count = None
-    mpath = preds_dir / "metrics.json"
-    if mpath.exists():
-        mm = json.loads(mpath.read_text(encoding="utf-8"))
-        run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    try:
+        mpath = preds_dir / "metrics.json"
+        if mpath.exists():
+            mm = json.loads(mpath.read_text(encoding="utf-8"))
+            run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    except Exception:
+        run_channel_count = None
 
     def _find_thermal_candidate(p: Path) -> Path | None:
         """Quick check for a thermal source for `p` (same rules as predictors).
         Return a Path if a candidate exists, otherwise None.
         """
-        exts = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
-        tdir = p.parent / "thermal"
-        # pairs.json mapping
-        pjson = tdir / "pairs.json"
-        if pjson.exists():
-            pairs = json.loads(pjson.read_text(encoding="utf-8"))
-            rel = pairs.get(p.name)
-            if rel:
-                cand = (p.parent / rel)
+        try:
+            exts = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+            tdir = p.parent / "thermal"
+            # pairs.json mapping
+            pjson = tdir / "pairs.json"
+            if pjson.exists():
+                try:
+                    pairs = json.loads(pjson.read_text(encoding="utf-8"))
+                    rel = pairs.get(p.name)
+                    if rel:
+                        cand = (p.parent / rel)
+                        if cand.exists():
+                            return cand
+                except Exception:
+                    # ignore malformed pairs.json entries silently
+                    pass
+            # decoder naming
+            for e in exts:
+                cand = tdir / f"{p.stem}_thermal{e}"
                 if cand.exists():
                     return cand
-        # decoder naming
-        for e in exts:
-            cand = tdir / f"{p.stem}_thermal{e}"
-            if cand.exists():
-                return cand
-            cand2 = tdir / f"{p.stem}{e}"
-            if cand2.exists():
-                return cand2
-        # sidecar next to image
-        for e in exts:
-            cand = p.with_name(f"{p.stem}_thermal{e}")
-            if cand.exists():
-                return cand
-        # legacy: also accept common image preview suffixes in addition to TIFF
-        for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
-            cand = p.with_name(f"{p.stem}_thermal{ext}")
-            if cand.exists():
-                return cand
+                cand2 = tdir / f"{p.stem}{e}"
+                if cand2.exists():
+                    return cand2
+            # sidecar next to image
+            for e in exts:
+                cand = p.with_name(f"{p.stem}_thermal{e}")
+                if cand.exists():
+                    return cand
+            # legacy: also accept common image preview suffixes in addition to TIFF
+            for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                cand = p.with_name(f"{p.stem}_thermal{ext}")
+                if cand.exists():
+                    return cand
+        except Exception:
+            return None
         return None
 
     # Read run metrics (if present) so we can make decisions like forcing
@@ -493,10 +553,13 @@ def _build_anomalies_geojson_from_tiles(
     # thermal TIFF exists. Default to None (unknown) so behavior is
     # conservative and preserves reuse when we can't read metrics.
     run_channel_count = None
-    mpath = preds_dir / "metrics.json"
-    if mpath.exists():
-        mm = json.loads(mpath.read_text(encoding="utf-8"))
-        run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    try:
+        mpath = preds_dir / "metrics.json"
+        if mpath.exists():
+            mm = json.loads(mpath.read_text(encoding="utf-8"))
+            run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
+    except Exception:
+        run_channel_count = None
 
     def _find_thermal_candidate(p: Path) -> Path | None:
         """Quick check for a thermal source for `p` (same rules as predictors).
@@ -535,15 +598,14 @@ def _build_anomalies_geojson_from_tiles(
                 cand = p.with_name(f"{p.stem}_thermal{ext}")
                 if cand.exists():
                     return cand
-        except COMMON_EXCEPTIONS:
+        except Exception:
             return None
         return None
 
     for jpath in sorted(preds_json_dir.glob("*.json")):
         try:
             jd = json.loads(jpath.read_text(encoding="utf-8"))
-        except COMMON_EXCEPTIONS:
-            # Skip malformed prediction JSON files but allow other errors to propagate.
+        except Exception:
             continue
 
         polygons_px = jd.get("polygons") or []
@@ -563,7 +625,7 @@ def _build_anomalies_geojson_from_tiles(
             crs = ds.crs or src_crs    # tiles sometimes lose CRS — fallback to source
             tf_tile_to_wgs = Transformer.from_crs(crs, "EPSG:4326", always_xy=True) if crs else None
 
-            # pixel (col,x; row,y) → map coords using Affine (NOTE: no +0.5 — matches notebook)
+            # pixel (col,x; row,y) → map coords using Affine (NOTE: no +0.5, matches your notebook)
             def px_to_map(col, row):
                 X, Y = (tfm * (col, row))
                 return (X, Y)
@@ -602,7 +664,7 @@ def _build_anomalies_geojson_from_tiles(
                         lon, lat = tf_tile_to_wgs.transform(list(xs), list(ys))
                         if (-180 <= min(lon) <= 180 and -90 <= min(lat) <= 90):
                             poly = Polygon(zip(lon, lat))
-                    except COMMON_EXCEPTIONS:
+                    except Exception:
                         poly = None
 
                 if poly is None:
@@ -645,7 +707,7 @@ def _build_anomalies_geojson_from_tiles(
             lon, lat = tf_src_to_wgs.transform([b.left, b.right], [b.bottom, b.top])
         cx = (min(lon) + max(lon)) / 2.0
         cy = (min(lat) + max(lat)) / 2.0
-    except COMMON_EXCEPTIONS:
+    except Exception:
         # fallback: union tile bounds
         try:
             xs = []; ys = []
@@ -659,7 +721,7 @@ def _build_anomalies_geojson_from_tiles(
                         ys += [min(tlat), max(tlat)]
             cx = (min(xs) + max(xs)) / 2.0 if xs else 0.0
             cy = (min(ys) + max(ys)) / 2.0 if ys else 0.0
-        except COMMON_EXCEPTIONS:
+        except Exception:
             cx, cy = 0.0, 0.0
 
     imgs_fc = {
@@ -703,7 +765,7 @@ def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> 
             if scale < 1.0:
                 im = im.resize((int(w*scale), int(h*scale)), Image.BILINEAR)
             im.save(out, format="PNG", optimize=True)
-    except COMMON_EXCEPTIONS:
+    except Exception:
         from PIL import Image
         Image.new("RGB", (256,256), (40,40,40)).save(out, "PNG", optimize=True)
     return out
@@ -712,7 +774,17 @@ def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> 
 # ----------------- overlays & geojson -----------------
 # Keep these simple and library-light; they operate on predictor JSON files.
 
-
+# def _coerce_pred_json(p: Path) -> dict:
+#     try:
+#         j = json.loads(p.read_text(encoding="utf-8"))
+#         # normalize keys used by front-end (boxes: [x1,y1,x2,y2], scores, classes)
+#         j.setdefault("boxes", [])
+#         j.setdefault("scores", [])
+#         j.setdefault("classes", [])
+#         j.setdefault("file", p.stem)
+#         return j
+#     except Exception:
+#         return {"file": p.stem, "boxes": [], "scores": [], "classes": []}
 
 def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
     """
@@ -731,9 +803,9 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
     thumbs   = out_root / "thumbs";   thumbs.mkdir(parents=True, exist_ok=True)
     manifest = out_root / "manifest.json"
 
-    # Standardize on "overlays/" only. If an older "overlay/" folder exists, it is
-    # not read to avoid duplicate dirs. To use a fallback copy-from, point
-    # colored_src to "overlays".
+    # We standardize on "overlays/" only. If you previously created "overlay/",
+    # we DO NOT read from it anymore to avoid duplicate dirs.
+    # If you still want a fallback copy-from, point colored_src to "overlays".
     colored_src = overlays
     use_colored = colored_src.exists() and any(colored_src.glob("*.png"))
     if use_colored:
@@ -755,7 +827,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
         try:
             
             return json.loads(p.read_text(encoding="utf-8"))
-        except COMMON_EXCEPTIONS:
+        except Exception:
             return {"boxes": [], "scores": [], "classes": [], "file": p.stem}
 
     mapper: Dict[str, Dict[str, str]] = {}
@@ -770,7 +842,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
         if mpath.exists():
             mm = json.loads(mpath.read_text(encoding="utf-8"))
             run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
-    except COMMON_EXCEPTIONS:
+    except Exception:
         run_channel_count = None
 
     def _find_thermal_candidate(p: Path) -> Path | None:
@@ -811,7 +883,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 cand = p.with_name(f"{p.stem}_thermal{ext}")
                 if cand.exists():
                     return cand
-        except COMMON_EXCEPTIONS:
+        except Exception:
             return None
         return None
 
@@ -899,13 +971,13 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                 try:
                                     base = Image.open(preview).convert("RGB")
                                     logger.info(f"UI:INFO:post: using cached thermal preview {preview} for {img.name}")
-                                except COMMON_EXCEPTIONS:
+                                except Exception:
                                     base = None
                             else:
                                 try:
                                     import tifffile as _tifffile
                                     arr = _tifffile.imread(str(tpath))
-                                except COMMON_EXCEPTIONS:
+                                except Exception:
                                     with Image.open(tpath) as _im:
                                         arr = np.array(_im)
 
@@ -923,7 +995,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                 if arr8.ndim == 3:
                                     try:
                                         gray = cv2.cvtColor(arr8, cv2.COLOR_BGR2GRAY)
-                                    except COMMON_EXCEPTIONS:
+                                    except Exception:
                                         gray = arr8[..., 0]
                                 else:
                                     gray = arr8
@@ -933,10 +1005,10 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                     cv2.imwrite(str(preview), gray_u8)
                                     base = Image.fromarray(cv2.cvtColor(gray_u8, cv2.COLOR_GRAY2RGB))
                                     logger.info(f"UI:INFO:post: generated thermal preview {preview} for {img.name}")
-                                except COMMON_EXCEPTIONS:
+                                except Exception:
                                     try:
                                         base = Image.fromarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB))
-                                    except COMMON_EXCEPTIONS:
+                                    except Exception:
                                         base = None
 
                         elif run_channel_count == 4:
@@ -949,7 +1021,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                 try:
                                     import tifffile as _tifffile
                                     tarr = _tifffile.imread(str(tpath))
-                                except COMMON_EXCEPTIONS:
+                                except Exception:
                                     with Image.open(tpath) as _tim:
                                         tarr = np.array(_tim)
 
@@ -967,7 +1039,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                 if t8.ndim == 3:
                                     try:
                                         tgray = cv2.cvtColor(t8, cv2.COLOR_BGR2GRAY)
-                                    except COMMON_EXCEPTIONS:
+                                    except Exception:
                                         tgray = t8[..., 0]
                                 else:
                                     tgray = t8
@@ -981,13 +1053,13 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                                 # blend: 60% rgb + 40% thermal colormap
                                 blended = cv2.addWeighted(rgb_arr.astype(np.uint8), 0.6, cmap.astype(np.uint8), 0.4, 0)
                                 base = Image.fromarray(blended)
-                            except COMMON_EXCEPTIONS:
+                            except Exception:
                                 base = None
 
-                    except COMMON_EXCEPTIONS:
+                    except Exception:
                         base = None
 
-            except COMMON_EXCEPTIONS:
+            except Exception:
                 base = None
 
             if base is None:
@@ -1008,13 +1080,13 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
             thickness = max(1, int(round(min(W, H) * 0.003)))
             try:
                 font = ImageFont.load_default()  # no TTF to keep it fast
-            except COMMON_EXCEPTIONS:
+            except Exception:
                 font = ImageFont.load_default()
 
             for i, b in enumerate(boxes):
                 try:
                     x1, y1, x2, y2 = map(int, b)
-                except COMMON_EXCEPTIONS:
+                except Exception:
                     continue
                 if x2 <= x1 or y2 <= y1:
                     continue
@@ -1031,7 +1103,7 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 try:
                     bbox = draw.textbbox((0, 0), label, font=font)
                     tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                except COMMON_EXCEPTIONS:
+                except Exception:
                     tw, th_txt = draw.textsize(label, font=font)
                 pad = 4
                 pill_w = tw + 2 * pad
@@ -1053,15 +1125,15 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                     bgr = cv2.cvtColor(arr_out, cv2.COLOR_RGB2BGR)
                     cv2.imwrite(str(ov), bgr)
                     logger.info(f"UI:INFO:post: wrote overlay {ov} for {img.name}")
-                except COMMON_EXCEPTIONS:
+                except Exception:
                     # fallback to PIL save
                     base.save(ov, format="PNG", optimize=True)
                     logger.info(f"UI:INFO:post: wrote overlay (PIL fallback) {ov} for {img.name}")
-            except COMMON_EXCEPTIONS:
+            except Exception:
                 # final fallback: ensure file exists
                 try:
                     Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8)).save(ov, format="PNG", optimize=True)
-                except COMMON_EXCEPTIONS as e:
+                except Exception as e:
                     logger.debug("ignored web.app error: %s", e)
             im_for_thumb = base
 
@@ -1075,13 +1147,13 @@ def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_name
                 bgr_thumb = cv2.cvtColor(arr_thumb, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(str(th), bgr_thumb)
                 logger.info(f"UI:INFO:post: wrote thumb {th} for {img.name}")
-            except COMMON_EXCEPTIONS:
+            except Exception:
                 im_thumb.save(th, format="PNG", optimize=True)
                 logger.info(f"UI:INFO:post: wrote thumb (PIL fallback) {th} for {img.name}")
-        except COMMON_EXCEPTIONS:
+        except Exception:
             try:
                 Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
-            except COMMON_EXCEPTIONS as e:
+            except Exception as e:
                 logger.debug("ignored web.app error: %s", e)
         mapper[img.name] = {
             "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
@@ -1315,7 +1387,7 @@ def _preds_to_geojson(
         px_dlon = meters_per_pixel * deg_per_m_lon
         px_dlat = meters_per_pixel * deg_per_m_lat
 
-    # Convert each box using CENTER-based deltas (matches reference notebook)
+        # Convert each box using CENTER-based deltas (matches your notebook)
         cx = w / 2.0
         cy = h / 2.0
 
@@ -1525,8 +1597,8 @@ async def api_train(
         from detectron2.utils.logger import setup_logger
         setup_logger()  # route detectron2/fvcore to std logging (SSE handler will pick it up)
         with redirect_std_to_logger():
-                # Also persist logs to a per-run file so logs can be inspected later.
-            # A FileHandler is attached to the root logger for the duration of this run.
+            # Also persist logs to a per-run file so users can inspect train logs later.
+            # We attach a FileHandler to the root logger for the duration of this run.
             fh = None
             root_logger = logging.getLogger()
             try:
@@ -1589,23 +1661,8 @@ async def api_train(
         logger.info("UI:OK:train: Training completed.")
         return {"ok": True, "run": run_dir.name, "meta": meta}
     except Exception as e:
-        # Log full traceback and include it in the HTTP error detail to aid debugging.
-        import traceback
-        tb = traceback.format_exc()
-        logger.error("Training failed: %s", e)
-        logger.error(tb)
-        # Also persist to per-run train log if available
-        try:
-            # train_log_path may exist in this scope via closure in _do_train; attempt best-effort
-            train_log = run_dir / "train.log"
-            with open(train_log, "a", encoding="utf-8") as fh:
-                fh.write("[TRAIN-ERROR] " + tb + "\n")
-        except Exception:
-            # non-fatal if we couldn't write the per-run file
-            logger.debug("Could not append traceback to per-run train.log")
-        # Surface the error back to the caller with a concise message and the last line of the traceback
-        last_line = tb.strip().splitlines()[-1] if tb else str(e)
-        raise HTTPException(status_code=500, detail=f"Training failed: {last_line}")
+        logger.exception("Training failed.")
+        raise HTTPException(status_code=500, detail=f"Training failed: {e}")
 
 
 # -------------- List model runs --------------
@@ -1687,7 +1744,7 @@ async def api_decode_dataset(dataset: str = Form(...)):
         logger.exception("decode failed")
         raise HTTPException(status_code=500, detail=f"decode failed: {e}")
 
-    
+    # return updated bands
     return await api_dataset_bands(dataset)
 
 @app.post("/api/test_upload")
@@ -1801,6 +1858,7 @@ async def api_test_run(
     backend: Optional[str] = Form(default=None),
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
+    extract_thermal_rgb: bool = Form(False),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -1825,7 +1883,7 @@ async def api_test_run(
     out_root.mkdir(parents=True, exist_ok=True)
 
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
-    input_type = _detect_image_input_type(ds_dir)
+    input_type = _detect_image_input_type(ds_dir)  # you already have this helper: returns 'tif' or 'images'
 
     
 
@@ -1883,14 +1941,15 @@ async def api_test_run(
     # If model expects thermal for inference and this is an images dataset, run
     # the idempotent decode pass which will populate images_dir/thermal/pairs.json
     # when RJPEG payloads exist. This lets us infer availability afterwards.
-    # If model expects RGB+thermal, attempt the idempotent decode pass which
-    # will populate images_dir/thermal/pairs.json. The decoder is safe to call
-    # repeatedly and will early-exit if DIRP isn't available.
-    if input_type == "images" and model_is_rgbt:
+    # If model expects RGB+thermal OR user explicitly requested extraction for
+    # 3-channel models, attempt the idempotent decode pass which will populate
+    # images_dir/thermal/pairs.json. The decoder is safe to call repeatedly
+    # and will early-exit if DIRP isn't available.
+    if input_type == "images" and (model_is_rgbt or extract_thermal_rgb):
         try:
             ensure_dirp_init()
             scan_split_decode_thermal(ds_dir)
-            logger.info("UI:INFO:test: thermal decode attempted for images dataset (test pipeline)")
+            logger.info("thermal decode attempted for images dataset (test pipeline)")
         except Exception as e:
             # Don't fail the whole test run for DIRP issues; log and continue.
             logger.warning(f"thermal decode attempt failed: {e}")
@@ -1927,10 +1986,118 @@ async def api_test_run(
 
     data_chan = _infer_data_channel_count(ds_dir, input_type, tif_has_thermal)
 
-    # Note: the explicit user-requested path to convert decoded thermal TIFFs into
-    # temporary 3-channel JPGs for 3-channel models has been removed. If a model
-    # declares RGB+thermal inputs the decoder will still be attempted above; there
-    # is no separate "extract_thermal_rgb" behavior anymore.
+    # If the user requested 'extract_thermal_rgb' for a 3-channel model and the
+    # dataset has thermal data, materialize a temporary per-run folder with
+    # 3-channel JPGs created from the decoded thermal TIFFs and run inference
+    # on that folder. This avoids mutating the source dataset.
+    if extract_thermal_rgb and model_chan == 3 and input_type == "images" and data_has_thermal:
+        try:
+            thermal_dir = ds_dir / "thermal"
+            pairs_path = thermal_dir / "pairs.json"
+            mappings = {}
+            if pairs_path.exists():
+                try:
+                    mappings = json.loads(pairs_path.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    mappings = {}
+
+            out_thermal_jpg = out_root / "thermal_jpg"
+            out_thermal_jpg.mkdir(parents=True, exist_ok=True)
+            created = 0
+
+            # Prefer pairs.json mapping (keys are RGB filenames)
+            if mappings:
+                for rgb_fname, rel in mappings.items():
+                    try:
+                        tpath = ds_dir / rel
+                        if not tpath.exists():
+                            # try relative inside thermal dir
+                            tpath = thermal_dir / Path(rel).name
+                            if not tpath.exists():
+                                continue
+                        # read TIFF (float32 or uint16) using tifffile when available
+                        try:
+                            import tifffile as _tifffile
+                            arr = _tifffile.imread(str(tpath))
+                        except Exception:
+                            # fallback to PIL
+                            from PIL import Image
+                            arr = np.array(Image.open(tpath))
+
+                        # normalize to uint8 using robust 2-98 percentile stretch
+                        try:
+                            vals = arr.ravel()
+                            p2 = float(np.percentile(vals, 2)) if vals.size else 0.0
+                            p98 = float(np.percentile(vals, 98)) if vals.size else 1.0
+                            g = (np.clip(arr, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                            g8 = (np.nan_to_num(g) * 255.0).astype(np.uint8)
+                        except Exception:
+                            g8 = np.clip(arr, 0, 255).astype(np.uint8)
+
+                        # make 3-channel RGB by stacking
+                        if g8.ndim == 2:
+                            rgb_arr = np.stack([g8, g8, g8], axis=2)
+                        elif g8.ndim == 3 and g8.shape[2] == 1:
+                            rgb_arr = np.concatenate([g8, g8, g8], axis=2)
+                        else:
+                            # if already 3-channel, just clamp
+                            rgb_arr = g8[..., :3]
+
+                        from PIL import Image
+                        out_name = Path(rgb_fname).stem + ".jpg"
+                        out_path = out_thermal_jpg / out_name
+                        Image.fromarray(rgb_arr).save(out_path, format="JPEG", quality=90)
+                        created += 1
+                    except Exception:
+                        logger.warning(f"UI:WARN:test: failed to create thermal JPG for {rgb_fname}")
+                        continue
+            else:
+                # No pairs.json: convert any TIFFs in thermal/ to JPGs named by stem
+                for tpath in sorted(thermal_dir.glob("*")):
+                    if not tpath.is_file():
+                        continue
+                    if tpath.suffix.lower() not in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
+                        continue
+                    try:
+                        try:
+                            import tifffile as _tifffile
+                            arr = _tifffile.imread(str(tpath))
+                        except Exception:
+                            from PIL import Image
+                            arr = np.array(Image.open(tpath))
+
+                        try:
+                            vals = arr.ravel()
+                            p2 = float(np.percentile(vals, 2)) if vals.size else 0.0
+                            p98 = float(np.percentile(vals, 98)) if vals.size else 1.0
+                            g = (np.clip(arr, p2, p98) - p2) / max(1e-12, (p98 - p2))
+                            g8 = (np.nan_to_num(g) * 255.0).astype(np.uint8)
+                        except Exception:
+                            g8 = np.clip(arr, 0, 255).astype(np.uint8)
+
+                        if g8.ndim == 2:
+                            rgb_arr = np.stack([g8, g8, g8], axis=2)
+                        elif g8.ndim == 3 and g8.shape[2] == 1:
+                            rgb_arr = np.concatenate([g8, g8, g8], axis=2)
+                        else:
+                            rgb_arr = g8[..., :3]
+
+                        from PIL import Image
+                        out_name = tpath.stem + ".jpg"
+                        out_path = out_thermal_jpg / out_name
+                        Image.fromarray(rgb_arr).save(out_path, format="JPEG", quality=90)
+                        created += 1
+                    except Exception:
+                        logger.warning(f"UI:WARN:test: failed to convert thermal file {tpath}")
+                        continue
+
+            if created:
+                logger.info(f"UI:OK:test: created {created} thermal_jpg images at {out_thermal_jpg}")
+                run_images_dir = out_thermal_jpg
+            else:
+                logger.warning("UI:WARN:test: no thermal_jpg images were created; falling back to original dataset")
+        except Exception as e:
+            logger.warning(f"UI:WARN:test: extract_thermal_rgb step failed: {e}")
 
     # If we materialized a per-run images dir (e.g. thermal_jpg), re-infer
     # the dataset channel count and thermal availability from that run dir
@@ -1958,28 +2125,11 @@ async def api_test_run(
     # - model=1 and data=4 -> run using thermal-only (ok)
     # - model=4 and data=1 -> cannot run (expects both RGB+thermal)
     if model_chan == 3 and data_chan == 4:
-        # dataset has thermal but model declares 3-channel inputs.
-        # New behavior: if the model metadata indicates it was trained
-        # to *use* thermal information encoded into 3 channels (thermal-as-RGB),
-        # allow running with the thermal-as-RGB path instead of disabling
-        # thermal. Otherwise preserve the previous conservative behavior
-        # and warn that thermal will be ignored.
-        try:
-            model_supports_thermal_as_rgb = bool(meta.get("thermal_used") or str(meta.get("input_mode") or "").strip().lower() in {"thermal", "thermal-as-rgb", "thermal_rgb"})
-        except Exception:
-            model_supports_thermal_as_rgb = False
-
-        if model_supports_thermal_as_rgb:
-            # Use thermal grayscale replicated across RGB channels for inference.
-            logger.info(f"UI:INFO:test: Model trained for 3-channel RGB but declares thermal_used; using thermal-as-RGB for inference. model={model_dir.name}")
-            logging.getLogger("pvrt.test").info("UI:INFO:test: Model trained for 3-channel RGB but declares thermal_used; using thermal-as-RGB for inference.")
-            use_thermal_effective = True
-        else:
-            # dataset has thermal but model is RGB-only; run without thermal but warn
-            logger.warning(f"UI:WARN:test: Model trained for 3-channel RGB but dataset contains thermal; running in RGB-only mode (thermal ignored). model={model_dir.name}")
-            logging.getLogger("pvrt.test").warning(f"UI:WARN:test: Model trained for 3-channel RGB but dataset contains thermal; running in RGB-only mode (thermal ignored).")
-            # ensure we won't request thermal
-            use_thermal_effective = False
+        # dataset has thermal but model is RGB-only; run without thermal but warn
+        logger.warning(f"UI:WARN:test: Model trained for 3-channel RGB but dataset contains thermal; running in RGB-only mode (thermal ignored). model={model_dir.name}")
+        logging.getLogger("pvrt.test").info(f"UI:WARN:test: Model trained for 3-channel RGB but dataset contains thermal; running in RGB-only mode (thermal ignored).")
+        # ensure we won't request thermal
+        use_thermal_effective = False
     elif model_chan == 3 and data_chan == 1:
         # dataset only has thermal images — can't run an RGB model
         msg = "Model expects RGB (3-channel) but dataset contains only thermal images. Convert dataset or use a thermal-capable model."
@@ -2065,6 +2215,7 @@ async def api_test_run(
     Path(manifest_path).write_text(json.dumps(manifest_obj, indent=2), encoding="utf-8")
 
     # Re-read the enriched manifest and derive exif_index from it
+        # Re-read manifest and derive EXIF index
     try:
         manifest_obj = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
@@ -2181,8 +2332,6 @@ async def api_test_run(
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),
         "used_thermal": bool(presp.get("used_thermal")),
-        "used_channel_count": int(presp.get("used_channel_count") or 0),
-        "final_mode": presp.get("final_mode"),
         "media_root": f"/media/sessions/{out_root.name}",
     }
 

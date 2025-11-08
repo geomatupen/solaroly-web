@@ -16,18 +16,18 @@ from shutil import copy2
 # Optional heavy imports (guarded)
 try:
     from PIL import Image as PILImage
-except Exception:
+except (ImportError, ModuleNotFoundError):
     PILImage = None
 
 try:
     import numpy as np  # type: ignore
-except Exception:
+except (ImportError, ModuleNotFoundError):
     np = None
 
 try:
     import rasterio  # type: ignore
     from rasterio.enums import Resampling  # type: ignore
-except Exception:
+except (ImportError, ModuleNotFoundError):
     rasterio = None
     Resampling = None
 
@@ -59,7 +59,7 @@ def write_json_safe(path: Path, obj: Dict[str, Any]) -> None:
             LOGGER.debug("failed to write json to %s", path)
     try:
         tmp.unlink(missing_ok=True)
-    except Exception:
+    except OSError:
         pass
 
 
@@ -135,7 +135,7 @@ def prepare_dataset_for_run(
                         im.save(dst)
                 else:
                     copy2(p, dst)
-            except Exception:
+            except (OSError, ValueError):
                 LOGGER.debug("failed to process %s", p)
 
     _copy_rgb(src_train, train_out)
@@ -165,4 +165,19 @@ def input_mode_from_meta(meta: Dict[str, Any], default: str = "rgb") -> str:
     if val in {"rgbt", "rgb+t", "rgb_thermal", "thermal_rgb", "rgb+thermal", "4ch", "rgbt4"}:
         return "rgbt"
     return "rgb"
+
+
+def backend_name_from_meta(meta: Dict[str, Any], default: str = "detectron") -> str:
+    """Return a normalized backend name from model metadata.
+
+    This is a small compatibility helper used by backend adapters when
+    normalizing and saving `model_meta.json`.
+    """
+    if not isinstance(meta, dict):
+        return default
+    b = meta.get("backend") or meta.get("engine") or default
+    try:
+        return str(b).strip().lower()
+    except Exception:
+        return default
 

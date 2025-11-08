@@ -11,11 +11,7 @@ def get_num_classes_from_coco(anno_json: str | Path) -> int:
 def get_num_classes(anno_json: str | Path) -> int:
     mod_path = os.getenv("PVRT_HELPERS_MODULE", "").strip()
     if mod_path:
-        try:
-            mod = __import__(mod_path, fromlist=["get_num_classes"])
-            if hasattr(mod, "get_num_classes"):
-                return int(mod.get_num_classes(str(anno_json)))
-        except Exception as e:
-            import logging
-            logging.getLogger("pvrt").warning("failed loading PVRT_HELPERS_MODULE %r: %s", mod_path, e)
+        mod = __import__(mod_path, fromlist=["get_num_classes"])
+        if hasattr(mod, "get_num_classes"):
+            return int(mod.get_num_classes(str(anno_json)))
     return get_num_classes_from_coco(anno_json)

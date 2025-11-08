@@ -26,9 +26,9 @@ from ...core.io import (
     input_mode_from_meta,
     backend_name_from_meta,
     has_thermal_for_images,
+    THERMAL_EXTS,
 )
 
-# your existing modules
 from .train.datasets import register_split_coco, _find_coco_json
 from .train.trainer_rgb_only import RGBOnlyTrainer
 from .train.trainer_rgb_thermal_tolerant import RTolerantTrainer
@@ -47,8 +47,9 @@ from shutil import copy2
 import math
 import json
 
-# use your previous helpers.py to read class count from COCO (source of truth)
+# Use helpers.py to read class count from COCO (source of truth)
 from ...core.helpers import get_num_classes
+from ...core.thermal import normalize_thermal
 
 import logging
 log = logging.getLogger("pvrt")
@@ -121,14 +122,14 @@ class DetectronBackend(Backend):
 
         # Decide if this run should be 4-channel
         thermal_ok = bool(cfg_in.use_thermal and has_thermal_for_images(train_dir))
-        # Determine requested channel count (default 3). We no longer
-        # support 1-channel models; coerce any '1' to 3.
+    # Determine requested channel count (default 3). Single-channel
+    # models are not supported; coerce any '1' to 3.
         try:
             requested_channels = int(getattr(cfg_in, "channel_count", 3))
         except (TypeError, ValueError):
             requested_channels = 3
         if requested_channels == 1:
-            log.warning("UI:WARN:train: requested_channels=1 is deprecated; coercing to 3")
+            log.warning("requested_channels=1 is deprecated; coercing to 3")
             requested_channels = 3
 
         # Compute effective channel count used for this training run.
@@ -144,29 +145,47 @@ class DetectronBackend(Backend):
         else:
             effective_channels = 3
 
-        log.info(f"UI:INFO:train: effective_channels={effective_channels} (requested={requested_channels}, thermal_ok={thermal_ok})")
-        # If thermal is available but the run will use 3 channels, we are
-        # using thermal-as-RGB (grayscale encoded as 3-channel) for training.
+        log.info("UI:INFO:train: effective_channels=%s (requested=%s, thermal_ok=%s)", effective_channels, requested_channels, thermal_ok)
+    # If thermal is available but the run will use 3 channels, training
+    # will use thermal-as-RGB (grayscale encoded as 3-channel).
         if thermal_ok and effective_channels == 3:
             log.info("UI:INFO:train: Thermal grayscale will be used for training (thermal-as-RGB)")
 
-        # NOTE: per-user request we no longer prepare per-run dataset copies.
-        # Backends should operate on the existing dataset folders in-place
-        # (e.g. `data/train` and `data/valid`). If thermal decoding is needed,
-        # the decoding step will write paired files into a `thermal/` subfolder
-        # inside those directories; `has_thermal_for_images()` will detect that.
+    # Note: to avoid duplicating image bytes, this backend does not create
+    # per-run dataset copies. Backends operate on the existing dataset
+    # folders in-place (e.g. `data/train` and `data/valid`). If thermal
+    # decoding is needed, the decoding step will write paired files into a
+    # `thermal/` subfolder inside those directories; `has_thermal_for_images()` will detect that.
 
-        # Register datasets (idempotent)
+        # Register datasets (idempotent). Provide clearer errors when COCO JSON
+        # is missing so callers (web UI) get a helpful message instead of
+        # opaque KeyError/registry errors.
+        try:
+            # quick validation: ensure annotations exist (raises FileNotFoundError)
+            _find_coco_json(train_dir)
+        except FileNotFoundError as e:
+            raise RuntimeError(f"COCO annotations not found in train_dir: {train_dir}") from e
+        try:
+            _find_coco_json(val_dir)
+        except FileNotFoundError:
+            # valid may be optional for some workflows; log and continue (will register if present)
+            log.warning("No COCO annotations found in val_dir: %s", val_dir)
+
         register_split_coco("pv_train", train_dir)
         register_split_coco("pv_val",   val_dir)
 
-        # --- num_classes from COCO (your helpers.py) ---
+    # --- num_classes from COCO (helpers.py) ---
         ann_json = _find_coco_json(train_dir)
         num_classes = int(get_num_classes(ann_json))
 
         # class_names from MetadataCatalog (Detectron populates this at registration)
-        meta_train = MetadataCatalog.get("pv_train")
-        class_names = list(meta_train.thing_classes) if getattr(meta_train, "thing_classes", None) else []
+        # MetadataCatalog.get should provide metadata for the registered dataset.
+        # If it does not, surface a clear error.
+        try:
+            meta_train = MetadataCatalog.get("pv_train")
+            class_names = list(meta_train.thing_classes) if getattr(meta_train, "thing_classes", None) else []
+        except Exception as e:
+            raise RuntimeError(f"Failed to obtain metadata for registered dataset 'pv_train': {e}") from e
 
         # fallback to COCO if still empty (prevents blank in thermal)
         if not class_names:
@@ -242,7 +261,7 @@ class DetectronBackend(Backend):
                     hb = self.trainer.storage.history("total_loss")
                     s = hb.latest()
                     raw = float(getattr(s, "value", s))
-                    logging.getLogger("pvrt.test").info(f"UI:LOG:loss: iter={self.trainer.iter} total_loss(raw)={raw:.4f}")
+                    logging.getLogger("pvrt.test").info(f"LOG:loss: iter={self.trainer.iter} total_loss(raw)={raw:.4f}")
         # trainer.register_hooks([_RawLossLogger()])
 
         # capture last seen total_loss from EventStorage
@@ -291,9 +310,8 @@ class DetectronBackend(Backend):
         def _eval_and_log():
             # inference_on_dataset may raise a KeyError when the underlying
             # COCO API expects certain top-level keys (like 'info') to be
-            # present in the dataset. Some user-provided COCO JSON files omit
-            # these optional fields which causes pycocotools to fail during
-            # loadRes(). To be robust, catch that KeyError, attempt to
+            # present in the dataset. COCO JSON files may omit these optional
+            # fields which can cause pycocotools to fail during loadRes(). To be robust, catch that KeyError, attempt to
             # inject minimal 'info' into the evaluator's COCO dataset, and
             # retry once.
             try:
@@ -411,6 +429,10 @@ class DetectronBackend(Backend):
         _normalize_and_save_meta(out_dir, {
             "backend": "detectron",
             "input_mode": "rgbt" if (thermal_ok and effective_channels == 4) else "rgb",
+            # Record whether this model used thermal data during training so
+            # test-time selection can prefer decoded thermal even when the
+            # effective channel count is 3 (thermal-as-RGB training).
+            "thermal_used": bool(thermal_ok and getattr(cfg_in, "use_thermal", False)),
             "selected_bands": getattr(cfg_in, "selected_bands", None),
             "channel_count": int(effective_channels),
             "model_name": MODEL_NAME,
@@ -450,7 +472,10 @@ class DetectronBackend(Backend):
                 requested = 3
             model_mode = input_mode_from_meta(meta, default="rgb").lower().strip()
             # if model_mode rgbt and thermal files exist, inference will be 4 unless 1 requested
-            use_thermal = bool(model_mode == "rgbt" and has_thermal_for_images(images_dir))
+            # check whether dataset actually contains decoded thermal files
+            has_thermal = bool(has_thermal_for_images(images_dir))
+            model_trained_with_thermal = bool(meta.get("thermal_used", False))
+            use_thermal = bool((model_mode == "rgbt" or model_trained_with_thermal) and has_thermal)
             # model's recorded channel_count (if any)
             try:
                 model_chan = int(meta.get("channel_count", 0) or 0)
@@ -462,22 +487,109 @@ class DetectronBackend(Backend):
                     effective_channels_test = 4
                 else:
                     effective_channels_test = 3
+                # Determine selected_mode for clearer logging when 3-channel is used
+                if effective_channels_test == 4:
+                    selected_mode = 'rgbt'
+                elif effective_channels_test == 3:
+                    selected_mode = 'thermal_as_rgb' if use_thermal else 'rgb'
+                else:
+                    selected_mode = 'rgb'
+
                 log.info(
-                    f"UI:INFO:test: backend=detectron | selected=rgbt | model_trained={model_chan or 'unknown'} | requested={requested} | effective_channels={effective_channels_test} | score_thresh={score_thresh:.3f}"
+                    f"UI:INFO:test: backend=detectron | selected={selected_mode} | model_trained={model_chan or 'unknown'} | requested={requested} | effective_channels={effective_channels_test} | score_thresh={score_thresh:.3f}"
                 )
                 # If the effective test channels is 3 while thermal is present,
                 # this means we will be testing on thermal-as-RGB (grayscale
                 # previews) rather than RGB+Thermal fusion.
-                if effective_channels_test == 3:
+                if effective_channels_test == 3 and use_thermal:
                     log.info("UI:INFO:test: Thermal grayscale will be used for testing (thermal-as-RGB)")
                 # for 4-channel use rgbt predictor; otherwise use RGB predictor (3-channel grayscale encoded as RGB)
                 if effective_channels_test == 4:
                     return predict_folder_rgbt(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh, channel_count=effective_channels_test)
                 else:
-                    return predict_folder_rgb(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
+                        # If we're using thermal in 3-channel mode, prepare a
+                        # temporary folder containing grayscale thermal images
+                        # named to match the original RGB filenames so the
+                        # standard RGB predictor can consume them without
+                        # changing downstream naming.
+                        if effective_channels_test == 3 and use_thermal:
+                            try:
+                                from shutil import copy2
+                                import tifffile
+                            except Exception:
+                                tifffile = None
+                            tmp = out_dir / "predict_thermal"
+                            tmp.mkdir(parents=True, exist_ok=True)
+                            exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+                            # helper to locate thermal preview similar to predict_rgb_thermal._find_thermal
+                            def _locate_thermal_for_rgb(rgb_path: Path):
+                                tdir = rgb_path.parent / "thermal"
+                                pjson = tdir / "pairs.json"
+                                if pjson.exists():
+                                    try:
+                                        pairs = json.loads(pjson.read_text(encoding="utf-8"))
+                                        target = pairs.get(rgb_path.name)
+                                        if target:
+                                            candidate = (rgb_path.parent / target).resolve()
+                                            if candidate.exists():
+                                                return candidate
+                                    except Exception:
+                                        pass
+                                # check common preview names under thermal/
+                                for e in sorted(THERMAL_EXTS):
+                                    cand1 = tdir / f"{rgb_path.stem}_thermal{e}"
+                                    if cand1.exists():
+                                        return cand1
+                                    cand2 = tdir / f"{rgb_path.stem}{e}"
+                                    if cand2.exists():
+                                        return cand2
+                                # sidecar next to RGB
+                                for e in sorted(THERMAL_EXTS):
+                                    cand = rgb_path.with_name(f"{rgb_path.stem}_thermal{e}")
+                                    if cand.exists():
+                                        return cand
+                                return None
+
+                            from PIL import Image
+                            import numpy as np
+                            for p in sorted(images_dir.iterdir()):
+                                if not p.is_file() or p.suffix.lower() not in exts:
+                                    continue
+                                tpath = _locate_thermal_for_rgb(p)
+                                if tpath is None:
+                                    # no thermal for this image; skip it so predictor will
+                                    # possibly complain or simply not process missing entries
+                                    continue
+                                # read + normalize thermal preview using canonical helper
+                                try:
+                                    g8 = normalize_thermal(tpath)
+                                except Exception:
+                                    # fallback: try reading as uint8 image directly
+                                    try:
+                                        from PIL import Image as _Image
+                                        g8 = np.array(_Image.open(tpath).convert('L')).astype(np.uint8)
+                                    except Exception:
+                                        continue
+                                # write a 3-channel RGB file matching original filename
+                                try:
+                                    if g8.ndim == 2:
+                                        rgb = np.stack([g8, g8, g8], axis=2)
+                                    else:
+                                        rgb = g8[..., :3]
+                                    outp = tmp / p.name
+                                    Image.fromarray(rgb).save(str(outp))
+                                except Exception:
+                                    continue
+                            # call RGB predictor on the temp folder (only images that had thermal)
+                            return predict_folder_rgb(images_dir=tmp, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
+                        else:
+                            return predict_folder_rgb(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
             else:
                 # Model or data don't support thermal despite user request: fall back to RGB
-                log.info(f"UI:INFO:test: backend=detectron | selected=rgb (fallback) | effective_channels=3 | score_thresh={score_thresh:.3f}")
+                if cfg_in.use_thermal and not has_thermal:
+                    log.warning(f"UI:WARN:test: requested thermal but no decoded thermal files found in {images_dir}; falling back to rgb")
+                else:
+                    log.info(f"UI:INFO:test: backend=detectron | selected=rgb (fallback) | effective_channels=3 | score_thresh={score_thresh:.3f}")
                 return predict_folder_rgb(images_dir=images_dir, weights_dir=weights, out_dir=out_dir, score_thresh=score_thresh)
 
         # inference without thermal requested

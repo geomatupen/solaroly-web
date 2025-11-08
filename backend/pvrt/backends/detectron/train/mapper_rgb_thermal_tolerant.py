@@ -8,6 +8,7 @@ from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
 
 from .aug_utils import build_geometric_augs, build_rgb_photometric_augs
+from ....core.thermal import normalize_thermal
 
 
 THERMAL_DIR_NAMES = ("thermal", "ir", "t", "temp")
@@ -16,13 +17,10 @@ THERMAL_EXTS = (".tif", ".tiff", ".png")
 @lru_cache(maxsize=128)
 def _load_pairs_json(images_dir: str) -> Dict[str, str]:
     pj = Path(images_dir) / "thermal" / "pairs.json"
-    if pj.exists():
-        try:
-            j = json.loads(pj.read_text(encoding="utf-8"))
-            return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
-        except Exception:
-            # malformed or unreadable pairs.json -> treat as empty mapping
-            return {}
+    if not pj.exists():
+        return {}
+    j = json.loads(pj.read_text(encoding="utf-8"))
+    return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
     return {}
 
 def _guess_thermal_sidecar(images_dir: Path, img_path: Path) -> Optional[Path]:
@@ -40,18 +38,20 @@ def _guess_thermal_sidecar(images_dir: Path, img_path: Path) -> Optional[Path]:
     return None
 
 def _load_thermal_uint8(path: Path, size_hw: Tuple[int, int]) -> Optional[np.ndarray]:
-    arr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if arr is None: return None
-    if arr.ndim == 3: arr = arr[..., 0]
-    arr = arr.astype(np.float32)
-    p2, p98 = np.percentile(arr, [2.0, 98.0])
-    lo, hi = float(p2), float(p98)
-    if hi <= lo:
-        lo, hi = float(arr.min()), float(max(arr.max(), arr.min() + 1.0))
-    arr = np.clip((arr - lo) / (hi - lo), 0.0, 1.0) * 255.0
-    t8 = arr.astype(np.uint8)
+    # Use shared normalizer so training and inference use identical rules.
+    try:
+        g8 = normalize_thermal(path)
+    except Exception:
+        arr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if arr is None:
+            return None
+        if arr.ndim == 3:
+            arr = arr[..., 0]
+        g8 = np.clip(arr, 0, 255).astype(np.uint8)
     h, w = size_hw
-    return cv2.resize(t8, (w, h), interpolation=cv2.INTER_LINEAR) if t8.shape != (h, w) else t8
+    if g8.shape != (h, w):
+        return cv2.resize(g8, (w, h), interpolation=cv2.INTER_LINEAR)
+    return g8
 
 def _stack_bgrt(bgr: np.ndarray, t8: np.ndarray) -> np.ndarray:
     if bgr.ndim != 3 or bgr.shape[2] != 3: raise ValueError("Expected BGR image with 3 channels")
@@ -85,7 +85,7 @@ class RGBThermalDatasetMapper:
         max_size_test  = int(getattr(cfg.INPUT, "MAX_SIZE_TEST", 1333))
 
         if self.is_train:
-            # Read whatever is set, but *we* will use 'choice' unconditionally
+            # Read whatever is set; use 'choice' unconditionally to avoid 'range'+[800] crash
             min_sizes = _as_list(getattr(cfg.INPUT, "MIN_SIZE_TRAIN", [800])) or [800]
 
             self.augmentations = T.AugmentationList([

@@ -5,6 +5,7 @@ from functools import lru_cache
 import json, cv2, numpy as np, torch
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
+import logging
 
 from .aug_utils import build_geometric_augs
 

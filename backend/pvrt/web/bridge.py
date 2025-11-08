@@ -4,7 +4,7 @@ Web bridge: minimal glue between FastAPI routes and ML backends.
 
 - Chooses the backend (defaults to 'detectron' unless specified)
 - Applies the thermal-use rules consistently for train/test
-- Returns simple paths your API can serialize
+- Returns simple paths the API can serialize
 
 Keep this module tiny so app.py remains human-readable.
 """
@@ -17,22 +17,49 @@ import logging
 from ..core.registry import get_backend, TrainConfig, PredictConfig
 from ..core.io import load_model_meta, input_mode_from_meta, has_thermal_for_images
 
-BackendName = Literal["detectron", "yolo"]  # extend as you add more
+BackendName = Literal["detectron", "yolo"]  # extend when adding more backends
 
 _log_test = logging.getLogger("pvrt.test")   # mini-log (SSE panel)
 _log_full = logging.getLogger("pvrt")        # full logs tab
 
 
-def _select_infer_mode(use_thermal_request: bool, data_has_thermal: bool, model_mode: str):
-    model_is_rgbt = model_mode in {"rgbt","rgb+thermal","thermal","rgb_thermal","4ch"}
-    if use_thermal_request and data_has_thermal and model_is_rgbt:
-        _log_test.info("UI:INFO:test: decision: use_thermal_request=True, data_has_thermal=True, model_mode=rgbt - rgbt")
+def _select_infer_mode(
+    use_thermal_request: bool,
+    data_has_thermal: bool,
+    model_mode: str,
+    model_thermal_used: bool = False,
+):
+    """
+    Decide whether to use thermal at inference time.
+
+    A model may be recorded as 3-channel RGB in `input_mode` but still have
+    been trained using decoded thermal images (thermal_as_rgb). Such models
+    set `thermal_used` in their metadata. Treat `thermal_used=True` as an
+    indicator the model can accept thermal-as-RGB even when `input_mode` is
+    'rgb'.
+    """
+    model_is_rgbt = model_mode in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"} or bool(model_thermal_used)
+    # Allow thermal when either the frontend explicitly requested it OR
+    # the model was trained with thermal (`thermal_used=True`) — provided
+    # the dataset has decoded thermal previews. This makes models saved as
+    # 3-channel but trained with thermal automatically use the thermal
+    # previews at test time unless explicitly overridden by the caller.
+    if (use_thermal_request or bool(model_thermal_used)) and data_has_thermal and model_is_rgbt:
+        _log_test.info(
+            "decision: using thermal path (model_mode=%s, thermal_used=%s, request=%s)",
+            model_mode,
+            bool(model_thermal_used),
+            bool(use_thermal_request),
+        )
         return True, None
     # fallback reason
-    if not use_thermal_request: reason = "request_false"
-    elif not data_has_thermal:  reason = "no_thermal_in_dataset"
-    else:                       reason = f"model_mode={model_mode!r}"
-    _log_test.warning(f"UI:INFO:test: decision: FALLBACK to RGB (reason={reason})")
+    if not use_thermal_request:
+        reason = "request_false"
+    elif not data_has_thermal:
+        reason = "no_thermal_in_dataset"
+    else:
+        reason = f"model_mode={model_mode!r} and thermal_used={bool(model_thermal_used)}"
+    _log_test.warning("decision: falling back to RGB (reason=%s)", reason)
     return False, reason
 
 
@@ -70,7 +97,7 @@ def train_entry(
     # Only enable thermal if user asked AND thermal exists in training set
     thermal_ok = bool(use_thermal_request and has_thermal_for_images(train_dir))
     _log_full.info(
-        f"UI:INFO:train: decision: use_thermal_request={use_thermal_request}, "
+        f"INFO:train: decision: use_thermal_request={use_thermal_request}, "
         f"data_has_thermal={thermal_ok} - {'rgbt' if thermal_ok else 'rgb'}, learning rate = {base_lr}"
     )
 
@@ -128,33 +155,30 @@ def predict_entry(
     # exceptions so a missing DIRP library won't fail the whole predict call.
     decode_stats = None
     if use_thermal_request and not data_has_thermal:
-        try:
-            # local import to avoid heavy DJI SDK import at module-load time
-            from ..dataops.scan_decode_split import ensure_dirp_init, scan_split_decode_thermal
+        # local import to avoid heavy DJI SDK import at module-load time
+        from ..dataops.scan_decode_split import ensure_dirp_init, scan_split_decode_thermal
 
-            _log_test.info(f"UI:INFO:test: attempting on-demand thermal decode: {images_dir}")
-            try:
-                ensure_dirp_init()
-            except Exception as e:
-                _log_full.warning(f"UI:WARN:test: DIRP init failed during on-demand decode: {e}")
-            try:
-                pairs_path, stats = scan_split_decode_thermal(images_dir)
-                decode_stats = stats
-                _log_test.info(f"UI:INFO:test: on-demand thermal decode summary -> {stats}")
-            except Exception as e:
-                _log_full.warning(f"UI:WARN:test: on-demand thermal decode error: {e}")
-        except Exception as e:
-            # If importing the decoder fails for any reason, log and continue.
-            _log_full.warning(f"UI:WARN:test: could not run on-demand decode: {e}")
+        _log_test.info(f"UI:INFO:test: attempting on-demand thermal decode: {images_dir}")
+        # Let ensure_dirp_init raise if DIRP isn't available; caller should see the error.
+        ensure_dirp_init()
+
+        pairs_path, stats = scan_split_decode_thermal(images_dir)
+        decode_stats = stats
+        _log_test.info(f"UI:INFO:test: on-demand thermal decode summary -> {stats}")
 
         # Re-evaluate presence of thermal files after the decode attempt
         try:
             from ..core.io import has_thermal_for_images
             data_has_thermal = has_thermal_for_images(images_dir)
-        except Exception:
+        except (FileNotFoundError, OSError, ValueError):
             data_has_thermal = False
 
-    use_thermal, _ = _select_infer_mode(use_thermal_request, data_has_thermal, model_mode)
+    use_thermal, _ = _select_infer_mode(
+        use_thermal_request,
+        data_has_thermal,
+        model_mode,
+        model_thermal_used=bool(meta.get("thermal_used", False)),
+    )
 
     chosen_thresh = float(score_thresh_frontend) if score_thresh_frontend is not None else float(meta.get("score_thresh_test", 0.5))
     _log_test.info(f"UI:INFO:test: Use thermal in bridge.py={use_thermal_request} , data_has_thermal={data_has_thermal}, model_mode={model_mode}")
@@ -164,12 +188,32 @@ def predict_entry(
     # Priority: explicit caller `channel_count` argument (when non-default), else use model's recorded channel_count, else default to 3.
     try:
         model_chan = int(meta.get("channel_count", 0) or 0)
-    except Exception:
+    except (TypeError, ValueError):
         model_chan = 0
     # If caller passed explicit (non-None) channel_count param, prefer it; otherwise prefer model metadata
     final_channel_count = int(channel_count) if channel_count is not None and int(channel_count) != 3 else (model_chan or 3)
 
-    _log_test.info(f"UI:INFO:test: channel selection -> frontend_request={channel_count}, model_trained={model_chan or 'unknown'} -> final_channel_count={final_channel_count}")
+    # Determine a human-friendly final mode string for logs when 3ch is used
+    if final_channel_count == 4:
+        final_mode = 'rgbt'
+    elif final_channel_count == 3:
+        # prefer thermal-as-RGB when use_thermal is True and thermal data/models indicate it
+        if use_thermal and (model_mode == 'rgbt' or bool(meta.get('thermal_used', False))):
+            final_mode = 'thermal'
+        else:
+            final_mode = 'rgb'
+    elif final_channel_count == 1:
+        final_mode = 'thermal_only'
+    else:
+        final_mode = 'unknown'
+
+    _log_test.info(
+        f"UI:INFO:test: channel selection -> frontend_request={channel_count}, model_trained={model_chan or 'unknown'}, data_has_thermal={data_has_thermal}, use_thermal={use_thermal} -> final_channel_count={final_channel_count} ({final_mode})"
+    )
+
+    # Emit a concise final-mode message so callers (and SSE clients) can
+    # display the chosen mode directly.
+    _log_test.info(f"UI:INFO:test: final_mode={final_mode}")
 
     results_dir = backend_impl.predict(
         PredictConfig(
@@ -188,6 +232,7 @@ def predict_entry(
         "model_mode": model_mode,
         "used_thermal": use_thermal,
         "used_channel_count": int(final_channel_count),
+        "final_mode": final_mode,
         "score_thresh": chosen_thresh,
         "decode_stats": decode_stats,
     }

@@ -265,11 +265,11 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     }
     # Add mask AP if available
     if hasattr(inst, "pred_masks") and hasattr(inst, "scores") and hasattr(inst, "pred_classes"):
-        # Placeholder: actual mask AP computation should be added here if available
-        metrics["mask_ap"] = None  # TODO: replace with real mask AP if computed
+        # mask AP not computed in this runner
+        metrics["mask_ap"] = None
     write_metrics_json(out_dir, metrics)
 
     # ONE summary line + completion line
     log.info(f"UI:INFO:test: predictions_total={total}")
-    # log.info("UI:OK:test: Test complete")
+    log.info("UI:OK:test: Test complete")
     return out_dir

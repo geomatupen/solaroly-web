@@ -9,7 +9,7 @@ from detectron2.data.datasets import register_coco_instances
 
 
 # ---------------------------------------------------------------------
-# COCO JSON discovery (kept from your original, with the same order)
+# COCO JSON discovery (preserve historical discovery order)
 # ---------------------------------------------------------------------
 
 def _find_coco_json(split_dir: Path) -> Path:
@@ -42,23 +42,26 @@ def _purge_dataset_name(name: str) -> None:
     Works across Detectron2 versions (public .remove() if present,
     otherwise fall back to private maps).
     """
-    # DatasetCatalog
-    try:
-        DatasetCatalog.remove(name)  # type: ignore[attr-defined]
-    except Exception:
+    # DatasetCatalog: call public API if present; otherwise mutate the private map.
+    # Some Detectron2 versions raise KeyError if the name is not registered.
+    # Only silence that specific case so other errors still surface.
+    if hasattr(DatasetCatalog, "remove"):
         try:
-            DatasetCatalog._REGISTERED.pop(name, None)  # type: ignore[attr-defined]
-        except Exception as e:
-            logging.getLogger("pvrt").debug("purge dataset ignore: %s", e)# MetadataCatalog
-    try:
+            DatasetCatalog.remove(name)  # type: ignore[attr-defined]
+        except KeyError:
+            # not registered — that's fine, continue
+            pass
+    else:
+        # Older/newer versions may expose a private registry mapping
+        DatasetCatalog._REGISTERED.pop(name, None)  # type: ignore[attr-defined]
+
+    # MetadataCatalog: try to remove from known private map if present
+    if hasattr(MetadataCatalog, "_NAME_TO_META"):
         MetadataCatalog._NAME_TO_META.pop(name, None)  # type: ignore[attr-defined]
-    except Exception:
-        # Some versions lazily create metadata; nothing to purge.
-        pass
 
 
 # ---------------------------------------------------------------------
-# Public API (same signature/behavior as your original, but idempotent)
+# Public API (same signature/behavior as original, but idempotent)
 # ---------------------------------------------------------------------
 
 def register_split_coco(name: str, split_dir: str | Path) -> None:
@@ -66,7 +69,7 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
     Register (or re-register) a COCO dataset split under `name` pointing at `split_dir`.
 
     - Uses detectron2.datasets.register_coco_instances (simple + battle-tested)
-    - Purges any prior registration so you can call this repeatedly (fixes 500 on 2nd run)
+    - Purges any prior registration to allow repeated calls (avoids a 500 on a second run)
     - Attaches `thermal_pairs` metadata if thermal/pairs.json exists
     """
     split_dir = Path(split_dir)
@@ -77,21 +80,16 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
     # 1b) Defensive: some COCO JSON files omit optional top-level fields like
     # 'info' which pycocotools expects when loading results. Create a small
     # fixed copy with a minimal 'info' section if needed so evaluation does
-    # not fail. We write the fixed copy next to the original (idempotent).
-    try:
-        with open(anno, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if isinstance(data, dict) and 'info' not in data:
-            fixed = dict(data)
-            fixed['info'] = {'description': 'pvrt dataset (info added)'}
-            fixed_path = Path(anno).with_name(Path(anno).stem + "_pvrt_fixed.json")
-            fixed_path.write_text(json.dumps(fixed), encoding='utf-8')
-            anno = fixed_path
-    except (OSError, json.JSONDecodeError) as e:
-        # If file IO or JSON decoding fails, fall back to original anno and allow
-        # downstream registration to raise if the file is truly broken.
-        import logging
-        logging.getLogger("pvrt").warning("could not create fixed COCO JSON copy: %s", e)
+    # not fail. The fixed copy is written next to the original to keep the
+    # operation idempotent.
+    with open(anno, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    if isinstance(data, dict) and 'info' not in data:
+        fixed = dict(data)
+        fixed['info'] = {'description': 'pvrt dataset (info added)'}
+        fixed_path = Path(anno).with_name(Path(anno).stem + "_pvrt_fixed.json")
+        fixed_path.write_text(json.dumps(fixed), encoding='utf-8')
+        anno = fixed_path
 
     # 2) Purge any prior registration for this name (idempotent re-run)
     _purge_dataset_name(name)
@@ -99,15 +97,10 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
     # 3) Fresh registration
     register_coco_instances(name, {}, str(anno), str(split_dir))
 
-    # 4) Attach thermal pairs to metadata (kept from your original)
+    # 4) Attach thermal pairs to metadata (preserve existing behavior)
     meta = MetadataCatalog.get(name)
     pairs = split_dir / "thermal" / "pairs.json"
     if pairs.exists():
-        try:
-            meta.thermal_pairs = json.loads(pairs.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            import logging
-            logging.getLogger("pvrt").warning("failed to parse thermal/pairs.json: %s", e)
-            meta.thermal_pairs = {}
+        meta.thermal_pairs = json.loads(pairs.read_text(encoding="utf-8"))
     else:
         meta.thermal_pairs = {}

@@ -10,8 +10,8 @@ first Conv2d accepts a single input channel. The approach:
   state_dict, and save a new checkpoint that mirrors the original but with
   the modified "model" entry (or a raw state_dict if the original was such).
 
-This is best-effort: if any step fails we fall back to returning the original
-source path and leave training to proceed without conversion.
+Best-effort: if any step fails the original source path is returned and
+training proceeds without conversion.
 """
 from __future__ import annotations
 
