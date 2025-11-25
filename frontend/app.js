@@ -34,6 +34,15 @@ let userToggledThermalTest = false;  // whether user manually toggled the test t
 let imageCatalog = [];              // [{ id, name, url, bounds, on }]
 let imageOverlays = new Map();      // id -> L.ImageOverlay
 
+// last loaded images.geojson and session info (used to reapply overrides)
+let lastLoadedImagesGJ = null;
+let lastLoadedSessionName = null;
+let lastLoadedImagesUrl = null;
+
+// camera position overrides loaded from an uploaded WebODM camera-positions JSON
+// keyed by normalized basename (no extension), value: { lon, lat, alt }
+let cameraPositionOverrides = {};
+
 // fallback sizing if images.geojson has only a Point
 const DEFAULT_IMAGE_HALF_SIZE_M = 25; // ~25 m half-width/half-height (adjust if needed)
 
@@ -1348,6 +1357,70 @@ function populateImagesList(features){
   });
 }
 
+// ---------------- Camera positions overrides (frontend-only) ----------------
+function normalizeBasename(name){
+  if(!name) return '';
+  // strip path and extension, lower-case
+  const b = name.split(/[/\\]/).pop();
+  const noext = b.replace(/\.[^.]+$/, '');
+  return noext.trim().toLowerCase();
+}
+
+function findOverrideForName(name){
+  const stem = normalizeBasename(name);
+  if(!stem) return null;
+  // direct match
+  if(cameraPositionOverrides[stem]) return cameraPositionOverrides[stem];
+
+  // swap _v <-> _t suffix (common naming: *_V / *_T)
+  const swap = (s) => {
+    if(/[_\-]v$/.test(s)) return s.replace(/[_\-]v$/, (m)=> m[0] + 't');
+    if(/[_\-]t$/.test(s)) return s.replace(/[_\-]t$/, (m)=> m[0] + 'v');
+    return null;
+  };
+  const s2 = swap(stem);
+  if(s2 && cameraPositionOverrides[s2]) return cameraPositionOverrides[s2];
+
+  // try removing trailing _v/_t
+  const s3 = stem.replace(/[_\-][vt]$/, '');
+  if(s3 && cameraPositionOverrides[s3]) return cameraPositionOverrides[s3];
+
+  return null;
+}
+
+function parseCameraPositionsFeatureCollection(gj){
+  const out = {};
+  if(!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return out;
+  for(const f of gj.features){
+    try{
+      const fn = f?.properties?.filename || f?.properties?.name || f?.properties?.image || f?.properties?.file;
+      if(!fn) continue;
+      const key = normalizeBasename(fn);
+      const coords = f?.geometry?.coordinates;
+      if(!coords || !Array.isArray(coords) || coords.length < 2) continue;
+      // store as object { lon, lat, alt }
+      out[key] = { lon: Number(coords[0]), lat: Number(coords[1]), alt: coords.length>2 ? Number(coords[2]) : null };
+    }catch(_){ continue; }
+  }
+  return out;
+}
+
+function updateCameraPositionsInfo(matched, total){
+  const el = document.getElementById('cameraPositionsInfo');
+  if(!el) return;
+  if(!total){ el.textContent = '' ; return; }
+  el.textContent = `Camera positions: ${total} features; matched images: ${matched}. Using locations from uploaded file.`;
+}
+
+async function clearCameraPositions(){
+  cameraPositionOverrides = {};
+  updateCameraPositionsInfo(0,0);
+  // re-render current session images if any
+  if(lastLoadedSessionName){
+    await loadImagesCatalog(lastLoadedSessionName, lastLoadedImagesUrl);
+  }
+}
+
 
 // function renderLegend(){
 //   const st = overlayRegistry["Anomalies"]?.style || { color:"#ff5722", fillColor:"#ff5722" };
@@ -1563,7 +1636,6 @@ function escapeHtml(s) {
 async function loadImagesCatalog(sessionName, imagesUrl){
   imageCatalog = [];
   clearImageOverlays();
-
   const listEl = document.getElementById('imagesList');
   if (listEl) listEl.innerHTML = '<li class="dim">Loading…</li>';
 
@@ -1574,12 +1646,36 @@ async function loadImagesCatalog(sessionName, imagesUrl){
 
   try {
     const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
+    // store original and session info so overrides can be reapplied later
+    lastLoadedImagesGJ = gj;
+    lastLoadedSessionName = sessionName;
+    lastLoadedImagesUrl = imagesUrl;
 
-    // 2a) populate the “Image markers” layer
-    installImageMarkers(gj);
+    // Build modified copy of gj where we apply any cameraPositionOverrides
+    const modifiedGJ = JSON.parse(JSON.stringify(gj));
+    let matched = 0;
+    if (Array.isArray(modifiedGJ.features)){
+      for (const f of modifiedGJ.features){
+        try{
+          const file = f?.properties?.image || f?.properties?.file || f?.properties?.name;
+          if(!file) continue;
+          const ov = findOverrideForName(file);
+          if (ov){
+            // replace geometry coordinates [lon, lat, (alt)]
+            f.geometry = f.geometry || { type: 'Point', coordinates: [ov.lon, ov.lat] };
+            f.geometry.coordinates = [ov.lon, ov.lat].concat(ov.alt != null ? [ov.alt] : []);
+            matched++;
+          }
+        }catch(_){ }
+      }
+    }
 
-    // 2b) build imageCatalog for actual image overlays
-    const feats = Array.isArray(gj?.features) ? gj.features : [];
+    // 2a) populate the “Image markers” layer using modified coordinates
+    installImageMarkers(modifiedGJ);
+
+    // 2b) build imageCatalog for actual image overlays (use modifiedGJ)
+    imageCatalog = [];
+    const feats = Array.isArray(modifiedGJ?.features) ? modifiedGJ.features : [];
     for (const f of feats){
       if (f?.geometry?.type !== 'Point') continue;
 
@@ -1587,7 +1683,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       if (typeof lat !== 'number' || typeof lng !== 'number') continue;
 
       // filename is in properties.image (per your sample)
-      const file = f?.properties?.image;
+      const file = f?.properties?.image || f?.properties?.file || f?.properties?.name;
       if (!file) continue;
 
       // prepared overlay JPG path (server writes JPG overlays now)
@@ -1604,6 +1700,9 @@ async function loadImagesCatalog(sessionName, imagesUrl){
     }
 
     renderImagesList();
+    // update info UI if camera positions present
+    const totalOverrides = Object.keys(cameraPositionOverrides).length;
+    updateCameraPositionsInfo(matched, totalOverrides);
   } catch (e) {
     console.warn('images_geojson parse failed:', e);
     if (listEl) listEl.innerHTML = '<li class="err">Failed to load images</li>';
@@ -1787,6 +1886,32 @@ $("#fileGeoJSON")?.addEventListener("change", async (e)=>{
     e.target.value = "";
   }
 });
+
+// Camera positions upload (WebODM) - frontend-only overrides
+$("#fileCameraPositions")?.addEventListener("change", async (e)=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  try{
+    const text = await f.text();
+    const gj = JSON.parse(text);
+    const parsed = parseCameraPositionsFeatureCollection(gj);
+    cameraPositionOverrides = parsed;
+    const total = Object.keys(parsed).length;
+    // If images already loaded for a session, re-run loadImagesCatalog to apply overrides
+    if(lastLoadedSessionName && lastLoadedImagesUrl){
+      await loadImagesCatalog(lastLoadedSessionName, lastLoadedImagesUrl);
+    } else {
+      updateCameraPositionsInfo(0, total);
+    }
+  }catch(ex){
+    alert('Invalid JSON');
+    console.warn('camera positions parse failed', ex);
+  }finally{
+    e.target.value = "";
+  }
+});
+
+$("#btnClearCameraPositions")?.addEventListener('click', async (e)=>{ e.preventDefault(); await clearCameraPositions(); });
 
 // ---------- logs (SSE) ----------
 let evtSource = null;

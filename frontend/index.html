@@ -254,6 +254,18 @@
             </div>
             <ul id="imagesList" class="layersList"></ul>
 
+            <!-- Camera positions upload (WebODM) -->
+            <div style="margin-top:8px; padding:8px; border-top:1px solid var(--border);">
+              <label class="fileDrop tiny">
+                <input id="fileCameraPositions" type="file" accept=".json,.geojson" />
+                <span>+ Camera positions (WebODM JSON)</span>
+              </label>
+              <div id="cameraPositionsInfo" style="margin-top:6px; font-size:0.9rem; color:var(--muted)"></div>
+              <div style="margin-top:6px; display:flex; gap:.5rem;">
+                <button id="btnClearCameraPositions" class="secondary tiny">Clear overrides</button>
+              </div>
+            </div>
+
             <div id="legend" class="legend"></div>
           </aside>
 
