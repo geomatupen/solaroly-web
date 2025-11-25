@@ -1226,6 +1226,7 @@ def _preds_to_geojson(
     score_thresh: float = 0.0,
     meters_per_pixel: float = 0.05,
     exif_index: Optional[Dict[str, Tuple[float, float]]] = None,  # {'file': (lat, lon)}
+    camera_meta: Optional[Dict[str, Dict]] = None,
 ) -> Tuple[Path, Path]:
     """
     Build:
@@ -1252,25 +1253,92 @@ def _preds_to_geojson(
         except Exception:
             manifest_map = {}
 
-    # ---------------- images.geojson (points for sidebar/catalog) ----------------
+    # ---------------- images.geojson (points + optional footprint corners) ----------------
     imgs_fc = {"type": "FeatureCollection", "features": []}
-    for fname, (lat, lon) in gps_index.items():
-        props = {}
+    camera_meta = camera_meta or {}
+
+    # Collect candidate filenames from manifest, exif, sizes, and camera_meta
+    candidates = set(manifest_map.keys()) | set(gps_index.keys()) | set(sizes_index.keys()) | set(camera_meta.keys())
+
+    for fname in sorted(candidates):
+        # Determine center lat/lon (priority: camera_meta -> manifest_map -> exif_index)
+        latlon = None
+        if fname in camera_meta:
+            cm = camera_meta.get(fname) or {}
+            if cm.get("lat") is not None and cm.get("lon") is not None:
+                latlon = (float(cm.get("lat")), float(cm.get("lon")))
+            elif cm.get("lon") is not None and cm.get("lat") is not None:
+                latlon = (float(cm.get("lat")), float(cm.get("lon")))
+        if latlon is None and isinstance(manifest_map.get(fname), dict):
+            e = manifest_map.get(fname)
+            if "lat" in e and "lon" in e:
+                latlon = (float(e["lat"]), float(e["lon"]))
+        if latlon is None:
+            latlon = gps_index.get(fname)
+
+        props: Dict[str, object] = {}
+        # overlay/thumb from manifest
         if isinstance(manifest_map.get(fname), dict):
             entry = manifest_map[fname]
-            if "overlay" in entry: props["image"] = Path(entry["overlay"]).name
-            if "thumb"   in entry: props["thumb"]   = entry["thumb"]
-            if "w" in entry and "h" in entry:
-                props["w"] = int(entry["w"]); props["h"] = int(entry["h"])
-        elif fname in sizes_index:
-            w, h = sizes_index[fname]
-            props["w"] = int(w); props["h"] = int(h)
+            if "overlay" in entry:
+                props["image"] = Path(entry["overlay"]).name
+            if "thumb" in entry:
+                props["thumb"] = entry["thumb"]
 
-        imgs_fc["features"].append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [lon, lat]},
-            "properties": props
-        })
+        # width/height in pixels
+        w_px = h_px = None
+        if fname in camera_meta:
+            cm = camera_meta[fname]
+            if cm.get("w_px"):
+                w_px = int(cm.get("w_px"))
+            if cm.get("h_px"):
+                h_px = int(cm.get("h_px"))
+        if w_px is None and isinstance(manifest_map.get(fname), dict):
+            ent = manifest_map.get(fname)
+            if "w" in ent and "h" in ent:
+                w_px = int(ent["w"]); h_px = int(ent["h"])
+        if w_px is None and fname in sizes_index:
+            w_px, h_px = sizes_index.get(fname)
+
+        # basic props
+        if w_px and h_px:
+            props["w"] = int(w_px); props["h"] = int(h_px)
+
+        # If we have a center and pixel dims, compute conservative axis-aligned footprint
+        if latlon and w_px and h_px:
+            lat_c, lon_c = latlon[0], latlon[1]
+            deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat_c)
+            width_m = float(w_px) * float(meters_per_pixel)
+            height_m = float(h_px) * float(meters_per_pixel)
+            half_w = width_m / 2.0
+            half_h = height_m / 2.0
+            dx_lon = half_w * deg_per_m_lon
+            dy_lat = half_h * deg_per_m_lat
+
+            # corners UL, UR, LR, LL (axis-aligned). If camera rotation is provided, keep rotation in props.
+            ul = (lon_c - dx_lon, lat_c + dy_lat)
+            ur = (lon_c + dx_lon, lat_c + dy_lat)
+            lr = (lon_c + dx_lon, lat_c - dy_lat)
+            ll = (lon_c - dx_lon, lat_c - dy_lat)
+
+            props["width_m"] = float(width_m)
+            props["height_m"] = float(height_m)
+            rot = 0.0
+            if fname in camera_meta and isinstance(camera_meta.get(fname), dict):
+                try:
+                    rot = float(camera_meta[fname].get("rotation") or 0.0)
+                except Exception:
+                    rot = 0.0
+            props["rotation"] = float(rot)
+            props["corners"] = [list(ul), list(ur), list(lr), list(ll)]
+
+        # Only include features that have a geometry (latlon). Otherwise skip.
+        if latlon:
+            imgs_fc["features"].append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(latlon[1]), float(latlon[0])]},
+                "properties": props
+            })
 
     imgs_path = out_session / "images.geojson"
     imgs_path.write_text(json.dumps(imgs_fc, indent=2), encoding="utf-8")
@@ -1311,11 +1379,29 @@ def _preds_to_geojson(
 
         # Degrees per meter at this latitude
         deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat)
-        # Degrees per pixel in lon/lat
-        px_dlon = meters_per_pixel * deg_per_m_lon
-        px_dlat = meters_per_pixel * deg_per_m_lat
 
-    # Convert each box using CENTER-based deltas (matches reference notebook)
+        # Prepare optional per-image camera rotation if available
+        rotation_deg = 0.0
+        cam_entry = None
+        if camera_meta:
+            # try exact match then stem match
+            cam_entry = camera_meta.get(srcfile) or camera_meta.get(Path(srcfile).name)
+            if not cam_entry:
+                stem = Path(srcfile).stem
+                for k in camera_meta.keys():
+                    try:
+                        if Path(k).stem == stem:
+                            cam_entry = camera_meta.get(k)
+                            break
+                    except Exception:
+                        continue
+            if cam_entry and cam_entry.get("rotation") is not None:
+                try:
+                    rotation_deg = float(cam_entry.get("rotation") or 0.0)
+                except Exception:
+                    rotation_deg = 0.0
+
+        # Convert each box using CENTER-based deltas (matches reference notebook)
         cx = w / 2.0
         cy = h / 2.0
 
@@ -1328,15 +1414,28 @@ def _preds_to_geojson(
 
             x0, y0, x1, y1 = map(float, b)
 
-            # pixel deltas from image center → degrees
-            dx0 = (x0 - cx) * px_dlon
-            dx1 = (x1 - cx) * px_dlon
-            dy0 = (y0 - cy) * px_dlat
-            dy1 = (y1 - cy) * px_dlat
+            # pixel deltas from image center → meters
+            dx0_m = (x0 - cx) * meters_per_pixel
+            dx1_m = (x1 - cx) * meters_per_pixel
+            dy0_m = (y0 - cy) * meters_per_pixel
+            dy1_m = (y1 - cy) * meters_per_pixel
 
-            # Note: latitude increases northwards (y up). Image y grows down → subtract for lat.
-            lon0 = lon + dx0; lon1 = lon + dx1
-            lat0 = lat - dy0; lat1 = lat - dy1
+            # apply image rotation (if camera metadata provided)
+            if rotation_deg and abs(rotation_deg) > 1e-6:
+                a = math.radians(rotation_deg)
+                ca = math.cos(a); sa = math.sin(a)
+                r0x = dx0_m * ca - dy0_m * sa
+                r0y = dx0_m * sa + dy0_m * ca
+                r1x = dx1_m * ca - dy1_m * sa
+                r1y = dx1_m * sa + dy1_m * ca
+            else:
+                r0x, r0y, r1x, r1y = dx0_m, dy0_m, dx1_m, dy1_m
+
+            # convert meters → degrees using local scale
+            lon0 = lon + (r0x * deg_per_m_lon)
+            lon1 = lon + (r1x * deg_per_m_lon)
+            lat0 = lat - (r0y * deg_per_m_lat)
+            lat1 = lat - (r1y * deg_per_m_lat)
 
             poly = Polygon([
                 (lon0, lat0), (lon0, lat1),
@@ -1801,6 +1900,7 @@ async def api_test_run(
     backend: Optional[str] = Form(default=None),
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
+    cameras: UploadFile = File(None),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -2075,6 +2175,43 @@ async def api_test_run(
         if isinstance(entry, dict) and "lat" in entry and "lon" in entry:
             exif_from_manifest[fname] = (float(entry["lat"]), float(entry["lon"]))
 
+    # --- Optional: parse uploaded camera references (Agisoft) and persist mapping ---
+    camera_meta: dict = {}
+    if cameras is not None:
+        try:
+            from .cameras import parse_agisoft_cameras
+            buf = await cameras.read()
+            parsed = parse_agisoft_cameras(buf)
+            # persist raw references file into session folder for future inspection
+            try:
+                session_dir = MEDIA_DIR / "sessions" / session
+                session_dir.mkdir(parents=True, exist_ok=True)
+                cam_filename = getattr(cameras, 'filename', 'camera_references.txt') or 'camera_references.txt'
+                cam_out = session_dir / cam_filename
+                cam_out.write_bytes(buf)
+            except Exception:
+                logger.debug("Could not persist uploaded camera references to session dir")
+
+            # helper normalizer (match by stem, strip _v/_t)
+            def _norm(fn: str) -> str:
+                s = Path(fn).stem.lower()
+                return s[:-2] if s.endswith(("_v", "_t")) else s
+
+            # Build camera_meta keyed by original dataset filenames (if matched)
+            for fname in list(manifest_obj.keys()):
+                key = _norm(fname)
+                if key in parsed:
+                    camera_meta[fname] = parsed[key]
+
+            # Save a JSON summary for debugging
+            try:
+                cm_out = session_dir / "camera_meta.json"
+                cm_out.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
+            except Exception:
+                logger.debug("Could not persist camera_meta.json to session dir")
+        except Exception as e:
+            logger.warning(f"Failed to parse uploaded camera references: {e}")
+
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
     session_dir = MEDIA_DIR / "sessions" / session
     if input_type == "tif":
@@ -2134,6 +2271,7 @@ async def api_test_run(
             score_thresh=float(th_num or 0.0),
             meters_per_pixel=0.05,
             exif_index=exif_from_manifest,
+            camera_meta=camera_meta,
         )
 
     # Collect assets for UI

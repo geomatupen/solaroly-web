@@ -740,6 +740,44 @@ async function runTest(){
   fd.append("test_threshold", testThreshold);
   const backend = getSelectedBackend();
   fd.append('backend', backend);
+  // Attach optional camera references (Agisoft references.txt / CSV / TSV) when provided
+  const camInput = document.getElementById('fileCameraRefs');
+  if (camInput && camInput.files && camInput.files.length > 0){
+    const f = camInput.files[0];
+    try{
+      // basic extension check
+      const ext = (f.name || '').split('.').pop().toLowerCase();
+      if (!['txt','csv','tsv'].includes(ext)){
+        if (!confirm('Selected camera references file does not have .txt/.csv/.tsv extension. Continue anyway?')){
+          setHidden($("#spinTest"), true);
+          return;
+        }
+      }
+
+      // quick content sniff: read first chunk and check for XML start or delimiters
+      const sample = (await f.text()).slice(0, 4096);
+      const sTrim = sample.trimLeft();
+      if (sTrim.startsWith('<')){
+        alert('The uploaded file looks like XML. The backend expects Agisoft reference tables (references.txt / CSV / TSV). Please upload the table export instead.');
+        setHidden($("#spinTest"), true);
+        return;
+      }
+
+      const header = sample.split(/\r?\n/)[0] || '';
+      const looksLikeCsv = header.includes(',') || header.includes('\t') || header.split(/\s+/).length > 1;
+      if (!looksLikeCsv){
+        if (!confirm('Could not detect CSV/TSV-like headers in the uploaded camera references file. Continue anyway?')){
+          setHidden($("#spinTest"), true);
+          return;
+        }
+      }
+
+      fd.append('cameras', f);
+    }catch(e){
+      console.warn('Failed to attach cameras file', e);
+      try{ fd.append('cameras', f); }catch(_){ }
+    }
+  }
   if(backend === 'yolo'){
     const yo = getYoloOptions();
     fd.append('yolo_family', yo.family);
@@ -1912,6 +1950,19 @@ $("#fileCameraPositions")?.addEventListener("change", async (e)=>{
 });
 
 $("#btnClearCameraPositions")?.addEventListener('click', async (e)=>{ e.preventDefault(); await clearCameraPositions(); });
+
+// show selected filename for camera references input
+document.getElementById('fileCameraRefs')?.addEventListener('change', (e)=>{
+  try{
+    const inp = e.target;
+    const f = inp.files && inp.files[0];
+    const label = inp.closest('.fileDrop');
+    const span = label ? label.querySelector('span') : null;
+    if (span){
+      span.textContent = f ? f.name : 'Choose references.txt / CSV / TSV…';
+    }
+  }catch(_){ }
+});
 
 // ---------- logs (SSE) ----------
 let evtSource = null;
