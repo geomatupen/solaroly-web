@@ -91,11 +91,80 @@ function toggleImageOverlay(id, on){
   let ov = imageOverlays.get(id);
   if (on){
     if (!ov){
+      // create overlay using provided bounds (may be conservative bbox of corners)
       ov = L.imageOverlay(rec.url, rec.bounds, { opacity: 0.85, interactive: false });
       imageOverlays.set(id, ov);
     }
     ov.addTo(imagesLayerGroup);
     rec.on = true;
+
+    // apply rotation if provided in the record (from images.geojson properties.rotation)
+    try{
+      const corners = rec.corners || null;
+      // If corners geo-coordinates are available, apply a projective transform so the
+      // image exactly matches the four geographic corners.
+      if (ov && corners && Array.isArray(corners) && corners.length >= 4){
+        const applyTransform = () => {
+          try{
+            const imgEl = ov.getElement && ov.getElement();
+            if (!imgEl) return;
+            const parent = imgEl.parentElement;
+            if (parent) parent.style.overflow = 'visible';
+            imgEl.style.transformOrigin = '0 0';
+            imgEl.style.willChange = 'transform';
+
+            // destination points in container pixels (map space)
+            const dstAbs = corners.map(c => {
+              const latlng = L.latLng(c[1], c[0]);
+              const pt = MAP.latLngToContainerPoint(latlng);
+              return [pt.x, pt.y];
+            });
+
+            // source points: the image element bounds (top-left -> top-right -> bottom-right -> bottom-left)
+            const rect = imgEl.getBoundingClientRect();
+            const mapRect = MAP.getContainer().getBoundingClientRect();
+            const elLeft = rect.left - mapRect.left;
+            const elTop = rect.top - mapRect.top;
+            const src = [[0,0],[rect.width,0],[rect.width,rect.height],[0,rect.height]];
+
+            // Convert absolute destination container coords into coordinates relative to the
+            // image element's top-left (because the CSS transform is applied relative to the element)
+            const dst = dstAbs.map(p => [p[0] - elLeft, p[1] - elTop]);
+
+            const H = computeHomography(src, dst);
+            if (!H) return;
+
+            // map H to CSS matrix3d column-major order
+            const a = H[0][0], b = H[0][1], cVal = H[0][2];
+            const d = H[1][0], e = H[1][1], f = H[1][2];
+            const g = H[2][0], h = H[2][1];
+            const matrix3d = `matrix3d(${a}, ${d}, 0, ${g}, ${b}, ${e}, 0, ${h}, 0, 0, 1, 0, ${cVal}, ${f}, 0, 1)`;
+            imgEl.style.transform = matrix3d;
+          }catch(err){ console.warn('applyTransform failed', err); }
+        };
+        setTimeout(applyTransform, 50);
+        try{ ov.getElement && ov.getElement()?.addEventListener('load', applyTransform); }catch(_){ }
+      } else {
+        // fallback: simple CSS rotate if only rotation angle is provided
+        const rot = Number(rec.rotation || 0);
+        if (ov && rot && Math.abs(rot) > 1e-6){
+          const applyRotate = () => {
+            try{
+              const imgEl = ov.getElement && ov.getElement();
+              if (!imgEl) return;
+              const parent = imgEl.parentElement;
+              if (parent) parent.style.overflow = 'visible';
+              imgEl.style.transformOrigin = '50% 50%';
+              imgEl.style.willChange = 'transform';
+              imgEl.style.transform = `rotate(${rot}deg)`;
+            }catch(_){ }
+          };
+          setTimeout(applyRotate, 10);
+          try{ ov.getElement && ov.getElement()?.addEventListener('load', applyRotate); }catch(_){ }
+        }
+      }
+    }catch(_){ }
+
   } else {
     if (ov){ try{ imagesLayerGroup.removeLayer(ov); }catch(_){ } }
     rec.on = false;
@@ -1197,6 +1266,12 @@ async function loadGeoJSON(url){
     fillColor: "#ff5722", fillOpacity: 0.25
   };
 
+  // remove previous Anomalies layer (if any) so we don't end up with duplicates
+  try{
+    const prev = overlayRegistry["Anomalies"];
+    if (prev && prev.layer){ try { MAP.removeLayer(prev.layer); } catch(_){} }
+  }catch(_){ }
+
   const layer = L.geoJSON(gj, {
     style: (f)=> styleForAnomalyFeature(f, base),
     pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
@@ -1624,6 +1699,61 @@ function installTileLayers(layers){
   refreshLayersPanel();
 }
 
+// ---- Homography helpers ----
+function solveLinear(A, b){
+  // simple Gauss-Jordan elimination for small systems (A: NxN, b: N)
+  const n = A.length;
+  // build augmented matrix
+  const M = new Array(n);
+  for (let i = 0; i < n; i++){
+    M[i] = A[i].slice();
+    M[i].push(b[i]);
+  }
+  const eps = 1e-12;
+  for (let i = 0; i < n; i++){
+    // pivot
+    let maxRow = i;
+    for (let k = i+1; k < n; k++) if (Math.abs(M[k][i]) > Math.abs(M[maxRow][i])) maxRow = k;
+    if (Math.abs(M[maxRow][i]) < eps) return null; // singular
+    // swap
+    if (maxRow !== i){ const tmp = M[i]; M[i] = M[maxRow]; M[maxRow] = tmp; }
+    // normalize
+    const div = M[i][i];
+    for (let j = i; j <= n; j++) M[i][j] /= div;
+    // eliminate
+    for (let r = 0; r < n; r++){
+      if (r === i) continue;
+      const factor = M[r][i];
+      for (let c = i; c <= n; c++) M[r][c] -= factor * M[i][c];
+    }
+  }
+  // extract solution
+  const x = new Array(n);
+  for (let i = 0; i < n; i++) x[i] = M[i][n];
+  return x;
+}
+
+function computeHomography(src, dst){
+  // src/dst: arrays of 4 [x,y] points in same order (tl,tr,br,bl)
+  if (!src || !dst || src.length < 4 || dst.length < 4) return null;
+  // build 8x8 system for 8 unknowns h11..h32 (h33 = 1)
+  const A = [];
+  const b = [];
+  for (let i = 0; i < 4; i++){
+    const [x, y] = src[i];
+    const [u, v] = dst[i];
+    A.push([ x, y, 1, 0, 0, 0, -u*x, -u*y ]);
+    b.push(u);
+    A.push([ 0, 0, 0, x, y, 1, -v*x, -v*y ]);
+    b.push(v);
+  }
+  const sol = solveLinear(A, b);
+  if (!sol) return null;
+  const [a,b1,c,d,e,f,g,h] = sol;
+  // form 3x3 homography matrix
+  return [ [a, b1, c], [d, e, f], [g, h, 1] ];
+}
+
 
 // ---- Image markers (GeoJSON → Leaflet layer + registry) ----
 function installImageMarkers(gj) {
@@ -1724,17 +1854,53 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       const file = f?.properties?.image || f?.properties?.file || f?.properties?.name;
       if (!file) continue;
 
-      // prepared overlay JPG path (server writes JPG overlays now)
+      // prepared overlay PNG path (server writes PNG overlays now)
       const stem = file.replace(/\.[^.]+$/, '');
       const url  = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
 
-      // small footprint around point if we don’t have true bounds
-      const { dLat, dLon } = metersToDeg(lat, DEFAULT_IMAGE_HALF_SIZE_M);
-      const sw = L.latLng(lat - dLat, lng - dLon);
-      const ne = L.latLng(lat + dLat, lng + dLon);
-      const bounds = L.latLngBounds(sw, ne);
+      // If the backend provided true footprint corners, use them (and rotation)
+      let bounds = null;
+      let storedRotation = 0;
+      const corners = f?.properties?.corners;
+      if (Array.isArray(corners) && corners.length >= 4){
+        try{
+          const lons = corners.map(c => Number(c[0]));
+          const lats = corners.map(c => Number(c[1]));
+          const minLon = Math.min(...lons);
+          const maxLon = Math.max(...lons);
+          const minLat = Math.min(...lats);
+          const maxLat = Math.max(...lats);
+          const sw = L.latLng(minLat, minLon);
+          const ne = L.latLng(maxLat, maxLon);
+          bounds = L.latLngBounds(sw, ne);
+          storedRotation = Number(f?.properties?.rotation || 0);
+        }catch(_){ bounds = null; }
+      }
 
-      imageCatalog.push({ id: file, name: file, url, bounds, on: false });
+      // If we didn't get corners, but backend wrote width/height in meters, build bbox
+      if (!bounds && f?.properties?.width_m && f?.properties?.height_m){
+        try{
+          const halfW = Number(f.properties.width_m) / 2.0;
+          const halfH = Number(f.properties.height_m) / 2.0;
+          // convert meters -> degrees at this latitude
+          const top = lat + (halfH / 111320);
+          const bottom = lat - (halfH / 111320);
+          const left = lng - (halfW / (111320 * Math.cos(lat * Math.PI / 180)));
+          const right = lng + (halfW / (111320 * Math.cos(lat * Math.PI / 180)));
+          bounds = L.latLngBounds(L.latLng(bottom, left), L.latLng(top, right));
+          storedRotation = Number(f?.properties?.rotation || 0);
+        }catch(_){ bounds = null; }
+      }
+
+      // Fallback: small footprint around point if we don’t have true bounds
+      if (!bounds){
+        const { dLat, dLon } = metersToDeg(lat, DEFAULT_IMAGE_HALF_SIZE_M);
+        const sw = L.latLng(lat - dLat, lng - dLon);
+        const ne = L.latLng(lat + dLat, lng + dLon);
+        bounds = L.latLngBounds(sw, ne);
+      }
+
+      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null });
     }
 
     renderImagesList();

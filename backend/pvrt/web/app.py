@@ -1316,24 +1316,65 @@ def _preds_to_geojson(
             dy_lat = half_h * deg_per_m_lat
 
             # corners UL, UR, LR, LL (axis-aligned). If camera rotation is provided, keep rotation in props.
-            ul = (lon_c - dx_lon, lat_c + dy_lat)
-            ur = (lon_c + dx_lon, lat_c + dy_lat)
-            lr = (lon_c + dx_lon, lat_c - dy_lat)
-            ll = (lon_c - dx_lon, lat_c - dy_lat)
-
+            # compute axis-aligned corner offsets (meters) relative to image center
             props["width_m"] = float(width_m)
             props["height_m"] = float(height_m)
+            half_w_m = width_m / 2.0
+            half_h_m = height_m / 2.0
+
+            # Rotation is only honored when explicit camera_meta (user-provided
+            # Agisoft references) exists. Do not infer from EXIF or manifest.
             rot = 0.0
-            if fname in camera_meta and isinstance(camera_meta.get(fname), dict):
-                try:
+            try:
+                if fname in camera_meta and isinstance(camera_meta.get(fname), dict):
                     rot = float(camera_meta[fname].get("rotation") or 0.0)
-                except Exception:
-                    rot = 0.0
-            props["rotation"] = float(rot)
-            props["corners"] = [list(ul), list(ur), list(lr), list(ll)]
+            except Exception:
+                rot = 0.0
+
+            props["rotation"] = float(rot or 0.0)
+
+            # Build the four corner coordinates using the same pixel→meter→deg
+            # convention used when converting detection boxes to geo-polygons.
+            # This ensures image footprints and anomaly reprojections share the
+            # same rotation/sign conventions and will align correctly.
+            try:
+                # need pixel sizes to compute pixel offsets
+                if w_px is None or h_px is None:
+                    # fallback to computed meters-based axis-aligned corners
+                    ul = (lon_c - dx_lon, lat_c + dy_lat)
+                    ur = (lon_c + dx_lon, lat_c + dy_lat)
+                    lr = (lon_c + dx_lon, lat_c - dy_lat)
+                    ll = (lon_c - dx_lon, lat_c - dy_lat)
+                    props["corners"] = [list(ul), list(ur), list(lr), list(ll)]
+                else:
+                    cx = float(w_px) / 2.0
+                    cy = float(h_px) / 2.0
+                    # pixel corner coordinates (x,y): TL(0,0), TR(w,0), BR(w,h), BL(0,h)
+                    pix_corners = [(0.0, 0.0), (float(w_px), 0.0), (float(w_px), float(h_px)), (0.0, float(h_px))]
+                    a = math.radians(float(rot or 0.0))
+                    ca = math.cos(a); sa = math.sin(a)
+                    out_corners = []
+                    for (px, py) in pix_corners:
+                        dx_m = (px - cx) * float(meters_per_pixel)
+                        dy_m = (py - cy) * float(meters_per_pixel)
+                        # apply rotation (same as used for boxes)
+                        rx = dx_m * ca - dy_m * sa
+                        ry = dx_m * sa + dy_m * ca
+                        lon_p = lon_c + (rx * deg_per_m_lon)
+                        lat_p = lat_c - (ry * deg_per_m_lat)
+                        out_corners.append((lon_p, lat_p))
+                    props["corners"] = [list(c) for c in out_corners]
+            except Exception:
+                ul = (lon_c - dx_lon, lat_c + dy_lat)
+                ur = (lon_c + dx_lon, lat_c + dy_lat)
+                lr = (lon_c + dx_lon, lat_c - dy_lat)
+                ll = (lon_c - dx_lon, lat_c - dy_lat)
+                props["corners"] = [list(ul), list(ur), list(lr), list(ll)]
 
         # Only include features that have a geometry (latlon). Otherwise skip.
         if latlon:
+            # preserve source filename so downstream reprojection can look up rotation
+            props["src"] = fname
             imgs_fc["features"].append({
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [float(latlon[1]), float(latlon[0])]},
@@ -1342,6 +1383,22 @@ def _preds_to_geojson(
 
     imgs_path = out_session / "images.geojson"
     imgs_path.write_text(json.dumps(imgs_fc, indent=2), encoding="utf-8")
+
+    # Build a quick lookup of per-image rotation from the images.geojson features
+    image_rot_map: Dict[str, float] = {}
+    for f in imgs_fc.get("features", []):
+        try:
+            src = f.get("properties", {}).get("src")
+            rot = float(f.get("properties", {}).get("rotation") or 0.0)
+            if src:
+                image_rot_map[src] = rot
+                # also map by stem (without extension) for flexible matching
+                try:
+                    image_rot_map[Path(src).stem] = rot
+                except Exception:
+                    pass
+        except Exception:
+            continue
 
     # ---------------- anomalies.geojson (bbox → polygon using image center) ----------------
     anom_fc = {"type": "FeatureCollection", "features": []}
@@ -1401,6 +1458,19 @@ def _preds_to_geojson(
                 except Exception:
                     rotation_deg = 0.0
 
+        # If no camera_meta rotation, try images.geojson-derived rotation lookup (built earlier)
+        if (not rotation_deg) and 'image_rot_map' in locals():
+            try:
+                # exact match
+                if srcfile in image_rot_map:
+                    rotation_deg = float(image_rot_map.get(srcfile) or 0.0)
+                else:
+                    stem = Path(srcfile).stem
+                    if stem in image_rot_map:
+                        rotation_deg = float(image_rot_map.get(stem) or 0.0)
+            except Exception:
+                rotation_deg = rotation_deg or 0.0
+
         # Convert each box using CENTER-based deltas (matches reference notebook)
         cx = w / 2.0
         cy = h / 2.0
@@ -1431,16 +1501,39 @@ def _preds_to_geojson(
             else:
                 r0x, r0y, r1x, r1y = dx0_m, dy0_m, dx1_m, dy1_m
 
-            # convert meters → degrees using local scale
-            lon0 = lon + (r0x * deg_per_m_lon)
-            lon1 = lon + (r1x * deg_per_m_lon)
-            lat0 = lat - (r0y * deg_per_m_lat)
-            lat1 = lat - (r1y * deg_per_m_lat)
-
-            poly = Polygon([
-                (lon0, lat0), (lon0, lat1),
-                (lon1, lat1), (lon1, lat0), (lon0, lat0)
-            ])
+            # convert the four box corners (x0,y0),(x1,y0),(x1,y1),(x0,y1)
+            # to rotated geographic polygon points so the anomaly polygon
+            # follows the same image rotation convention as the image
+            # footprints. This produces a rotated polygon (not an axis-aligned bbox).
+            try:
+                corners_px = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                poly_pts = []
+                for (px, py) in corners_px:
+                    dx_m = (px - cx) * meters_per_pixel
+                    dy_m = (py - cy) * meters_per_pixel
+                    if rotation_deg and abs(rotation_deg) > 1e-6:
+                        rx = dx_m * ca - dy_m * sa
+                        ry = dx_m * sa + dy_m * ca
+                    else:
+                        rx, ry = dx_m, dy_m
+                    lon_p = lon + (rx * deg_per_m_lon)
+                    lat_p = lat - (ry * deg_per_m_lat)
+                    poly_pts.append((lon_p, lat_p))
+                # close polygon
+                if poly_pts and poly_pts[0] != poly_pts[-1]:
+                    poly = Polygon(poly_pts + [poly_pts[0]])
+                else:
+                    poly = Polygon(poly_pts)
+            except Exception:
+                # fallback to axis-aligned bbox if anything fails
+                lon0 = lon + (r0x * deg_per_m_lon)
+                lon1 = lon + (r1x * deg_per_m_lon)
+                lat0 = lat - (r0y * deg_per_m_lat)
+                lat1 = lat - (r1y * deg_per_m_lat)
+                poly = Polygon([
+                    (lon0, lat0), (lon0, lat1),
+                    (lon1, lat1), (lon1, lat0), (lon0, lat0)
+                ])
 
             anom_fc["features"].append({
                 "type": "Feature",
@@ -2104,12 +2197,144 @@ async def api_test_run(
         f"UI:INFO:test: will_request={'rgbt' if use_thermal_effective else 'rgb'}; "
         f"override={data_has_thermal_override}"
     )
+    # --- If the user uploaded Agisoft camera references, parse them now
+    # and (optionally) produce rotated images before running inference.
+    camera_meta: dict = {}
+    if cameras is not None:
+        try:
+            from .cameras import parse_agisoft_cameras
+            buf = await cameras.read()
+            parsed = parse_agisoft_cameras(buf)
+            # persist raw references file into session folder for future inspection
+            try:
+                session_dir = MEDIA_DIR / "sessions" / session
+                session_dir.mkdir(parents=True, exist_ok=True)
+                cam_filename = getattr(cameras, 'filename', 'camera_references.txt') or 'camera_references.txt'
+                cam_out = session_dir / cam_filename
+                cam_out.write_bytes(buf)
+            except Exception:
+                logger.debug("Could not persist uploaded camera references to session dir")
+
+            # helper normalizer (match by stem, strip _v/_t)
+            def _norm(fn: str) -> str:
+                s = Path(fn).stem.lower()
+                return s[:-2] if s.endswith(("_v", "_t")) else s
+
+            # Build camera_meta keyed by dataset filenames (matching files in ds_dir)
+            try:
+                ds_files = [p for p in sorted(Path(ds_dir).iterdir()) if p.is_file()]
+                # map normalized stem -> filename for quick exact/stem lookup
+                norm_map = { _norm(p.name): p.name for p in ds_files }
+
+                for pkey, pval in parsed.items():
+                    # prefer exact normalized match
+                    target = None
+                    if pkey in norm_map:
+                        target = norm_map[pkey]
+                    else:
+                        # direct filename present in dataset?
+                        fname = (pval.get('file') or '')
+                        if fname:
+                            # try direct filename match
+                            for p in ds_files:
+                                if p.name.lower() == fname.lower():
+                                    target = p.name; break
+                        # try stem containment (parsed key within dataset stem or vice-versa)
+                    if not target:
+                        for p in ds_files:
+                            stem = Path(p.name).stem.lower()
+                            if pkey in stem or stem in pkey:
+                                target = p.name
+                                break
+
+                    if target:
+                        camera_meta[target] = pval
+            except Exception:
+                logger.debug("Failed to map parsed cameras to dataset files")
+
+            # Save a JSON summary for debugging
+            try:
+                cm_out = session_dir / "camera_meta.json"
+                cm_out.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
+                try:
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: camera_meta entries={len(camera_meta)} sample_keys={list(camera_meta.keys())[:5]}")
+                except Exception:
+                    pass
+            except Exception:
+                logger.debug("Could not persist camera_meta.json to session dir")
+
+            # If we have camera_meta entries and this is an images dataset, materialize
+            # a rotated images directory and use it as the run_images_dir for inference.
+            try:
+                if camera_meta and input_type == "images":
+                    rotated_dir = out_root / "rotated_images"
+                    rotated_dir.mkdir(parents=True, exist_ok=True)
+                    from PIL import Image
+                    import shutil
+
+                    for p in sorted(Path(ds_dir).iterdir()):
+                        if not p.is_file():
+                            continue
+                        if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+                            # copy non-raster or unsupported files (including tiffs) unchanged
+                            shutil.copy2(p, rotated_dir / p.name)
+                            continue
+                        cam_entry = camera_meta.get(p.name)
+                        rot = None
+                        if cam_entry and cam_entry.get("rotation") is not None:
+                            try:
+                                rot = float(cam_entry.get("rotation") or 0.0)
+                            except Exception:
+                                rot = None
+
+                        if rot is None or abs(float(rot or 0.0)) < 1e-6:
+                            # no rotation: copy as-is
+                            shutil.copy2(p, rotated_dir / p.name)
+                            continue
+
+                        # Apply rotation to pixels prior to inference. Use -rot to convert
+                        # from camera heading to image-pixel rotation (common convention).
+                        try:
+                            with Image.open(p) as im:
+                                # use exact transposes for common right-angle rotations
+                                rint = int(round(float(rot) % 360))
+                                if rint in (90, 180, 270):
+                                    if rint == 90:
+                                        rim = im.transpose(Image.ROTATE_90)
+                                    elif rint == 180:
+                                        rim = im.transpose(Image.ROTATE_180)
+                                    else:
+                                        rim = im.transpose(Image.ROTATE_270)
+                                else:
+                                    # Pillow.rotate rotates counter-clockwise; use -rot
+                                    rim = im.rotate(-float(rot), expand=False)
+                                # save with same filename
+                                rim.save(rotated_dir / p.name)
+                        except Exception:
+                            # fallback: copy original if rotation failed
+                            try:
+                                shutil.copy2(p, rotated_dir / p.name)
+                            except Exception:
+                                logger.debug(f"Failed to copy/rotate {p}")
+
+                    # Use rotated_dir for inference
+                    run_images_dir = rotated_dir
+                    try:
+                        nfiles = sum(1 for _ in rotated_dir.iterdir())
+                    except Exception:
+                        nfiles = None
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Using rotated images dir: {rotated_dir} (files={nfiles})")
+            except Exception:
+                logger.debug("Failed to create rotated images dir for inference")
+
+        except Exception as e:
+            logger.warning(f"Failed to parse uploaded camera references: {e}")
 
     def _do_predict():
         with redirect_std_to_logger():
             return predict_entry(
                 weights_dir=model_dir,
-                images_dir=run_images_dir,                 # tiles dir for tif
+                images_dir=run_images_dir,                 # tiles dir for tif or rotated images dir
                 out_dir=out_root,
                 use_thermal_request=use_thermal_effective,   # <-- use effective flag
                 forced_backend=(backend or forced_backend),
@@ -2129,8 +2354,8 @@ async def api_test_run(
 
     preds_dir = Path(presp["results_dir"])
     class_names = (_read_model_meta(model_dir).get("class_names") or [])
-    # ov_dir, th_dir, manifest = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
-    ov_dir, th_dir, manifest_path = _draw_overlays(ds_dir, preds_dir, out_root, class_names)
+    # use the run_images_dir (may be rotated copies) when drawing overlays
+    ov_dir, th_dir, manifest_path = _draw_overlays(run_images_dir, preds_dir, out_root, class_names)
     # gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
     try:
         th_num = float(test_threshold) if str(test_threshold).strip() else 0.0
@@ -2175,42 +2400,13 @@ async def api_test_run(
         if isinstance(entry, dict) and "lat" in entry and "lon" in entry:
             exif_from_manifest[fname] = (float(entry["lat"]), float(entry["lon"]))
 
-    # --- Optional: parse uploaded camera references (Agisoft) and persist mapping ---
-    camera_meta: dict = {}
-    if cameras is not None:
-        try:
-            from .cameras import parse_agisoft_cameras
-            buf = await cameras.read()
-            parsed = parse_agisoft_cameras(buf)
-            # persist raw references file into session folder for future inspection
-            try:
-                session_dir = MEDIA_DIR / "sessions" / session
-                session_dir.mkdir(parents=True, exist_ok=True)
-                cam_filename = getattr(cameras, 'filename', 'camera_references.txt') or 'camera_references.txt'
-                cam_out = session_dir / cam_filename
-                cam_out.write_bytes(buf)
-            except Exception:
-                logger.debug("Could not persist uploaded camera references to session dir")
+    # camera_meta was parsed (if provided) earlier and rotated images were
+    # materialized into `run_images_dir` prior to inference.
 
-            # helper normalizer (match by stem, strip _v/_t)
-            def _norm(fn: str) -> str:
-                s = Path(fn).stem.lower()
-                return s[:-2] if s.endswith(("_v", "_t")) else s
-
-            # Build camera_meta keyed by original dataset filenames (if matched)
-            for fname in list(manifest_obj.keys()):
-                key = _norm(fname)
-                if key in parsed:
-                    camera_meta[fname] = parsed[key]
-
-            # Save a JSON summary for debugging
-            try:
-                cm_out = session_dir / "camera_meta.json"
-                cm_out.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
-            except Exception:
-                logger.debug("Could not persist camera_meta.json to session dir")
-        except Exception as e:
-            logger.warning(f"Failed to parse uploaded camera references: {e}")
+    try:
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: Post-predict camera_meta keys={list(camera_meta.keys())[:5]} (count={len(camera_meta)}) run_images_dir={run_images_dir}")
+    except Exception:
+        pass
 
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
     session_dir = MEDIA_DIR / "sessions" / session
@@ -2264,7 +2460,7 @@ async def api_test_run(
             logger.debug("ignored web.app error: %s", e)
     else:
         anom_gj, imgs_gj = _preds_to_geojson(
-            images_dir=Path(ds_dir),
+            images_dir=Path(run_images_dir),
             preds_dir=Path(preds_dir),
             out_session=session_dir,
             class_names=class_names,
@@ -2273,6 +2469,37 @@ async def api_test_run(
             exif_index=exif_from_manifest,
             camera_meta=camera_meta,
         )
+
+        # If the user uploaded camera references, ensure geojsons are regenerated
+        # using the standalone regeneration script as a fallback to guarantee
+        # rotated `images.geojson` and `anomalies.geojson` are produced.
+        try:
+            # Only attempt when camera_meta entries exist (user provided refs)
+            if camera_meta:
+                import subprocess, sys
+                script = PROJECT_ROOT / "scripts" / "regenerate_geojson_from_preds.py"
+                if script.exists():
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for session={session}")
+                    # Call with session id so the script finds media/sessions/<session>
+                    proc = subprocess.run([sys.executable, str(script), session], capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+                    # Log stdout/stderr lines (SSE)
+                    if proc.stdout:
+                        for ln in proc.stdout.splitlines():
+                            logging.getLogger("pvrt.test").info(ln)
+                    if proc.stderr:
+                        for ln in proc.stderr.splitlines():
+                            logging.getLogger("pvrt.test").warning(ln)
+                    if proc.returncode != 0:
+                        logging.getLogger("pvrt.test").warning(f"Regenerate script returned {proc.returncode}")
+                    else:
+                        logging.getLogger("pvrt.test").info("UI:INFO:test: Regenerate script completed successfully")
+                        # refresh references to the newly-written geojsons and verify they exist
+                        anom_gj = session_dir / "anomalies.geojson"
+                        imgs_gj = session_dir / "images.geojson"
+                        if not anom_gj.exists() or not imgs_gj.exists():
+                            logging.getLogger("pvrt.test").warning("Regenerate script finished but expected geojsons not found")
+        except Exception as e:
+            logging.getLogger("pvrt.test").warning(f"Failed to run regenerate script: {e}")
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):

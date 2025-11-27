@@ -146,12 +146,44 @@ def _try_parse_table(bytes_buf: bytes) -> Dict[str, Dict[str, Any]]:
         delim = None  # fallback to split()
 
     rows = []
+    # Preprocess lines: remove empty lines and handle leading metadata/comment lines
+    raw_lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not raw_lines:
+        return out
+
+    # Find a sensible header line. Agisoft often emits a CoordinateSystem line
+    # first (starting with '#') and the header as '#Label,...'. We want to
+    # locate the header (which contains 'label' or 'yaw' etc.) and strip a
+    # leading '#' if present so csv.DictReader sees correct fieldnames.
+    header_idx = 0
+    for i, ln in enumerate(raw_lines):
+        s = ln.lstrip()
+        low = s.lower()
+        if low.startswith('#'):
+            # candidate header if it contains typical column names
+            if any(k in low for k in ('label', 'yaw', 'longitude', 'latitude', 'lat', 'lon')):
+                # strip leading '#' characters and whitespace
+                raw_lines[i] = s.lstrip('#').lstrip()
+                header_idx = i
+                break
+            # otherwise skip this metadata/comment line
+            continue
+        else:
+            # non-comment line: if it looks like a header (contains header tokens), use it
+            if any(k in low for k in ('label', 'yaw', 'longitude', 'latitude', 'lat', 'lon')):
+                header_idx = i
+                break
+            # otherwise keep searching
+            continue
+
+    lines_for_reader = raw_lines[header_idx:]
+
     if delim:
-        reader = csv.DictReader(text.splitlines(), delimiter=delim)
+        reader = csv.DictReader(lines_for_reader, delimiter=delim)
         rows = list(reader)
     else:
         # whitespace-split: first line header, then map by position
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        lines = [ln.strip() for ln in lines_for_reader if ln.strip()]
         if not lines:
             return out
         hdr = lines[0].split()
@@ -183,6 +215,9 @@ def _try_parse_table(bytes_buf: bytes) -> Dict[str, Dict[str, Any]]:
 
             key = _norm_key(str(fn))
             if not key:
+                continue
+            # ignore spurious summary/header rows that some exports include
+            if key.strip().startswith('#') or 'total' in key:
                 continue
 
             # lon/lat candidates
