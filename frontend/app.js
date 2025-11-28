@@ -38,6 +38,7 @@ let imageOverlays = new Map();      // id -> L.ImageOverlay
 let lastLoadedImagesGJ = null;
 let lastLoadedSessionName = null;
 let lastLoadedImagesUrl = null;
+let lastLoadedSessionSummary = null;
 
 // camera position overrides loaded from an uploaded WebODM camera-positions JSON
 // keyed by normalized basename (no extension), value: { lon, lat, alt }
@@ -98,72 +99,9 @@ function toggleImageOverlay(id, on){
     ov.addTo(imagesLayerGroup);
     rec.on = true;
 
-    // apply rotation if provided in the record (from images.geojson properties.rotation)
-    try{
-      const corners = rec.corners || null;
-      // If corners geo-coordinates are available, apply a projective transform so the
-      // image exactly matches the four geographic corners.
-      if (ov && corners && Array.isArray(corners) && corners.length >= 4){
-        const applyTransform = () => {
-          try{
-            const imgEl = ov.getElement && ov.getElement();
-            if (!imgEl) return;
-            const parent = imgEl.parentElement;
-            if (parent) parent.style.overflow = 'visible';
-            imgEl.style.transformOrigin = '0 0';
-            imgEl.style.willChange = 'transform';
-
-            // destination points in container pixels (map space)
-            const dstAbs = corners.map(c => {
-              const latlng = L.latLng(c[1], c[0]);
-              const pt = MAP.latLngToContainerPoint(latlng);
-              return [pt.x, pt.y];
-            });
-
-            // source points: the image element bounds (top-left -> top-right -> bottom-right -> bottom-left)
-            const rect = imgEl.getBoundingClientRect();
-            const mapRect = MAP.getContainer().getBoundingClientRect();
-            const elLeft = rect.left - mapRect.left;
-            const elTop = rect.top - mapRect.top;
-            const src = [[0,0],[rect.width,0],[rect.width,rect.height],[0,rect.height]];
-
-            // Convert absolute destination container coords into coordinates relative to the
-            // image element's top-left (because the CSS transform is applied relative to the element)
-            const dst = dstAbs.map(p => [p[0] - elLeft, p[1] - elTop]);
-
-            const H = computeHomography(src, dst);
-            if (!H) return;
-
-            // map H to CSS matrix3d column-major order
-            const a = H[0][0], b = H[0][1], cVal = H[0][2];
-            const d = H[1][0], e = H[1][1], f = H[1][2];
-            const g = H[2][0], h = H[2][1];
-            const matrix3d = `matrix3d(${a}, ${d}, 0, ${g}, ${b}, ${e}, 0, ${h}, 0, 0, 1, 0, ${cVal}, ${f}, 0, 1)`;
-            imgEl.style.transform = matrix3d;
-          }catch(err){ console.warn('applyTransform failed', err); }
-        };
-        setTimeout(applyTransform, 50);
-        try{ ov.getElement && ov.getElement()?.addEventListener('load', applyTransform); }catch(_){ }
-      } else {
-        // fallback: simple CSS rotate if only rotation angle is provided
-        const rot = Number(rec.rotation || 0);
-        if (ov && rot && Math.abs(rot) > 1e-6){
-          const applyRotate = () => {
-            try{
-              const imgEl = ov.getElement && ov.getElement();
-              if (!imgEl) return;
-              const parent = imgEl.parentElement;
-              if (parent) parent.style.overflow = 'visible';
-              imgEl.style.transformOrigin = '50% 50%';
-              imgEl.style.willChange = 'transform';
-              imgEl.style.transform = `rotate(${rot}deg)`;
-            }catch(_){ }
-          };
-          setTimeout(applyRotate, 10);
-          try{ ov.getElement && ov.getElement()?.addEventListener('load', applyRotate); }catch(_){ }
-        }
-      }
-    }catch(_){ }
+    // No client-side rotation or homography is applied. Backend supplies
+    // properly-oriented rotated images when available, and the frontend
+    // should simply overlay the provided PNG pixels at the geospatial bounds.
 
   } else {
     if (ov){ try{ imagesLayerGroup.removeLayer(ov); }catch(_){ } }
@@ -1553,6 +1491,8 @@ async function applySessionToMap(sessionName){
   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
   if (!res.ok) { console.warn('session_summary failed'); return; }
   const sum = await res.json();
+  // cache the session summary so loadImagesCatalog can prefer rotated_images when available
+  lastLoadedSessionSummary = sum || null;
 
   const sessRoot   = `/media/sessions/${encodeURIComponent(sessionName)}/`;
   const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + 'anomalies.geojson');
@@ -1699,60 +1639,7 @@ function installTileLayers(layers){
   refreshLayersPanel();
 }
 
-// ---- Homography helpers ----
-function solveLinear(A, b){
-  // simple Gauss-Jordan elimination for small systems (A: NxN, b: N)
-  const n = A.length;
-  // build augmented matrix
-  const M = new Array(n);
-  for (let i = 0; i < n; i++){
-    M[i] = A[i].slice();
-    M[i].push(b[i]);
-  }
-  const eps = 1e-12;
-  for (let i = 0; i < n; i++){
-    // pivot
-    let maxRow = i;
-    for (let k = i+1; k < n; k++) if (Math.abs(M[k][i]) > Math.abs(M[maxRow][i])) maxRow = k;
-    if (Math.abs(M[maxRow][i]) < eps) return null; // singular
-    // swap
-    if (maxRow !== i){ const tmp = M[i]; M[i] = M[maxRow]; M[maxRow] = tmp; }
-    // normalize
-    const div = M[i][i];
-    for (let j = i; j <= n; j++) M[i][j] /= div;
-    // eliminate
-    for (let r = 0; r < n; r++){
-      if (r === i) continue;
-      const factor = M[r][i];
-      for (let c = i; c <= n; c++) M[r][c] -= factor * M[i][c];
-    }
-  }
-  // extract solution
-  const x = new Array(n);
-  for (let i = 0; i < n; i++) x[i] = M[i][n];
-  return x;
-}
-
-function computeHomography(src, dst){
-  // src/dst: arrays of 4 [x,y] points in same order (tl,tr,br,bl)
-  if (!src || !dst || src.length < 4 || dst.length < 4) return null;
-  // build 8x8 system for 8 unknowns h11..h32 (h33 = 1)
-  const A = [];
-  const b = [];
-  for (let i = 0; i < 4; i++){
-    const [x, y] = src[i];
-    const [u, v] = dst[i];
-    A.push([ x, y, 1, 0, 0, 0, -u*x, -u*y ]);
-    b.push(u);
-    A.push([ 0, 0, 0, x, y, 1, -v*x, -v*y ]);
-    b.push(v);
-  }
-  const sol = solveLinear(A, b);
-  if (!sol) return null;
-  const [a,b1,c,d,e,f,g,h] = sol;
-  // form 3x3 homography matrix
-  return [ [a, b1, c], [d, e, f], [g, h, 1] ];
-}
+// Homography/helpers removed: backend provides rotated images.
 
 
 // ---- Image markers (GeoJSON → Leaflet layer + registry) ----
@@ -1856,7 +1743,23 @@ async function loadImagesCatalog(sessionName, imagesUrl){
 
       // prepared overlay PNG path (server writes PNG overlays now)
       const stem = file.replace(/\.[^.]+$/, '');
-      const url  = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
+      // prefer backend-produced rotated images when the session summary indicates
+      // camera references or explicit rotated_images assets. Mark the record so
+      // the overlay code can skip client-side transforms for rotated assets.
+      let url = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
+      let isRotated = false;
+      try{
+        const sum = lastLoadedSessionSummary || {};
+        const assets = sum.assets || {};
+        if (Array.isArray(assets.rotated_images) && assets.rotated_images.length){
+          url = `/media/sessions/${encodeURIComponent(sessionName)}/rotated_images/${encodeURIComponent(stem)}.png`;
+          isRotated = true;
+        } else if (sum.camera_meta){
+          // If camera_meta exists (user uploaded references.txt) we prefer rotated_images
+          url = `/media/sessions/${encodeURIComponent(sessionName)}/rotated_images/${encodeURIComponent(stem)}.png`;
+          isRotated = true;
+        }
+      }catch(_){ /* ignore */ }
 
       // If the backend provided true footprint corners, use them (and rotation)
       let bounds = null;
@@ -1900,7 +1803,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
         bounds = L.latLngBounds(sw, ne);
       }
 
-      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null });
+      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null, isRotated });
     }
 
     renderImagesList();

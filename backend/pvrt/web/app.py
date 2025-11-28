@@ -1639,6 +1639,7 @@ def _session_assets(session_dir: Path) -> dict:
     imgs_dir = session_dir / "images"
     overlays = session_dir / "overlays"
     thumbs   = session_dir / "thumbs"
+    rotated  = session_dir / "rotated_images"
     def _urls(d: Path):
         if not d.exists(): return []
         return [f"/media/{d.relative_to(MEDIA_DIR)}/{p.name}" for p in sorted(d.glob("*")) if p.is_file()]
@@ -1648,6 +1649,7 @@ def _session_assets(session_dir: Path) -> dict:
         "tifs": tifs,
         "overlays": _urls(overlays),
         "thumbs": _urls(thumbs),
+        "rotated_images": _urls(rotated),
     }
 
 # ================== lifecycle & basic routes ==================
@@ -2263,69 +2265,16 @@ async def api_test_run(
             except Exception:
                 logger.debug("Could not persist camera_meta.json to session dir")
 
-            # If we have camera_meta entries and this is an images dataset, materialize
-            # a rotated images directory and use it as the run_images_dir for inference.
-            try:
-                if camera_meta and input_type == "images":
-                    rotated_dir = out_root / "rotated_images"
-                    rotated_dir.mkdir(parents=True, exist_ok=True)
-                    from PIL import Image
-                    import shutil
-
-                    for p in sorted(Path(ds_dir).iterdir()):
-                        if not p.is_file():
-                            continue
-                        if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-                            # copy non-raster or unsupported files (including tiffs) unchanged
-                            shutil.copy2(p, rotated_dir / p.name)
-                            continue
-                        cam_entry = camera_meta.get(p.name)
-                        rot = None
-                        if cam_entry and cam_entry.get("rotation") is not None:
-                            try:
-                                rot = float(cam_entry.get("rotation") or 0.0)
-                            except Exception:
-                                rot = None
-
-                        if rot is None or abs(float(rot or 0.0)) < 1e-6:
-                            # no rotation: copy as-is
-                            shutil.copy2(p, rotated_dir / p.name)
-                            continue
-
-                        # Apply rotation to pixels prior to inference. Use -rot to convert
-                        # from camera heading to image-pixel rotation (common convention).
-                        try:
-                            with Image.open(p) as im:
-                                # use exact transposes for common right-angle rotations
-                                rint = int(round(float(rot) % 360))
-                                if rint in (90, 180, 270):
-                                    if rint == 90:
-                                        rim = im.transpose(Image.ROTATE_90)
-                                    elif rint == 180:
-                                        rim = im.transpose(Image.ROTATE_180)
-                                    else:
-                                        rim = im.transpose(Image.ROTATE_270)
-                                else:
-                                    # Pillow.rotate rotates counter-clockwise; use -rot
-                                    rim = im.rotate(-float(rot), expand=False)
-                                # save with same filename
-                                rim.save(rotated_dir / p.name)
-                        except Exception:
-                            # fallback: copy original if rotation failed
-                            try:
-                                shutil.copy2(p, rotated_dir / p.name)
-                            except Exception:
-                                logger.debug(f"Failed to copy/rotate {p}")
-
-                    # Use rotated_dir for inference
-                    run_images_dir = rotated_dir
-                    try:
-                        nfiles = sum(1 for _ in rotated_dir.iterdir())
-                    except Exception:
-                        nfiles = None
-                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Using rotated images dir: {rotated_dir} (files={nfiles})")
-            except Exception:
-                logger.debug("Failed to create rotated images dir for inference")
+            # If we have camera_meta entries and this is an images dataset, DO NOT
+            # rotate images prior to inference. The model should always run on the
+            # original image pixels to preserve detection performance. Rotated
+            # assets (for display and corrected footprints) will be generated
+            # post-predict by the regeneration step below which consumes
+            # `camera_meta.json` and the predictions.
+            if camera_meta and input_type == "images":
+                logging.getLogger("pvrt.test").info(
+                    "UI:INFO:test: camera_meta present - not rotating images before inference; rotated assets will be created after prediction"
+                )
 
         except Exception as e:
             logger.warning(f"Failed to parse uploaded camera references: {e}")
@@ -2584,6 +2533,20 @@ async def api_session_summary(session: str):
             manifest = json.loads(manifest_path.read_text())
         except Exception:
             manifest = []
+    # collect assets and optional camera_meta.json
+    assets = _session_assets(ses)
+    camera_meta = None
+    try:
+        camp = ses / "camera_meta.json"
+        if camp.exists():
+            try:
+                camera_meta = json.loads(camp.read_text(encoding="utf-8"))
+            except Exception:
+                camera_meta = None
+    except Exception:
+        camera_meta = None
+
+    rotated_images_available = bool(assets.get("rotated_images")) or (camera_meta is not None and bool(camera_meta))
 
     return {
         "ok": True,
@@ -2592,9 +2555,12 @@ async def api_session_summary(session: str):
         "geojson_url": f"/media/{gj.relative_to(MEDIA_DIR)}" if gj.exists() else None,
         # NEW: where image footprints live (if you created them)
         "images_geojson_url": f"/media/{imgs_gj.relative_to(MEDIA_DIR)}" if imgs_gj.exists() else None,
-        "assets": _session_assets(ses),
+        "assets": assets,
         "manifest": manifest,   # still the parsed JSON (not a path)
         "tiler": "ok" if RIO_OK else "unavailable",
+        # Helpful flags for the frontend
+        "rotated_images_available": bool(rotated_images_available),
+        "camera_meta": camera_meta,
     }
 
 
