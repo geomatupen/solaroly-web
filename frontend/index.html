@@ -19,6 +19,7 @@
       </div>
       <button class="active" data-tab="tab-test">Test</button>
       <button data-tab="tab-train">Train</button>
+      <button data-tab="tab-optimize">Optimize</button>
       <button data-tab="tab-results">Results</button>
       <button data-tab="tab-map">Map</button>
       <button data-tab="tab-logs">Logs</button>
@@ -65,6 +66,18 @@
             <label for="selTestFolder">Dataset folder</label>
             <select id="selTestFolder"></select>
             <button id="btnRefreshFolders" class="secondary">Refresh</button>
+          </div>
+
+          <div class="row wrap" id="accurateControls">
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkAccurateLocations" />
+              <span>
+                Accurate locations (COLMAP)
+                <span id="accurateHint" class="muted tiny hintLine">Requires optimized poses</span>
+              </span>
+            </label>
+            <span id="accurateStatusBadge" class="pill pill-muted">No dataset</span>
+            <button id="btnGoOptimize" class="secondary tiny">Optimize…</button>
           </div>
 
 
@@ -200,6 +213,133 @@
       </div>
     </section>
 
+    <!-- OPTIMIZE TAB -->
+    <section id="tab-optimize" class="tabPanel">
+      <div class="card">
+        <div class="row between">
+          <div>
+            <h2>Optimize Locations</h2>
+            <p class="muted">Run COLMAP alignment to upgrade GPS before testing with accurate overlays.</p>
+          </div>
+          <span id="optimizeReadyPill" class="pill pill-muted">Select dataset</span>
+        </div>
+
+        <div class="optGrid">
+          <div class="row">
+            <label for="selOptimizeDataset">Dataset</label>
+            <select id="selOptimizeDataset"></select>
+            <button id="btnSyncOptimizeDataset" class="secondary tiny">Use test selection</button>
+            <button id="btnRefreshColmap" class="secondary tiny">Refresh</button>
+          </div>
+          <div class="optParamsHead">
+            <span class="muted tiny">Parameters</span>
+            <button id="btnColmapInfo" class="infoBtn" type="button" aria-label="About COLMAP parameters">i</button>
+          </div>
+          <div class="optParams">
+            <div>
+              <label for="selColmapCameraModel">Camera model</label>
+              <select id="selColmapCameraModel">
+                <option value="SIMPLE_RADIAL" selected>Simple radial (default)</option>
+                <option value="RADIAL">Radial (wide FOV)</option>
+                <option value="SIMPLE_PINHOLE">Simple pinhole</option>
+                <option value="PINHOLE">Pinhole</option>
+              </select>
+            </div>
+            <div>
+              <label for="selColmapMatcher">Matcher</label>
+              <select id="selColmapMatcher">
+                <option value="sequential" selected>Sequential</option>
+                <option value="exhaustive">Exhaustive</option>
+              </select>
+            </div>
+            <div>
+              <label for="inpColmapSeqOverlap">Sequential overlap</label>
+              <input id="inpColmapSeqOverlap" type="number" min="1" step="1" value="4" />
+              <small class="muted tiny">Used only with sequential matching.</small>
+            </div>
+            <div>
+              <label for="inpColmapTriangulation">Min triangulation angle</label>
+              <input id="inpColmapTriangulation" type="number" min="0" max="60" step="1" value="5" />
+            </div>
+            <div>
+              <label for="inpColmapMinMatches">Min matches per image</label>
+              <input id="inpColmapMinMatches" type="number" min="3" step="1" value="15" />
+            </div>
+            <div>
+              <label for="inpColmapMinSize">Min model size</label>
+              <input id="inpColmapMinSize" type="number" min="50" step="50" value="500" />
+            </div>
+            <div>
+              <label for="inpColmapMaxImage">Max feature image size</label>
+              <input id="inpColmapMaxImage" type="number" min="256" step="64" placeholder="e.g. 1400" />
+            </div>
+            <div class="switchRow" style="align-items:center;">
+              <input type="checkbox" id="chkColmapUseGpu" checked />
+              <span>Use GPU for SIFT</span>
+            </div>
+            <div>
+              <label for="inpColmapInitInliers">Init min inliers</label>
+              <input id="inpColmapInitInliers" type="number" min="10" step="5" value="60" />
+            </div>
+            <div>
+              <label for="inpColmapAbsInliers">Abs pose min inliers</label>
+              <input id="inpColmapAbsInliers" type="number" min="5" step="5" value="20" />
+            </div>
+            <div>
+              <label for="inpColmapMaxOverlap">Max model overlap</label>
+              <input id="inpColmapMaxOverlap" type="number" min="0" step="5" value="20" />
+            </div>
+            <div>
+              <label for="inpColmapMaxModels">Max number of models</label>
+              <input id="inpColmapMaxModels" type="number" min="1" step="1" value="10" />
+            </div>
+          </div>
+        </div>
+
+        <div class="actions actionsColmap">
+          <div class="buttonCluster">
+            <button id="btnStartColmap">Start optimization</button>
+            <button id="btnFinishColmap" class="secondary" disabled>Mark finished</button>
+          </div>
+          <div class="progressWrap mini" id="colmapProgressWrap" hidden>
+            <div class="progressBar"><span id="colmapProgressBar" style="width:0%"></span></div>
+            <div class="progressText tiny" id="colmapProgressText">Idle</div>
+          </div>
+        </div>
+
+        <div id="colmapStatusLine" class="statusLine"></div>
+
+        <div class="optLayout">
+          <div class="optCard">
+            <div class="optCardHeader">
+              <h3>Job status</h3>
+              <div class="muted tiny" id="colmapJobId">—</div>
+            </div>
+            <dl class="jobInfo">
+              <div><dt>Status</dt><dd id="colmapJobStatus">–</dd></div>
+              <div><dt>Step</dt><dd id="colmapJobStep">–</dd></div>
+              <div><dt>Metadata</dt><dd id="colmapMetaLink">–</dd></div>
+            </dl>
+            <pre id="colmapLogs" class="logPane tinyLog"></pre>
+          </div>
+          <div class="optCard">
+            <div class="optCardHeader">
+              <h3>Cameras</h3>
+              <div id="colmapCameraSummary" class="muted tiny">–</div>
+            </div>
+            <div id="colmapCameraList" class="cameraList"></div>
+          </div>
+          <div class="optCard optMapCard">
+            <div class="optCardHeader">
+              <h3>Camera map</h3>
+              <div id="colmapMapSummary" class="muted tiny">No dataset</div>
+            </div>
+            <div id="optimizeMap" class="optimizeMap" aria-label="Optimized camera map"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- RESULTS TAB -->
     <section id="tab-results" class="tabPanel">
       <div class="card">
@@ -252,7 +392,9 @@
                 <button id="btnHideAllImages" class="iconBtn tiny">Hide all</button>
               </div>
             </div>
-            <ul id="imagesList" class="layersList"></ul>
+            <div class="listScroll">
+              <ul id="imagesList" class="layersList"></ul>
+            </div>
 
             <!-- Camera positions upload (WebODM) -->
             <div style="margin-top:8px; padding:8px; border-top:1px solid var(--border);">
@@ -317,6 +459,33 @@
       <div class="modalFooter">
         <button id="btnStartUpload">Start upload</button>
         <button id="btnCancelUpload" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- COLMAP Info Modal -->
+  <div id="colmapInfoModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>COLMAP parameters</h3>
+        <button class="iconBtn" id="btnCloseColmapInfo" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody">
+        <p>These controls tune how COLMAP estimates camera poses:</p>
+        <ul>
+          <li><b>Matcher</b>: <i>Sequential</i> links neighboring images (ideal for drone flights). <i>Exhaustive</i> compares every pair (slower but can recover unordered sets).</li>
+          <li><b>Sequential overlap</b>: Number of neighboring frames to compare when using sequential matching. Increase to strengthen weak overlaps.</li>
+          <li><b>Min triangulation angle</b>: Rejects points with small viewing angle. Higher values improve accuracy but may drop matches. Default 5° works for most flights.</li>
+          <li><b>Min model size</b>: Smallest number of registered images required before COLMAP keeps a reconstruction. Raise this to ignore tiny, fragmented models.</li>
+          <li><b>Max feature image size</b>: Downsamples large frames before feature extraction. Helpful for noisy thermal sensors; leave blank to use the original size.</li>
+          <li><b>Use GPU for SIFT</b>: Disable if the GPU driver causes instability; COLMAP will fall back to CPU features.</li>
+          <li><b>Camera model</b>: Choose the projection model COLMAP assumes when reading EXIF. Thermal DJI frames usually work with <i>SIMPLE_RADIAL</i>.</li>
+          <li><b>Min matches / inliers</b>: Tune the minimum matches per image plus the inlier thresholds COLMAP uses when seeding models or registering new views.</li>
+          <li><b>Model overlap / count</b>: Limit how many reconstructions COLMAP keeps and how much overlap they can share so it stays focused on your main flight.</li>
+        </ul>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" id="btnColmapInfoDone">Close</button>
       </div>
     </div>
   </div>

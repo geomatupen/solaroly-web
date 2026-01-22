@@ -10,13 +10,15 @@ const api = {
   logs: "/api/logs",
   sessions: "/api/sessions",
   sessionSummary: "/api/session_summary",
-  sessionTiles: "/api/session_tiles"
+  sessionTiles: "/api/session_tiles",
+  colmapState: "/api/colmap/state",
+  colmapStart: "/api/colmap/start",
+  colmapFinish: "/api/colmap/finish"
 };
 
 let MAP, baseLayers, overlayRegistry = {};
 let imagesLayerGroup = null;           // holds all image markers/overlays
-let imageMarkers = new Map();
-;          // id -> L.Marker or L.ImageOverlay
+let imageMarkers = new Map();          // id -> L.Marker or L.ImageOverlay
 let geojsonLayer = null;
 let imageMarkersLayer = null;
 let tileLayers = [];
@@ -25,10 +27,35 @@ let styleTarget = null;
 let layerMenuState = { name: null, info: null };
 let testAbort = null;
 
+const colmapStates = {};
+let colmapPollHandle = null;
+let colmapPollDataset = null;
+let OPTIMIZE_MAP = null;
+let optimizeMapLayer = null;
+let optimizeMapFocusLayer = null;
+
 // runtime caches & UI flags
 let modelsCache = {};                // name -> model metadata returned by /api/models
 let userToggledThermalTrain = false; // whether user manually toggled the train thermal checkbox
 let userToggledThermalTest = false;  // whether user manually toggled the test thermal checkbox
+
+const COLMAP_PARAM_FIELDS = {
+  matcher: { id: 'selColmapMatcher', type: 'value' },
+  camera_model: { id: 'selColmapCameraModel', type: 'value' },
+  seq_overlap: { id: 'inpColmapSeqOverlap', type: 'value' },
+  min_triangulation_angle: { id: 'inpColmapTriangulation', type: 'value' },
+  min_model_size: { id: 'inpColmapMinSize', type: 'value' },
+  min_num_matches: { id: 'inpColmapMinMatches', type: 'value' },
+  max_image_size: { id: 'inpColmapMaxImage', type: 'value' },
+  init_min_num_inliers: { id: 'inpColmapInitInliers', type: 'value' },
+  abs_pose_min_num_inliers: { id: 'inpColmapAbsInliers', type: 'value' },
+  max_model_overlap: { id: 'inpColmapMaxOverlap', type: 'value' },
+  max_num_models: { id: 'inpColmapMaxModels', type: 'value' },
+  use_gpu: { id: 'chkColmapUseGpu', type: 'checkbox' }
+};
+const colmapParamDefaults = {};
+const colmapSavedParams = new Map();
+let colmapPrefillState = { dataset: null, hash: null };
 
 // catalog & runtime overlays for photos
 let imageCatalog = [];              // [{ id, name, url, bounds, on }]
@@ -47,30 +74,20 @@ let cameraPositionOverrides = {};
 
 // fallback sizing if images.geojson has only a Point
 const DEFAULT_IMAGE_HALF_SIZE_M = 25; // ~25 m half-width/half-height (adjust if needed)
+const CAMERA_ZOOM_ICON = '<svg viewBox="0 0 20 20" width="14" height="14" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 
 // --- TIF raster globals ---
 let TIF_TILE_GROUP = null;   // Leaflet layerGroup that holds the ZXY tile layers
 let TIF_TILE_LAYERS = [];    // underlying L.tileLayer instances
 
-function removeTifTiles(){
-  if (TIF_TILE_GROUP) {
-    try { MAP.removeLayer(TIF_TILE_GROUP); } catch {}
-  }
-  TIF_TILE_GROUP = null;
-  TIF_TILE_LAYERS = [];
-}
-
-
-
 // ---------- helpers ----------
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
-function setHidden(el, hidden=true){ if(!el) return; hidden ? el.style.display = 'none' : el.style.display = 'block' ; }
+function setHidden(el, hidden=true){ if(!el) return; hidden ? el.style.display = 'none' : el.style.display = 'block'; }
 function setText(sel, txt){ const el=$(sel); if(el) el.textContent = txt; }
-function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m])); }
+function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
 function closeBtn(){ return `<button class="iconBtn alertClose" aria-label="Close">×</button>`; }
 
-// convert meters to degrees at a given latitude
 function metersToDeg(lat, meters){
   const metersPerDegLat = 111320;
   const metersPerDegLon = 111320 * Math.cos(lat * Math.PI / 180);
@@ -139,6 +156,642 @@ function renderImagesList(){
       <button class="iconDots openImg" data-id="${escapeHtml(rec.id)}" title="Open image">🔍</button>
     </li>
   `).join('');
+}
+
+
+// ---------- Accurate locations / COLMAP ----------
+function cacheColmapState(dataset, state){
+  if(!dataset) return;
+  colmapStates[dataset] = state;
+}
+
+function getColmapState(dataset){
+  if(!dataset) return null;
+  return colmapStates[dataset] || null;
+}
+
+function setColmapStatus(msg = "", tone = null){
+  const el = document.getElementById('colmapStatusLine');
+  if(!el) return;
+  el.textContent = msg || "";
+  el.classList.remove('ok','warn','err');
+  if(tone && ['ok','warn','err'].includes(tone)){
+    el.classList.add(tone);
+  }
+}
+
+function ensureOptimizeMap(){
+  const host = document.getElementById('optimizeMap');
+  if(!host) return null;
+  if(!OPTIMIZE_MAP){
+    const street = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 22, attribution: "&copy; OpenStreetMap" });
+    OPTIMIZE_MAP = L.map(host, { attributionControl:false, zoomControl:false, dragging:true, scrollWheelZoom:true, doubleClickZoom:true });
+    street.addTo(OPTIMIZE_MAP);
+    optimizeMapLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    optimizeMapFocusLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    OPTIMIZE_MAP.setView([0,0],2);
+  }else{
+    if(!optimizeMapLayer){
+      optimizeMapLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    }
+    if(!optimizeMapFocusLayer){
+      optimizeMapFocusLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    }
+  }
+  return OPTIMIZE_MAP;
+}
+
+function invalidateOptimizeMap(){
+  const map = ensureOptimizeMap();
+  if(map){ setTimeout(()=> map.invalidateSize(), 60); }
+}
+
+function renderOptimizeMap(state, cams = [], readyCount = 0){
+  const dataset = document.getElementById('selOptimizeDataset')?.value || '';
+  const summaryEl = document.getElementById('colmapMapSummary');
+  const map = ensureOptimizeMap();
+  if(!map || !optimizeMapLayer){
+    if(summaryEl){ summaryEl.textContent = dataset ? 'Map unavailable' : 'No dataset'; }
+    return;
+  }
+
+  optimizeMapLayer.clearLayers();
+  if(!dataset){
+    if(summaryEl) summaryEl.textContent = 'No dataset';
+    return;
+  }
+  if(!state || !cams.length){
+    if(summaryEl) summaryEl.textContent = state ? 'No cameras' : 'Not optimized';
+    return;
+  }
+
+  const bounds = [];
+  let lociCount = 0;
+  cams.forEach(cam => {
+    const lat = Number((cam?.optimized?.lat ?? cam?.lat));
+    const lon = Number((cam?.optimized?.lon ?? cam?.lon));
+    if(Number.isNaN(lat) || Number.isNaN(lon)) return;
+    lociCount += 1;
+    const ready = cam.calibrated || (cam.status && String(cam.status).toLowerCase() === 'calibrated') || (cam.optimized && cam.optimized.lat != null);
+    const color = ready ? '#18b76a' : '#f4b400';
+    const marker = L.circleMarker([lat, lon], {
+      radius: ready ? 6 : 5,
+      color,
+      weight: 1.5,
+      fillColor: color,
+      fillOpacity: 0.85
+    });
+    const title = escapeHtml(cam.file || cam.name || 'image');
+    marker.bindPopup(`<div><strong>${title}</strong><br>${ready ? 'Optimized' : 'Pending'}</div>`);
+    marker.addTo(optimizeMapLayer);
+    bounds.push([lat, lon]);
+  });
+
+  if(summaryEl){
+    if(!lociCount){
+      summaryEl.textContent = 'No GPS data';
+    }else{
+      summaryEl.textContent = `${readyCount}/${cams.length} optimized`;
+    }
+  }
+
+  if(bounds.length){
+    try{
+      map.fitBounds(L.latLngBounds(bounds).pad(0.1));
+    }catch(_){
+      const bb = L.latLngBounds(bounds);
+      map.setView(bb.getCenter(), Math.min(map.getZoom(), 18));
+    }
+  }else{
+    map.setView([0,0],2);
+  }
+  setTimeout(()=> map.invalidateSize(), 80);
+}
+
+function focusOptimizeCamera(lat, lon){
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const map = ensureOptimizeMap();
+  if(!map || !optimizeMapFocusLayer) return;
+  const target = [lat, lon];
+  const nextZoom = Math.max(map.getZoom() || 0, 18);
+  try{
+    map.flyTo(target, nextZoom, { duration: 0.7 });
+  }catch(_){
+    map.setView(target, nextZoom);
+  }
+  optimizeMapFocusLayer.clearLayers();
+  const pulse = L.circleMarker(target, {
+    radius: 10,
+    color: '#68c3ff',
+    weight: 2,
+    fillColor: '#68c3ff',
+    fillOpacity: 0.25
+  });
+  pulse.addTo(optimizeMapFocusLayer);
+  setTimeout(() => {
+    if(optimizeMapFocusLayer){
+      try{ optimizeMapFocusLayer.removeLayer(pulse); }catch(_){ }
+    }
+  }, 1800);
+}
+
+function updateAccurateUI(){
+  const ds = getSelectedDataset();
+  const state = getColmapState(ds);
+  const badge = document.getElementById('accurateStatusBadge');
+  const hint = document.getElementById('accurateHint');
+  const chk = document.getElementById('chkAccurateLocations');
+  const btn = document.getElementById('btnTest');
+  const ready = !!(state && state.ready);
+  const jobStatus = state?.job?.status;
+
+  if(badge){
+    let cls = 'pill pill-muted';
+    let text = 'Select dataset';
+    if(!ds){
+      text = 'No dataset';
+    }else if(ready){
+      cls = 'pill pill-ready'; text = 'Ready';
+    }else if(jobStatus === 'running' || jobStatus === 'queued'){
+      cls = 'pill pill-warn'; text = 'Optimizing…';
+    }else if(jobStatus === 'awaiting_finish'){
+      cls = 'pill pill-warn'; text = 'Awaiting finish';
+    }else if(state){
+      cls = 'pill pill-warn'; text = 'Not optimized';
+    }
+    badge.className = cls;
+    badge.textContent = text;
+  }
+
+  if(hint){
+    if(!ds){
+      hint.textContent = 'Select a dataset';
+    }else if(ready){
+      hint.textContent = 'Using aligned poses';
+    }else if(jobStatus === 'awaiting_finish'){
+      hint.textContent = 'Open Optimize tab and finish job';
+    }else if(jobStatus === 'running' || jobStatus === 'queued'){
+      hint.textContent = 'Optimization running…';
+    }else{
+      hint.textContent = 'Requires optimized poses';
+    }
+  }
+
+  if(chk && btn){
+    const wantsAccurate = !!chk.checked;
+    const disable = wantsAccurate && !ready;
+    btn.disabled = disable;
+    btn.classList.toggle('disabled', disable);
+  }
+}
+
+function describeMetaPath(path){
+  if(!path) return '–';
+  const parts = String(path).split(/[\\/]/).filter(Boolean);
+  if(parts.length >= 2) return `${parts[parts.length-2]}/${parts[parts.length-1]}`;
+  return parts.pop() || path;
+}
+
+function renderColmapCameras(state){
+  const wrap = document.getElementById('colmapCameraList');
+  const summaryEl = document.getElementById('colmapCameraSummary');
+  if(!wrap) return;
+  const selectedDataset = document.getElementById('selOptimizeDataset')?.value || '';
+  if(!selectedDataset){
+    wrap.innerHTML = `<div class="muted tiny">Select a dataset to preview cameras.</div>`;
+    if(summaryEl) summaryEl.textContent = 'No dataset';
+    renderOptimizeMap(null, []);
+    return;
+  }
+  if(!state){
+    wrap.innerHTML = `<div class="muted tiny">No optimization data yet.</div>`;
+    if(summaryEl) summaryEl.textContent = 'Not optimized';
+    renderOptimizeMap(null, []);
+    return;
+  }
+  const cams = Array.isArray(state.cameras) ? state.cameras : [];
+  if(!cams.length){
+    wrap.innerHTML = `<div class="muted tiny">No images detected for this dataset.</div>`;
+    if(summaryEl) summaryEl.textContent = 'No cameras';
+    renderOptimizeMap(state, []);
+    return;
+  }
+  const readyCount = cams.filter(cam => cam.calibrated || String(cam.status || '').toLowerCase() === 'calibrated').length;
+  if(summaryEl){
+    summaryEl.textContent = `${readyCount}/${cams.length} calibrated`;
+  }
+  renderOptimizeMap(state, cams, readyCount);
+  const maxRows = 120;
+  const rows = cams.slice(0, maxRows).map(cam => {
+    const rawName = cam.file || cam.name || 'image';
+    const name = escapeHtml(rawName);
+    const ready = cam.calibrated || (cam.status && String(cam.status).toLowerCase() === 'calibrated') || (cam.optimized && cam.optimized.lat != null);
+    let tagHtml = '';
+    if(ready){
+      tagHtml = '<span class="tag tag-ready">ready</span>';
+    }else if(cam.status){
+      tagHtml = `<span class="tag tag-muted">${escapeHtml(String(cam.status))}</span>`;
+    }else if(cam.has_gps === false){
+      tagHtml = '<span class="tag tag-warn">no gps</span>';
+    }
+    const latVal = cam?.optimized?.lat ?? cam.lat;
+    const lonVal = cam?.optimized?.lon ?? cam.lon;
+    const altVal = cam?.optimized?.alt ?? cam.alt;
+    const headingVal = cam?.optimized?.rotation ?? cam.rotation;
+    const latNum = Number(latVal);
+    const lonNum = Number(lonVal);
+    const altNum = Number(altVal);
+    const headingNum = Number(headingVal);
+    const hasLatLon = Number.isFinite(latNum) && Number.isFinite(lonNum);
+    const parts = [];
+    if(hasLatLon){
+      parts.push(`${latNum.toFixed(5)}, ${lonNum.toFixed(5)}`);
+    }
+    if(Number.isFinite(headingNum)){
+      parts.push(`${headingNum.toFixed(1)} deg`);
+    }
+    if(Number.isFinite(altNum)){
+      parts.push(`${altNum.toFixed(1)} m`);
+    }
+    const meta = parts.length ? escapeHtml(parts.join(' | ')) : null;
+    const metaHtml = meta || '<span class="muted">No GPS</span>';
+    const zoomTitle = hasLatLon ? `Zoom to ${rawName}` : 'No GPS data';
+    const zoomAttrs = hasLatLon ? `data-lat="${latNum}" data-lon="${lonNum}"` : 'disabled';
+    const zoomBtn = `<button class="camZoomBtn" type="button" ${zoomAttrs} title="${escapeHtml(zoomTitle)}" aria-label="${escapeHtml(zoomTitle)}">${CAMERA_ZOOM_ICON}</button>`;
+    return `<div class="cameraRow"><div class="cameraRowHead"><div class="cameraRowHeadMain"><strong>${name}</strong> ${tagHtml}</div>${zoomBtn}</div><div class="camMeta">${metaHtml}</div></div>`;
+  }).join('');
+  wrap.innerHTML = rows;
+  if(cams.length > maxRows){
+    wrap.insertAdjacentHTML('beforeend', `<div class="muted tiny">Showing first ${maxRows} of ${cams.length} cameras…</div>`);
+  }
+}
+
+function updateColmapProgress(job){
+  const wrap = document.getElementById('colmapProgressWrap');
+  const bar = document.getElementById('colmapProgressBar');
+  const label = document.getElementById('colmapProgressText');
+  if(!wrap || !bar || !label){
+    return;
+  }
+  if(!job){
+    wrap.hidden = true;
+    bar.style.width = '0%';
+    label.textContent = 'Idle';
+    return;
+  }
+  wrap.hidden = false;
+  const pct = Math.max(0, Math.min(100, Math.round(((job.progress ?? 0) * 100))));
+  bar.style.width = `${pct}%`;
+  const detail = job.progress_detail;
+  let suffix = '';
+  if(detail && detail.total){
+    suffix = ` — ${detail.done}/${detail.total}`;
+  }
+  const step = job.current_step || job.status || 'running';
+  label.textContent = `${step.replace(/_/g,' ')}${suffix}`;
+}
+
+function updateOptimizePanel(state){
+  const dataset = document.getElementById('selOptimizeDataset')?.value;
+  const pill = document.getElementById('optimizeReadyPill');
+  if(pill){
+    let cls = 'pill pill-muted';
+    let text = dataset ? 'Not ready' : 'Select dataset';
+    if(state?.ready){
+      cls = 'pill pill-ready'; text = 'Ready';
+    }
+    pill.className = cls;
+    pill.textContent = text;
+  }
+
+  setText('#colmapJobStatus', state?.job?.status || '–');
+  setText('#colmapJobStep', state?.job?.current_step || '–');
+  const jobIdEl = document.getElementById('colmapJobId');
+  if(jobIdEl){ jobIdEl.textContent = state?.job?.id ? `Job ${state.job.id}` : '—'; }
+  const metaEl = document.getElementById('colmapMetaLink');
+  if(metaEl){ metaEl.textContent = state?.meta_path ? describeMetaPath(state.meta_path) : '—'; }
+  const logsEl = document.getElementById('colmapLogs');
+  if(logsEl){
+    logsEl.textContent = (state?.logs || []).join('\n');
+    logsEl.scrollTop = logsEl.scrollHeight;
+  }
+  renderColmapCameras(state);
+  updateColmapProgress(state?.job || null);
+
+  const finishBtn = document.getElementById('btnFinishColmap');
+  if(finishBtn){ finishBtn.disabled = !(state?.job?.status === 'awaiting_finish'); }
+  const startBtn = document.getElementById('btnStartColmap');
+  if(startBtn){
+    const blocked = state?.job && ['running','queued'].includes(state.job.status);
+    startBtn.disabled = !!blocked;
+  }
+}
+
+function applyColmapState(dataset, state){
+  cacheColmapState(dataset, state);
+  const paramSnapshot = state?.job?.params ?? state?.saved_params ?? {};
+  rememberColmapParams(dataset, paramSnapshot);
+  if(dataset === getSelectedDataset()){
+    updateAccurateUI();
+  }
+  const optSel = document.getElementById('selOptimizeDataset');
+  if(optSel && optSel.value === dataset){
+    maybeApplySavedColmapParams(dataset);
+    updateOptimizePanel(state);
+  }
+}
+
+function clearColmapPoll(){
+  if(colmapPollHandle){
+    clearInterval(colmapPollHandle);
+    colmapPollHandle = null;
+    colmapPollDataset = null;
+  }
+}
+
+function scheduleColmapPoll(dataset, state){
+  const status = state?.job?.status;
+  const shouldPoll = !!(status && ['running','queued','awaiting_finish'].includes(status));
+  if(!shouldPoll){
+    if(colmapPollDataset === dataset){
+      clearColmapPoll();
+    }
+    return;
+  }
+  if(colmapPollDataset === dataset && colmapPollHandle){
+    return;
+  }
+  clearColmapPoll();
+  colmapPollDataset = dataset;
+  colmapPollHandle = setInterval(()=> refreshColmapState({ dataset, silent: true }), 5000);
+}
+
+async function refreshColmapState({ dataset, silent } = {}){
+  const selOpt = document.getElementById('selOptimizeDataset');
+  const ds = dataset || selOpt?.value || getSelectedDataset();
+  if(!ds) return null;
+  try{
+    const res = await fetch(`${api.colmapState}?dataset=${encodeURIComponent(ds)}`);
+    const js = await res.json();
+    if(!res.ok || !js.ok) throw new Error(js.detail || 'Failed to load COLMAP state');
+    applyColmapState(ds, js.state);
+    scheduleColmapPoll(ds, js.state);
+    if(!silent){
+      if(js.state?.job?.status === 'awaiting_finish'){
+        setColmapStatus('COLMAP finished. Click "Mark finished" to accept.', 'warn');
+      }else if(js.state?.job?.status === 'running'){
+        setColmapStatus('COLMAP optimization running…');
+      }else{
+        setColmapStatus('');
+      }
+    }
+    return js.state;
+  }catch(err){
+    if(!silent){
+      console.warn('colmap state', err);
+      setColmapStatus(err.message || 'Failed to fetch COLMAP state', 'warn');
+    }
+    return null;
+  }
+}
+
+function buildColmapParams(){
+  const params = {};
+  const matcher = document.getElementById('selColmapMatcher')?.value;
+  if(matcher) params.matcher = matcher;
+  const cameraModel = document.getElementById('selColmapCameraModel')?.value;
+  if(cameraModel) params.camera_model = cameraModel;
+  const overlapVal = document.getElementById('inpColmapSeqOverlap')?.value;
+  if(overlapVal !== undefined && overlapVal !== ''){
+    const val = parseInt(overlapVal, 10);
+    if(!Number.isNaN(val)) params.seq_overlap = val;
+  }
+  const tri = document.getElementById('inpColmapTriangulation')?.value;
+  if(tri !== undefined && tri !== ''){
+    const val = Number(tri);
+    if(!Number.isNaN(val)) params.min_triangulation_angle = val;
+  }
+  const minSizeVal = document.getElementById('inpColmapMinSize')?.value;
+  if(minSizeVal !== undefined && minSizeVal !== ''){
+    const val = parseInt(minSizeVal, 10);
+    if(!Number.isNaN(val)) params.min_model_size = val;
+  }
+  const minMatchesVal = document.getElementById('inpColmapMinMatches')?.value;
+  if(minMatchesVal !== undefined && minMatchesVal !== ''){
+    const val = parseInt(minMatchesVal, 10);
+    if(!Number.isNaN(val)) params.min_num_matches = val;
+  }
+  const maxImageVal = document.getElementById('inpColmapMaxImage')?.value;
+  if(maxImageVal !== undefined && maxImageVal !== ''){
+    const val = parseInt(maxImageVal, 10);
+    if(!Number.isNaN(val)) params.max_image_size = val;
+  }
+  const initInliersVal = document.getElementById('inpColmapInitInliers')?.value;
+  if(initInliersVal !== undefined && initInliersVal !== ''){
+    const val = parseInt(initInliersVal, 10);
+    if(!Number.isNaN(val)) params.init_min_num_inliers = val;
+  }
+  const absInliersVal = document.getElementById('inpColmapAbsInliers')?.value;
+  if(absInliersVal !== undefined && absInliersVal !== ''){
+    const val = parseInt(absInliersVal, 10);
+    if(!Number.isNaN(val)) params.abs_pose_min_num_inliers = val;
+  }
+  const maxOverlapVal = document.getElementById('inpColmapMaxOverlap')?.value;
+  if(maxOverlapVal !== undefined && maxOverlapVal !== ''){
+    const val = parseInt(maxOverlapVal, 10);
+    if(!Number.isNaN(val)) params.max_model_overlap = val;
+  }
+  const maxModelsVal = document.getElementById('inpColmapMaxModels')?.value;
+  if(maxModelsVal !== undefined && maxModelsVal !== ''){
+    const val = parseInt(maxModelsVal, 10);
+    if(!Number.isNaN(val)) params.max_num_models = val;
+  }
+  const useGpu = document.getElementById('chkColmapUseGpu');
+  if(useGpu){
+    params.use_gpu = !!useGpu.checked;
+  }
+  return params;
+}
+
+function ensureColmapParamDefaults(){
+  if(Object.keys(colmapParamDefaults).length){
+    return;
+  }
+  Object.entries(COLMAP_PARAM_FIELDS).forEach(([key, conf]) => {
+    const el = document.getElementById(conf.id);
+    if(!el) return;
+    if(conf.type === 'checkbox'){
+      colmapParamDefaults[key] = !!el.checked;
+    }else{
+      colmapParamDefaults[key] = el.value ?? '';
+    }
+  });
+}
+
+function normalizeColmapParams(raw){
+  const out = {};
+  if(!raw || typeof raw !== 'object'){
+    return out;
+  }
+  Object.keys(COLMAP_PARAM_FIELDS).forEach(key => {
+    if(!Object.prototype.hasOwnProperty.call(raw, key)){
+      return;
+    }
+    const val = raw[key];
+    if(val === undefined || val === null || val === ''){
+      return;
+    }
+    if(COLMAP_PARAM_FIELDS[key].type === 'checkbox'){
+      out[key] = !!val;
+    }else{
+      out[key] = val;
+    }
+  });
+  return out;
+}
+
+function hashColmapParams(raw){
+  const normalized = normalizeColmapParams(raw);
+  const ordered = {};
+  Object.keys(COLMAP_PARAM_FIELDS).forEach(key => {
+    if(Object.prototype.hasOwnProperty.call(normalized, key)){
+      ordered[key] = normalized[key];
+    }
+  });
+  return JSON.stringify(ordered);
+}
+
+function rememberColmapParams(dataset, params){
+  if(!dataset) return;
+  colmapSavedParams.set(dataset, normalizeColmapParams(params));
+}
+
+function applyColmapParamsToForm(dataset, params){
+  if(!dataset) return;
+  ensureColmapParamDefaults();
+  const normalized = normalizeColmapParams(params);
+  Object.entries(COLMAP_PARAM_FIELDS).forEach(([key, conf]) => {
+    const el = document.getElementById(conf.id);
+    if(!el) return;
+    const hasCustom = Object.prototype.hasOwnProperty.call(normalized, key);
+    if(conf.type === 'checkbox'){
+      el.checked = hasCustom ? !!normalized[key] : !!colmapParamDefaults[key];
+    }else if(hasCustom){
+      el.value = normalized[key];
+    }else{
+      const fallback = colmapParamDefaults[key];
+      el.value = fallback === undefined || fallback === null ? '' : fallback;
+    }
+  });
+  colmapPrefillState = { dataset, hash: hashColmapParams(normalized) };
+}
+
+function maybeApplySavedColmapParams(dataset){
+  if(!dataset) return;
+  const saved = colmapSavedParams.get(dataset) || {};
+  const savedHash = hashColmapParams(saved);
+  if(colmapPrefillState.dataset === dataset && colmapPrefillState.hash === savedHash){
+    return;
+  }
+  applyColmapParamsToForm(dataset, saved);
+}
+
+async function startColmapJob(){
+  const dataset = document.getElementById('selOptimizeDataset')?.value;
+  if(!dataset){
+    setColmapStatus('Select a dataset to optimize.', 'warn');
+    return;
+  }
+  const params = buildColmapParams();
+  rememberColmapParams(dataset, params);
+  colmapPrefillState = { dataset, hash: hashColmapParams(params) };
+  const fd = new FormData();
+  fd.append('dataset', dataset);
+  if(Object.keys(params).length){
+    fd.append('params', JSON.stringify(params));
+  }
+  setColmapStatus('Starting COLMAP…');
+  try{
+    const res = await fetch(api.colmapStart, { method:'POST', body: fd });
+    const js = await res.json();
+    if(!res.ok || !js.ok) throw new Error(js.detail || 'Failed to start COLMAP');
+    setColmapStatus('COLMAP started.', 'ok');
+    applyColmapState(dataset, js.state || null);
+    scheduleColmapPoll(dataset, js.state);
+  }catch(err){
+    console.error('colmap start', err);
+    setColmapStatus(err.message || 'Failed to start COLMAP', 'err');
+  }
+}
+
+async function finishColmapJob(){
+  const dataset = document.getElementById('selOptimizeDataset')?.value;
+  const state = getColmapState(dataset);
+  if(!dataset){
+    setColmapStatus('Select a dataset to finish.', 'warn');
+    return;
+  }
+  const jobId = state?.job?.id;
+  if(!jobId){
+    setColmapStatus('No COLMAP job ready to finish.', 'warn');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('dataset', dataset);
+  fd.append('job_id', jobId);
+  setColmapStatus('Marking dataset as ready…');
+  try{
+    const res = await fetch(api.colmapFinish, { method:'POST', body: fd });
+    const js = await res.json();
+    if(!res.ok || !js.ok) throw new Error(js.detail || 'Failed to finalize COLMAP results');
+    setColmapStatus('Dataset ready for accurate locations.', 'ok');
+    applyColmapState(dataset, js.state || null);
+    scheduleColmapPoll(dataset, js.state);
+  }catch(err){
+    console.error('colmap finish', err);
+    setColmapStatus(err.message || 'Failed to finalize COLMAP results', 'err');
+  }
+}
+
+function syncOptimizeDatasetFromTest(){
+  const ds = getSelectedDataset();
+  const sel = document.getElementById('selOptimizeDataset');
+  if(ds && sel){
+    sel.value = ds;
+    onOptimizeDatasetChange();
+  }
+}
+
+function onTestDatasetChange(){
+  const ds = getSelectedDataset();
+  const sel = document.getElementById('selOptimizeDataset');
+  if(ds && sel){
+    sel.value = ds;
+  }
+  const cached = getColmapState(ds);
+  if(cached){
+    updateAccurateUI();
+  }else if(ds){
+    refreshColmapState({ dataset: ds, silent: true });
+  }else{
+    updateAccurateUI();
+  }
+}
+
+function onOptimizeDatasetChange(){
+  const sel = document.getElementById('selOptimizeDataset');
+  const ds = sel?.value;
+  if(!ds){
+    updateOptimizePanel(null);
+    return;
+  }
+  const cached = getColmapState(ds);
+  if(cached){
+    updateOptimizePanel(cached);
+    scheduleColmapPoll(ds, cached);
+  }else{
+    refreshColmapState({ dataset: ds });
+  }
 }
 
 // document.addEventListener('click', (e)=>{
@@ -354,6 +1007,7 @@ document.addEventListener('click', (e)=>{
   const choose = (val)=>{
     rebuildCategoryEditors(val);
   };
+
   choose(currentProp);
   stSel.onchange = ()=> choose(stSel.value);
 
@@ -364,6 +1018,17 @@ document.addEventListener('click', (e)=>{
 
 }
 
+});
+
+
+document.addEventListener('click', (e)=>{
+  const btn = e.target.closest('.camZoomBtn');
+  if(!btn || btn.disabled) return;
+  const lat = Number(btn.dataset.lat);
+  const lon = Number(btn.dataset.lon);
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  e.preventDefault();
+  focusOptimizeCamera(lat, lon);
 });
 
 
@@ -391,14 +1056,36 @@ function warn(prefix, msg){ const el=$(`#${prefix}Warn`); if(el){ el.innerHTML=c
 function wireAlertClose(){ $$(".alert").forEach(el=>{ el.addEventListener("click",(e)=>{ if(e.target.classList.contains("alertClose")) setHidden(el,true); }); }); }
 
 function populateFolders(list){
-  const sel = $("#selTestFolder");
-  sel.innerHTML = "";
-  list.forEach(d => {
-    const o = document.createElement("option");
-    o.value = d.name;
-    o.textContent = `${d.name} (${d.count})`;
-    sel.appendChild(o);
-  });
+  const selTest = $("#selTestFolder");
+  const prevTest = selTest?.value || null;
+  if(selTest){
+    selTest.innerHTML = "";
+    list.forEach(d => {
+      const o = document.createElement("option");
+      o.value = d.name;
+      o.textContent = `${d.name} (${d.count})`;
+      selTest.appendChild(o);
+    });
+    if(prevTest && list.some(d => d.name === prevTest)){
+      selTest.value = prevTest;
+    }
+  }
+  const selOpt = document.getElementById('selOptimizeDataset');
+  const prevOpt = selOpt?.value || null;
+  if(selOpt){
+    selOpt.innerHTML = "";
+    list.forEach(d => {
+      const o = document.createElement("option");
+      o.value = d.name;
+      o.textContent = d.name;
+      selOpt.appendChild(o);
+    });
+    if(prevOpt && list.some(d => d.name === prevOpt)){
+      selOpt.value = prevOpt;
+    }else if(selTest && selTest.value){
+      selOpt.value = selTest.value;
+    }
+  }
 }
 function populateModels(list){
   // Populate a models <select>. Default target is the Test tab model selector.
@@ -520,6 +1207,7 @@ function setupTabs(){
       $$(".tabPanel").forEach(p=>p.classList.remove("active"));
       $(`#${id}`).classList.add("active");
       if(id === "tab-map" && MAP){ setTimeout(()=>MAP.invalidateSize(), 30); }
+      if(id === "tab-optimize"){ invalidateOptimizeMap(); }
       if(id === "tab-logs"){
         const pane = $("#logStream");
         pane.scrollTop = pane.scrollHeight;
@@ -531,13 +1219,18 @@ function switchToTab(tabId){
   $$(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab === tabId));
   $$(".tabPanel").forEach(p=>p.classList.toggle("active", p.id === tabId));
   if(tabId === "tab-map" && MAP){ setTimeout(()=>MAP.invalidateSize(), 30); }
+  if(tabId === "tab-optimize"){ invalidateOptimizeMap(); }
 }
 
 // ---------- datasets/models/sessions ----------
 async function loadDatasets(){
   const res = await fetch(api.datasets);
   const js = await res.json();
-  if(js.ok){ populateFolders(js.datasets); }
+  if(js.ok){
+    populateFolders(js.datasets);
+    onTestDatasetChange();
+    onOptimizeDatasetChange();
+  }
 }
 // Load models, optionally filtered by backend (e.g., ?backend=yolo)
 // targetSel - optional selector string for which <select> to populate (defaults to '#selModelFolder')
@@ -716,6 +1409,14 @@ async function runTest(){
     return;
   }
   const model = getSelectedModel();
+  const wantsAccurate = document.getElementById("chkAccurateLocations")?.checked;
+  if(wantsAccurate){
+    const state = getColmapState(ds);
+    if(!state || !state.ready){
+      warn("test","Run Optimize Locations and finish before enabling accurate mode.");
+      return;
+    }
+  }
   // Decide channels based solely on the selected model's metadata.
   // The frontend will send the model's expected channel_count to the server so the backend
   // can decide whether to decode/use the thermal band. If model metadata is missing,
@@ -746,6 +1447,7 @@ async function runTest(){
   // only attempt decoding when the selected model declares RGB+thermal input.
   fd.append("result_name", resultName);
   fd.append("test_threshold", testThreshold);
+  if(wantsAccurate) fd.append("accurate_locations", "true");
   const backend = getSelectedBackend();
   fd.append('backend', backend);
   if(backend === 'yolo'){
@@ -2174,6 +2876,8 @@ function setupUI(){
   setupTabs();
 
   $("#btnRefreshFolders").addEventListener("click", loadDatasets);
+  const selTestFolder = document.getElementById('selTestFolder');
+  if(selTestFolder){ selTestFolder.addEventListener('change', onTestDatasetChange); }
   $("#btnRefreshModels").addEventListener("click", ()=> loadModels(getSelectedBackend(), '#selModelFolder'));
   $("#btnOpenUploadModal").addEventListener("click", openUploadModal);
   $("#btnCloseUploadModal").addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
@@ -2185,6 +2889,24 @@ function setupUI(){
 
   $("#btnTest").addEventListener("click", runTest);
   $("#btnCancelTest").addEventListener("click", cancelTest);
+  const chkAccurate = document.getElementById('chkAccurateLocations');
+  if(chkAccurate){ chkAccurate.addEventListener('change', updateAccurateUI); }
+  const btnGoOptimize = document.getElementById('btnGoOptimize');
+  if(btnGoOptimize){
+    btnGoOptimize.addEventListener('click', (e)=>{
+      e.preventDefault();
+      syncOptimizeDatasetFromTest();
+      switchToTab('tab-optimize');
+      refreshColmapState();
+    });
+  }
+
+  const colmapInfoModal = document.getElementById('colmapInfoModal');
+  const openColmapInfo = ()=> colmapInfoModal?.classList.remove('hidden');
+  const closeColmapInfo = ()=> colmapInfoModal?.classList.add('hidden');
+  document.getElementById('btnColmapInfo')?.addEventListener('click', openColmapInfo);
+  document.getElementById('btnCloseColmapInfo')?.addEventListener('click', closeColmapInfo);
+  document.getElementById('btnColmapInfoDone')?.addEventListener('click', closeColmapInfo);
 
   $("#lnkToLogsFromTest").addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
   $("#lnkToLogsFromTrain").addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
@@ -2292,6 +3014,13 @@ function setupUI(){
   document.getElementById("imgZoomOut")?.addEventListener("click", ()=> _zoomOut());
   document.getElementById("imgResetZoom")?.addEventListener("click", ()=> _resetZoom());
 
+  const selOptimize = document.getElementById('selOptimizeDataset');
+  if(selOptimize){ selOptimize.addEventListener('change', onOptimizeDatasetChange); }
+  document.getElementById('btnSyncOptimizeDataset')?.addEventListener('click', (e)=>{ e.preventDefault(); syncOptimizeDatasetFromTest(); });
+  document.getElementById('btnRefreshColmap')?.addEventListener('click', ()=> refreshColmapState());
+  document.getElementById('btnStartColmap')?.addEventListener('click', startColmapJob);
+  document.getElementById('btnFinishColmap')?.addEventListener('click', finishColmapJob);
+
   // Wheel zoom on image and mouse drag to pan when zoomed (simple implementation)
   const lbImg = document.getElementById('lightboxImg');
   if(lbImg){
@@ -2313,6 +3042,8 @@ function setupUI(){
     else if (k === "Escape") { _closeLightbox(); e.preventDefault(); }
   });
 
+  updateAccurateUI();
+  updateOptimizePanel(getColmapState(document.getElementById('selOptimizeDataset')?.value) || null);
 }
 
 document.addEventListener("DOMContentLoaded", async ()=>{
