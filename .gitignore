@@ -55,3 +55,6 @@ __pycache__/
 
 # Media session artifacts (already covered by media/, keep explicit)
 media/sessions/
+
+
+colmap/

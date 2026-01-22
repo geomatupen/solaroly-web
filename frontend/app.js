@@ -39,6 +39,7 @@ let lastLoadedImagesGJ = null;
 let lastLoadedSessionName = null;
 let lastLoadedImagesUrl = null;
 let lastLoadedSessionSummary = null;
+let rotatedImagesLookup = null;     // cached map of basename -> rotated URL
 
 // camera position overrides loaded from an uploaded WebODM camera-positions JSON
 // keyed by normalized basename (no extension), value: { lon, lat, alt }
@@ -747,44 +748,6 @@ async function runTest(){
   fd.append("test_threshold", testThreshold);
   const backend = getSelectedBackend();
   fd.append('backend', backend);
-  // Attach optional camera references (Agisoft references.txt / CSV / TSV) when provided
-  const camInput = document.getElementById('fileCameraRefs');
-  if (camInput && camInput.files && camInput.files.length > 0){
-    const f = camInput.files[0];
-    try{
-      // basic extension check
-      const ext = (f.name || '').split('.').pop().toLowerCase();
-      if (!['txt','csv','tsv'].includes(ext)){
-        if (!confirm('Selected camera references file does not have .txt/.csv/.tsv extension. Continue anyway?')){
-          setHidden($("#spinTest"), true);
-          return;
-        }
-      }
-
-      // quick content sniff: read first chunk and check for XML start or delimiters
-      const sample = (await f.text()).slice(0, 4096);
-      const sTrim = sample.trimLeft();
-      if (sTrim.startsWith('<')){
-        alert('The uploaded file looks like XML. The backend expects Agisoft reference tables (references.txt / CSV / TSV). Please upload the table export instead.');
-        setHidden($("#spinTest"), true);
-        return;
-      }
-
-      const header = sample.split(/\r?\n/)[0] || '';
-      const looksLikeCsv = header.includes(',') || header.includes('\t') || header.split(/\s+/).length > 1;
-      if (!looksLikeCsv){
-        if (!confirm('Could not detect CSV/TSV-like headers in the uploaded camera references file. Continue anyway?')){
-          setHidden($("#spinTest"), true);
-          return;
-        }
-      }
-
-      fd.append('cameras', f);
-    }catch(e){
-      console.warn('Failed to attach cameras file', e);
-      try{ fd.append('cameras', f); }catch(_){ }
-    }
-  }
   if(backend === 'yolo'){
     const yo = getYoloOptions();
     fd.append('yolo_family', yo.family);
@@ -851,19 +814,69 @@ async function showResultsForSelected(){
   const res = await fetch(`${api.sessionSummary}?session=${encodeURIComponent(session)}`);
   const js = await res.json();
   if(!js.ok) return;
+  lastLoadedSessionSummary = js || null;
+  rotatedImagesLookup = null;
   // console.log(js)
   renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
   loadResultsInfo(currentSession);
 }
 
 function pairThumbs(assets){
-  const mapThumb = new Map((assets.thumbs||[]).map(u=>[u.split("/").pop(), u]));
+  const mapThumb = new Map((assets?.thumbs || []).map(u => [u.split("/").pop(), u]));
+  const overlays = Array.isArray(assets?.overlays) ? assets.overlays : [];
   const out = [];
-  for(const ov of (assets.overlays||[])){
+  for(const ov of overlays){
     const fn = ov.split("/").pop();
-    out.push({ file: fn, overlay: ov, thumb: mapThumb.get(fn)||ov });
+    const rotatedUrl = getRotatedImageUrl(fn) || getRotatedImageUrl(ov);
+    const overlayUrl = rotatedUrl || ov;
+    const thumbUrl = rotatedUrl || mapThumb.get(fn) || overlayUrl;
+    out.push({ file: fn, overlay: overlayUrl, thumb: thumbUrl });
   }
   return out;
+}
+
+function normalizeImageStem(name){
+  if(!name) return null;
+  const base = String(name).split("/").pop();
+  if(!base) return null;
+  return base.replace(/\.[^.]+$/, "").toLowerCase();
+}
+
+function ensureRotatedLookup(){
+  if(rotatedImagesLookup !== null) return rotatedImagesLookup;
+  rotatedImagesLookup = new Map();
+  const rotatedList = lastLoadedSessionSummary?.assets?.rotated_images;
+  if(Array.isArray(rotatedList)){
+    rotatedList.forEach(url => {
+      const stem = normalizeImageStem(url);
+      if(stem) rotatedImagesLookup.set(stem, url);
+    });
+  }
+  return rotatedImagesLookup;
+}
+
+function getRotatedImageUrl(name){
+  const lookup = ensureRotatedLookup();
+  if(!lookup.size) return null;
+  const stem = normalizeImageStem(name);
+  if(!stem) return null;
+  return lookup.get(stem) || null;
+}
+
+function preferRotatedOverlays(manifest){
+  if(!Array.isArray(manifest) || !manifest.length) return manifest;
+  const lookup = ensureRotatedLookup();
+  if(!lookup.size) return manifest;
+
+  return manifest.map(item => {
+    const next = { ...item };
+    const rotatedUrl = getRotatedImageUrl(next.overlay) || getRotatedImageUrl(next.file) || getRotatedImageUrl(next.thumb);
+    if(rotatedUrl){
+      next.overlay = rotatedUrl;
+      next.thumb = rotatedUrl;
+    }
+    return next;
+  });
 }
 function renderResultsGrid(manifest){
   const grid = $("#resultsGrid");
@@ -875,6 +888,8 @@ function renderResultsGrid(manifest){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
     // return;
   }
+
+  manifest = preferRotatedOverlays(manifest);
   // console.log(manifest)
   manifest.forEach((item, idx)=>{
     // console.log("inside loop")
@@ -1493,6 +1508,7 @@ async function applySessionToMap(sessionName){
   const sum = await res.json();
   // cache the session summary so loadImagesCatalog can prefer rotated_images when available
   lastLoadedSessionSummary = sum || null;
+  rotatedImagesLookup = null;
 
   const sessRoot   = `/media/sessions/${encodeURIComponent(sessionName)}/`;
   const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + 'anomalies.geojson');
@@ -1743,23 +1759,10 @@ async function loadImagesCatalog(sessionName, imagesUrl){
 
       // prepared overlay PNG path (server writes PNG overlays now)
       const stem = file.replace(/\.[^.]+$/, '');
-      // prefer backend-produced rotated images when the session summary indicates
-      // camera references or explicit rotated_images assets. Mark the record so
-      // the overlay code can skip client-side transforms for rotated assets.
-      let url = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
-      let isRotated = false;
-      try{
-        const sum = lastLoadedSessionSummary || {};
-        const assets = sum.assets || {};
-        if (Array.isArray(assets.rotated_images) && assets.rotated_images.length){
-          url = `/media/sessions/${encodeURIComponent(sessionName)}/rotated_images/${encodeURIComponent(stem)}.png`;
-          isRotated = true;
-        } else if (sum.camera_meta){
-          // If camera_meta exists (user uploaded references.txt) we prefer rotated_images
-          url = `/media/sessions/${encodeURIComponent(sessionName)}/rotated_images/${encodeURIComponent(stem)}.png`;
-          isRotated = true;
-        }
-      }catch(_){ /* ignore */ }
+      const rotatedUrl = getRotatedImageUrl(file) || getRotatedImageUrl(`${stem}.png`);
+      const defaultOverlay = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
+      const url = rotatedUrl || defaultOverlay;
+      const isRotated = !!rotatedUrl;
 
       // If the backend provided true footprint corners, use them (and rotation)
       let bounds = null;
@@ -2019,19 +2022,6 @@ $("#fileCameraPositions")?.addEventListener("change", async (e)=>{
 });
 
 $("#btnClearCameraPositions")?.addEventListener('click', async (e)=>{ e.preventDefault(); await clearCameraPositions(); });
-
-// show selected filename for camera references input
-document.getElementById('fileCameraRefs')?.addEventListener('change', (e)=>{
-  try{
-    const inp = e.target;
-    const f = inp.files && inp.files[0];
-    const label = inp.closest('.fileDrop');
-    const span = label ? label.querySelector('span') : null;
-    if (span){
-      span.textContent = f ? f.name : 'Choose references.txt / CSV / TSV…';
-    }
-  }catch(_){ }
-});
 
 // ---------- logs (SSE) ----------
 let evtSource = null;

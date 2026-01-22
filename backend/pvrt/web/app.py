@@ -12,7 +12,8 @@ import re
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
+from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -1103,6 +1104,28 @@ try:
 except Exception:
     _EXIF_GPS_TAG = 34853  # fallback id
 
+_GPS_SUB_TAGS = {v: k for k, v in ExifTags.GPSTAGS.items()}
+_EXIF_FOCAL_LENGTH_TAG = 37386
+_EXIF_FOCAL_LENGTH_35MM_TAG = 41989
+_EXIF_FOCAL_PLANE_X_RES_TAG = 41486
+_EXIF_FOCAL_PLANE_RES_UNIT_TAG = 41488
+_EXIF_DATETIME_TAG = 306
+_EXIF_DATETIME_ORIGINAL_TAG = 36867
+_EXIF_DATETIME_DIGITIZED_TAG = 36868
+
+
+def _parse_exif_timestamp(value) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        if isinstance(value, bytes):
+            value = value.decode("ascii", errors="ignore")
+        value = str(value).strip()
+        dt = datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+        return dt.timestamp()
+    except Exception:
+        return None
+
 def _to_float_ratio(val):
     # PIL gives (num, den) tuples or IFDRational; normalize to float
     try:
@@ -1177,6 +1200,320 @@ def _detect_image_input_type(images_dir: Path) -> str:
     return "tif" if len(tifs) == 1 else "images"
 
 
+def _gps_value(gps_dict: dict, name: str):
+    if not gps_dict:
+        return None
+    key = _GPS_SUB_TAGS.get(name)
+    if key is None:
+        return None
+    return gps_dict.get(key)
+
+
+def _decode_cardinal_ref(ref) -> str:
+    if isinstance(ref, bytes):
+        try:
+            ref = ref.decode("ascii", errors="ignore")
+        except Exception:
+            ref = str(ref)
+    return str(ref).strip().upper()
+
+
+def _latlon_from_gps(gps_dict: dict) -> tuple[Optional[float], Optional[float]]:
+    lat_val = _gps_value(gps_dict, "GPSLatitude")
+    lat_ref = _gps_value(gps_dict, "GPSLatitudeRef")
+    lon_val = _gps_value(gps_dict, "GPSLongitude")
+    lon_ref = _gps_value(gps_dict, "GPSLongitudeRef")
+    if not lat_val or not lon_val or not lat_ref or not lon_ref:
+        return None, None
+    try:
+        lat = _dms_to_deg(lat_val)
+        lon = _dms_to_deg(lon_val)
+        if _decode_cardinal_ref(lat_ref) == "S":
+            lat = -lat
+        if _decode_cardinal_ref(lon_ref) == "W":
+            lon = -lon
+        return lat, lon
+    except Exception:
+        return None, None
+
+
+def _coerce_float(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _normalize_heading_deg(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        deg = float(value)
+    except Exception:
+        return None
+    deg = deg % 360.0
+    if deg > 180.0:
+        deg -= 360.0
+    if deg < -180.0:
+        deg += 360.0
+    return deg
+
+
+def _camera_heading_to_overlay_rotation(rotation: Optional[float]) -> float:
+    """Return the normalized heading for overlay rotation."""
+    base = _normalize_heading_deg(rotation)
+    return float(base if base is not None else 0.0)
+
+
+def _camera_meta_session_meta(camera_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(camera_meta, dict):
+        return {}
+    meta = camera_meta.get("__meta__")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _camera_heading_from_entry(
+    cam_entry: Optional[Dict[str, Any]],
+    session_meta: Dict[str, Any],
+) -> Optional[float]:
+    heading = None
+    if cam_entry and isinstance(cam_entry, dict) and cam_entry.get("rotation") is not None:
+        heading = _normalize_heading_deg(cam_entry.get("rotation"))
+    if heading is None:
+        default_rot = _coerce_float(session_meta.get("default_rotation_deg"))
+        if default_rot is not None:
+            heading = _normalize_heading_deg(default_rot)
+    offset = _coerce_float(session_meta.get("rotation_offset_deg"))
+    if heading is not None and offset is not None:
+        heading = _normalize_heading_deg(heading + offset)
+    return heading
+
+
+def _read_dji_xmp_meta(info: dict) -> Dict[str, float]:
+    if not info:
+        return {}
+    xml_blob = None
+    for key in ("XML:com.adobe.xmp", "xmp", "XMP"):
+        if key in info:
+            xml_blob = info[key]
+            break
+    if not xml_blob:
+        return {}
+    try:
+        root = ET.fromstring(xml_blob)
+    except Exception:
+        return {}
+    out: Dict[str, float] = {}
+    def _store(tag_name: str, value: str):
+        if not value:
+            return
+        try:
+            val = float(value)
+        except Exception:
+            return
+        if tag_name == "FlightYawDegree":
+            out["flight_yaw"] = val
+        elif tag_name == "GimbalYawDegree":
+            out["gimbal_yaw"] = val
+        elif tag_name == "RelativeAltitude":
+            out["relative_altitude"] = val
+        elif tag_name == "AbsoluteAltitude":
+            out["absolute_altitude"] = val
+        elif tag_name == "GimbalRollDegree":
+            out["gimbal_roll"] = val
+
+    for elem in root.iter():
+        tag = elem.tag.rsplit('}', 1)[-1]
+        text = (elem.text or "").strip()
+        if text:
+            _store(tag, text)
+        for attr_key, attr_val in elem.attrib.items():
+            attr_tag = attr_key.rsplit('}', 1)[-1]
+            _store(attr_tag, (attr_val or "").strip())
+    return out
+
+
+def _compute_meters_per_pixel(
+    altitude_m: Optional[float],
+    width_px: Optional[int],
+    focal_length_mm: Optional[float],
+    focal_length_35mm: Optional[float],
+    focal_plane_x_res: Optional[float],
+    focal_plane_res_unit: Optional[int],
+) -> Optional[float]:
+    if not altitude_m or altitude_m <= 0 or not width_px or width_px <= 0:
+        return None
+    if focal_length_35mm and focal_length_35mm > 1e-6:
+        try:
+            return (float(altitude_m) * 36.0) / (float(focal_length_35mm) * float(width_px))
+        except Exception:
+            return None
+    if focal_length_mm and focal_plane_x_res and focal_plane_x_res > 0 and focal_plane_res_unit:
+        unit = int(focal_plane_res_unit)
+        per_mm = None
+        if unit == 2:      # inches
+            per_mm = float(focal_plane_x_res) / 25.4
+        elif unit == 3:    # centimeters
+            per_mm = float(focal_plane_x_res) / 10.0
+        elif unit == 4:    # millimeters
+            per_mm = float(focal_plane_x_res)
+        if per_mm and per_mm > 0:
+            pixel_size_mm = 1.0 / per_mm
+            try:
+                return (float(altitude_m) * (pixel_size_mm / 1000.0)) / float(focal_length_mm)
+            except Exception:
+                return None
+    return None
+
+
+def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with Image.open(img_path) as img:
+            width, height = img.size
+            info = dict(img.info) if img.info else {}
+            exif = img._getexif() or {}
+    except Exception as exc:
+        logger.debug("ignored EXIF parse error for %s: %s", img_path, exc)
+        return None
+
+    gps = exif.get(_EXIF_GPS_TAG) if _EXIF_GPS_TAG and exif else None
+    lat = lon = None
+    alt_from_gps = None
+    heading = None
+    if gps:
+        lat, lon = _latlon_from_gps(gps)
+        alt_val = _gps_value(gps, "GPSAltitude")
+        if alt_val is not None:
+            try:
+                alt_from_gps = _to_float_ratio(alt_val)
+                alt_ref = _gps_value(gps, "GPSAltitudeRef")
+                if alt_ref in (1, b"\x01"):
+                    alt_from_gps = -alt_from_gps
+            except Exception:
+                alt_from_gps = None
+        dir_val = _gps_value(gps, "GPSImgDirection")
+        if dir_val is not None:
+            try:
+                heading = _normalize_heading_deg(_to_float_ratio(dir_val))
+            except Exception:
+                heading = None
+
+    xmp_meta = _read_dji_xmp_meta(info)
+    flight_yaw = _normalize_heading_deg(xmp_meta.get("flight_yaw"))
+    gimbal_yaw = _normalize_heading_deg(xmp_meta.get("gimbal_yaw"))
+    if heading is None:
+        # fall back to aircraft/gimbal headings if GPS direction missing
+        heading = flight_yaw if flight_yaw is not None else gimbal_yaw
+
+    altitude_m = xmp_meta.get("relative_altitude")
+    if altitude_m is None:
+        altitude_m = xmp_meta.get("absolute_altitude")
+    if altitude_m is None:
+        altitude_m = alt_from_gps
+
+    focal_length_mm = None
+    focal_length_35mm = None
+    focal_plane_x_res = None
+    focal_plane_res_unit = None
+    capture_ts = None
+    if exif:
+        if exif.get(_EXIF_FOCAL_LENGTH_TAG) is not None:
+            try:
+                focal_length_mm = float(_to_float_ratio(exif.get(_EXIF_FOCAL_LENGTH_TAG)))
+            except Exception:
+                focal_length_mm = None
+        if exif.get(_EXIF_FOCAL_LENGTH_35MM_TAG) is not None:
+            try:
+                focal_length_35mm = float(exif.get(_EXIF_FOCAL_LENGTH_35MM_TAG))
+            except Exception:
+                focal_length_35mm = None
+        if exif.get(_EXIF_FOCAL_PLANE_X_RES_TAG) is not None:
+            try:
+                focal_plane_x_res = float(_to_float_ratio(exif.get(_EXIF_FOCAL_PLANE_X_RES_TAG)))
+            except Exception:
+                focal_plane_x_res = None
+        if exif.get(_EXIF_FOCAL_PLANE_RES_UNIT_TAG) is not None:
+            try:
+                focal_plane_res_unit = int(exif.get(_EXIF_FOCAL_PLANE_RES_UNIT_TAG))
+            except Exception:
+                focal_plane_res_unit = None
+        for tag in (_EXIF_DATETIME_ORIGINAL_TAG, _EXIF_DATETIME_TAG, _EXIF_DATETIME_DIGITIZED_TAG):
+            if exif.get(tag) is not None:
+                capture_ts = _parse_exif_timestamp(exif.get(tag))
+                if capture_ts is not None:
+                    break
+
+    meters_per_pixel = _compute_meters_per_pixel(
+        altitude_m, width, focal_length_mm, focal_length_35mm,
+        focal_plane_x_res, focal_plane_res_unit,
+    )
+
+    entry: Dict[str, Any] = {
+        "file": img_path.name,
+        "w_px": int(width),
+        "h_px": int(height),
+    }
+    if lat is not None and lon is not None:
+        entry["lat"] = float(lat)
+        entry["lon"] = float(lon)
+    if altitude_m is not None:
+        entry["alt"] = float(altitude_m)
+    preferred_rot = None
+    if gimbal_yaw is not None:
+        entry["rotation_gimbal"] = float(gimbal_yaw)
+        preferred_rot = float(gimbal_yaw)
+    if flight_yaw is not None:
+        entry["rotation_aircraft"] = float(flight_yaw)
+        if preferred_rot is None:
+            preferred_rot = float(flight_yaw)
+    if preferred_rot is None and heading is not None:
+        preferred_rot = float(heading)
+    if preferred_rot is not None:
+        entry["rotation"] = float(preferred_rot)
+    if meters_per_pixel is not None and meters_per_pixel > 0:
+        entry["meters_per_pixel"] = float(meters_per_pixel)
+    if capture_ts is not None:
+        entry["timestamp"] = float(capture_ts)
+        entry["timestamp_source"] = "exif_datetime"
+    if xmp_meta.get("relative_altitude") is not None:
+        entry["alt_source"] = "relative_altitude"
+    elif alt_from_gps is not None:
+        entry["alt_source"] = "gps"
+    if xmp_meta.get("gimbal_yaw") is not None:
+        entry["rotation_source"] = "gimbal_yaw"
+    elif xmp_meta.get("flight_yaw") is not None:
+        entry["rotation_source"] = "flight_yaw"
+    elif heading is not None:
+        entry["rotation_source"] = "gps_img_direction"
+    if meters_per_pixel is not None:
+        if xmp_meta.get("relative_altitude") is not None:
+            entry["meters_per_pixel_source"] = "relative_altitude"
+        elif focal_length_mm is not None or focal_length_35mm is not None:
+            entry["meters_per_pixel_source"] = "exif_optics"
+    return entry
+
+
+def _build_camera_meta_from_exif(images_dir: Path) -> Dict[str, Dict[str, Any]]:
+    meta: Dict[str, Dict[str, Any]] = {}
+    if not images_dir or not images_dir.exists():
+        return meta
+    order_idx: Dict[str, int] = {}
+    for order, img_path in enumerate(sorted(images_dir.iterdir())):
+        if not img_path.is_file():
+            continue
+        if img_path.suffix not in IMAGE_EXTS:
+            continue
+        entry = _extract_camera_meta_entry(img_path)
+        if entry:
+            meta[img_path.name] = entry
+            order_idx[img_path.name] = order
+    if meta:
+        _augment_camera_rotations_from_track(meta, order_idx)
+    return meta
+
+
 
 # ----------------- overlays & geojson -----------------
 def _meters_to_deg(lat_deg: float):
@@ -1218,6 +1555,128 @@ def _scan_image_sizes(images_dir: Path) -> dict[str, tuple[int, int]]:
     return out
 
 
+def _lookup_camera_meta_entry(camera_meta: Dict[str, Dict[str, Any]], name: str) -> Optional[Dict[str, Any]]:
+    if not camera_meta or not name:
+        return None
+    if name in camera_meta:
+        entry = camera_meta.get(name)
+        if isinstance(entry, dict) and not str(name).startswith("__"):
+            return entry
+    try:
+        name_only = Path(name).name
+        if name_only in camera_meta:
+            entry = camera_meta.get(name_only)
+            if isinstance(entry, dict) and not str(name_only).startswith("__"):
+                return entry
+    except Exception:
+        pass
+    stem = None
+    try:
+        stem = Path(name).stem
+    except Exception:
+        stem = None
+    if not stem:
+        return None
+    for key, value in camera_meta.items():
+        if not isinstance(value, dict):
+            continue
+        if str(key).startswith("__"):
+            continue
+        try:
+            if Path(key).stem == stem:
+                return value
+        except Exception:
+            continue
+    return None
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> Optional[float]:
+    try:
+        lat1_rad = math.radians(float(lat1))
+        lat2_rad = math.radians(float(lat2))
+        dlon = math.radians(float(lon2) - float(lon1))
+        x = math.sin(dlon) * math.cos(lat2_rad)
+        y = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(dlon)
+        if abs(x) < 1e-9 and abs(y) < 1e-9:
+            return None
+        bearing = math.degrees(math.atan2(x, y))
+        if bearing < 0:
+            bearing += 360.0
+        return bearing
+    except Exception:
+        return None
+
+
+def _augment_camera_rotations_from_track(
+    camera_meta: Dict[str, Dict[str, Any]],
+    order_idx: Dict[str, int],
+) -> None:
+    if not camera_meta:
+        return
+
+    seq = []
+    for name, meta in camera_meta.items():
+        lat = meta.get("lat")
+        lon = meta.get("lon")
+        if lat is None or lon is None:
+            continue
+        ts_val = meta.get("timestamp")
+        try:
+            ts_float = float(ts_val)
+        except Exception:
+            ts_float = None
+        ord_idx = order_idx.get(name)
+        if ord_idx is None:
+            try:
+                ord_idx = order_idx.get(Path(name).name)
+            except Exception:
+                ord_idx = None
+        seq.append({
+            "name": name,
+            "lat": float(lat),
+            "lon": float(lon),
+            "timestamp": ts_float,
+            "order": ord_idx if ord_idx is not None else float("inf"),
+        })
+
+    if len(seq) < 2:
+        return
+
+    seq.sort(key=lambda item: (
+        item["timestamp"] if item["timestamp"] is not None else float("inf"),
+        item["order"],
+        item["name"],
+    ))
+
+    for idx, current in enumerate(seq):
+        meta = camera_meta.get(current["name"])
+        if not meta or meta.get("rotation") is not None:
+            continue
+
+        bearings: list[float] = []
+        if idx > 0:
+            prev = seq[idx - 1]
+            b = _bearing_deg(prev["lat"], prev["lon"], current["lat"], current["lon"])
+            if b is not None:
+                bearings.append(b)
+        if idx + 1 < len(seq):
+            nxt = seq[idx + 1]
+            b = _bearing_deg(current["lat"], current["lon"], nxt["lat"], nxt["lon"])
+            if b is not None:
+                bearings.append(b)
+
+        if not bearings:
+            continue
+        sin_sum = sum(math.sin(math.radians(b)) for b in bearings)
+        cos_sum = sum(math.cos(math.radians(b)) for b in bearings)
+        if abs(sin_sum) < 1e-6 and abs(cos_sum) < 1e-6:
+            continue
+        avg = math.degrees(math.atan2(sin_sum, cos_sum))
+        meta["rotation"] = float(_normalize_heading_deg(avg))
+        if not meta.get("rotation_source"):
+            meta["rotation_source"] = "track_bearing"
+
+
 def _preds_to_geojson(
     images_dir: Path,
     preds_dir: Path,
@@ -1256,19 +1715,38 @@ def _preds_to_geojson(
     # ---------------- images.geojson (points + optional footprint corners) ----------------
     imgs_fc = {"type": "FeatureCollection", "features": []}
     camera_meta = camera_meta or {}
+    session_meta = _camera_meta_session_meta(camera_meta)
+    camera_meta_keys = {
+        key for key, value in camera_meta.items()
+        if isinstance(value, dict) and not str(key).startswith("__")
+    }
+    default_mpp = float(meters_per_pixel or 0.05)
+
+    def _coerce_positive_float(val: Optional[float]) -> Optional[float]:
+        try:
+            fval = float(val)
+        except Exception:
+            return None
+        return fval if fval > 0 else None
+
+    def _camera_entry_for(name: str) -> Optional[Dict[str, Any]]:
+        if not camera_meta:
+            return None
+        return _lookup_camera_meta_entry(camera_meta, name)
 
     # Collect candidate filenames from manifest, exif, sizes, and camera_meta
-    candidates = set(manifest_map.keys()) | set(gps_index.keys()) | set(sizes_index.keys()) | set(camera_meta.keys())
+    candidates = set(manifest_map.keys()) | set(gps_index.keys()) | set(sizes_index.keys()) | set(camera_meta_keys)
 
     for fname in sorted(candidates):
+        cam_entry = _camera_entry_for(fname)
+
         # Determine center lat/lon (priority: camera_meta -> manifest_map -> exif_index)
         latlon = None
-        if fname in camera_meta:
-            cm = camera_meta.get(fname) or {}
-            if cm.get("lat") is not None and cm.get("lon") is not None:
-                latlon = (float(cm.get("lat")), float(cm.get("lon")))
-            elif cm.get("lon") is not None and cm.get("lat") is not None:
-                latlon = (float(cm.get("lat")), float(cm.get("lon")))
+        if cam_entry:
+            lat_val = cam_entry.get("lat")
+            lon_val = cam_entry.get("lon")
+            if lat_val is not None and lon_val is not None:
+                latlon = (float(lat_val), float(lon_val))
         if latlon is None and isinstance(manifest_map.get(fname), dict):
             e = manifest_map.get(fname)
             if "lat" in e and "lon" in e:
@@ -1287,18 +1765,21 @@ def _preds_to_geojson(
 
         # width/height in pixels
         w_px = h_px = None
-        if fname in camera_meta:
-            cm = camera_meta[fname]
-            if cm.get("w_px"):
-                w_px = int(cm.get("w_px"))
-            if cm.get("h_px"):
-                h_px = int(cm.get("h_px"))
+        if cam_entry:
+            if cam_entry.get("w_px"):
+                w_px = int(cam_entry.get("w_px"))
+            if cam_entry.get("h_px"):
+                h_px = int(cam_entry.get("h_px"))
         if w_px is None and isinstance(manifest_map.get(fname), dict):
             ent = manifest_map.get(fname)
             if "w" in ent and "h" in ent:
                 w_px = int(ent["w"]); h_px = int(ent["h"])
         if w_px is None and fname in sizes_index:
             w_px, h_px = sizes_index.get(fname)
+
+        entry_mpp = _coerce_positive_float(cam_entry.get("meters_per_pixel")) if cam_entry else None
+        image_mpp = entry_mpp or default_mpp
+        props["meters_per_pixel"] = float(image_mpp)
 
         # basic props
         if w_px and h_px:
@@ -1308,8 +1789,8 @@ def _preds_to_geojson(
         if latlon and w_px and h_px:
             lat_c, lon_c = latlon[0], latlon[1]
             deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat_c)
-            width_m = float(w_px) * float(meters_per_pixel)
-            height_m = float(h_px) * float(meters_per_pixel)
+            width_m = float(w_px) * float(image_mpp)
+            height_m = float(h_px) * float(image_mpp)
             half_w = width_m / 2.0
             half_h = height_m / 2.0
             dx_lon = half_w * deg_per_m_lon
@@ -1322,16 +1803,16 @@ def _preds_to_geojson(
             half_w_m = width_m / 2.0
             half_h_m = height_m / 2.0
 
-            # Rotation is only honored when explicit camera_meta (user-provided
-            # Agisoft references) exists. Do not infer from EXIF or manifest.
-            rot = 0.0
-            try:
-                if fname in camera_meta and isinstance(camera_meta.get(fname), dict):
-                    rot = float(camera_meta[fname].get("rotation") or 0.0)
-            except Exception:
-                rot = 0.0
-
-            props["rotation"] = float(rot or 0.0)
+            # Rotation comes from camera metadata (or session defaults) and is expressed
+            # as camera heading (0°=North, +CW). Compute separate overlay rotation for
+            # PNG generation while keeping geo math aligned to heading.
+            heading_deg = _camera_heading_from_entry(cam_entry, session_meta)
+            rot_overlay = _camera_heading_to_overlay_rotation(heading_deg)
+            rot_for_geo = heading_deg if heading_deg is not None else 0.0
+            props["rotation"] = float(rot_for_geo)
+            if heading_deg is not None:
+                props["rotation_heading"] = float(heading_deg)
+            props["rotation_overlay"] = float(rot_overlay)
 
             # Build the four corner coordinates using the same pixel→meter→deg
             # convention used when converting detection boxes to geo-polygons.
@@ -1351,12 +1832,12 @@ def _preds_to_geojson(
                     cy = float(h_px) / 2.0
                     # pixel corner coordinates (x,y): TL(0,0), TR(w,0), BR(w,h), BL(0,h)
                     pix_corners = [(0.0, 0.0), (float(w_px), 0.0), (float(w_px), float(h_px)), (0.0, float(h_px))]
-                    a = math.radians(float(rot or 0.0))
+                    a = math.radians(float(rot_for_geo))
                     ca = math.cos(a); sa = math.sin(a)
                     out_corners = []
                     for (px, py) in pix_corners:
-                        dx_m = (px - cx) * float(meters_per_pixel)
-                        dy_m = (py - cy) * float(meters_per_pixel)
+                        dx_m = (px - cx) * float(image_mpp)
+                        dy_m = (py - cy) * float(image_mpp)
                         # apply rotation (same as used for boxes)
                         rx = dx_m * ca - dy_m * sa
                         ry = dx_m * sa + dy_m * ca
@@ -1437,39 +1918,27 @@ def _preds_to_geojson(
         # Degrees per meter at this latitude
         deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat)
 
-        # Prepare optional per-image camera rotation if available
-        rotation_deg = 0.0
-        cam_entry = None
-        if camera_meta:
-            # try exact match then stem match
-            cam_entry = camera_meta.get(srcfile) or camera_meta.get(Path(srcfile).name)
-            if not cam_entry:
-                stem = Path(srcfile).stem
-                for k in camera_meta.keys():
-                    try:
-                        if Path(k).stem == stem:
-                            cam_entry = camera_meta.get(k)
-                            break
-                    except Exception:
-                        continue
-            if cam_entry and cam_entry.get("rotation") is not None:
-                try:
-                    rotation_deg = float(cam_entry.get("rotation") or 0.0)
-                except Exception:
-                    rotation_deg = 0.0
+        # Prepare optional per-image camera rotation and GSD if available
+        box_mpp = default_mpp
+        cam_entry = _camera_entry_for(srcfile)
+        heading_deg = _camera_heading_from_entry(cam_entry, session_meta)
+        if cam_entry:
+            entry_mpp = _coerce_positive_float(cam_entry.get("meters_per_pixel"))
+            if entry_mpp is not None:
+                box_mpp = entry_mpp
 
-        # If no camera_meta rotation, try images.geojson-derived rotation lookup (built earlier)
-        if (not rotation_deg) and 'image_rot_map' in locals():
+        if heading_deg is None and 'image_rot_map' in locals():
             try:
-                # exact match
                 if srcfile in image_rot_map:
-                    rotation_deg = float(image_rot_map.get(srcfile) or 0.0)
+                    heading_deg = float(image_rot_map.get(srcfile) or 0.0)
                 else:
                     stem = Path(srcfile).stem
                     if stem in image_rot_map:
-                        rotation_deg = float(image_rot_map.get(stem) or 0.0)
+                        heading_deg = float(image_rot_map.get(stem) or 0.0)
             except Exception:
-                rotation_deg = rotation_deg or 0.0
+                heading_deg = None
+
+        rotation_deg = float(heading_deg) if heading_deg is not None else 0.0
 
         # Convert each box using CENTER-based deltas (matches reference notebook)
         cx = w / 2.0
@@ -1485,10 +1954,10 @@ def _preds_to_geojson(
             x0, y0, x1, y1 = map(float, b)
 
             # pixel deltas from image center → meters
-            dx0_m = (x0 - cx) * meters_per_pixel
-            dx1_m = (x1 - cx) * meters_per_pixel
-            dy0_m = (y0 - cy) * meters_per_pixel
-            dy1_m = (y1 - cy) * meters_per_pixel
+            dx0_m = (x0 - cx) * box_mpp
+            dx1_m = (x1 - cx) * box_mpp
+            dy0_m = (y0 - cy) * box_mpp
+            dy1_m = (y1 - cy) * box_mpp
 
             # apply image rotation (if camera metadata provided)
             if rotation_deg and abs(rotation_deg) > 1e-6:
@@ -1509,8 +1978,8 @@ def _preds_to_geojson(
                 corners_px = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
                 poly_pts = []
                 for (px, py) in corners_px:
-                    dx_m = (px - cx) * meters_per_pixel
-                    dy_m = (py - cy) * meters_per_pixel
+                    dx_m = (px - cx) * box_mpp
+                    dy_m = (py - cy) * box_mpp
                     if rotation_deg and abs(rotation_deg) > 1e-6:
                         rx = dx_m * ca - dy_m * sa
                         ry = dx_m * sa + dy_m * ca
@@ -1805,8 +2274,19 @@ async def api_train(
 # -------------- List model runs --------------
 
 @app.get("/api/models")
-async def api_models():
-    return {"ok": True, "models": _list_models()}
+async def api_models(backend: Optional[str] = None):
+    """List model runs. If `backend` query param is provided, return only models
+    whose metadata `backend` matches (case-insensitive). This makes the
+    frontend filtering reliable even when client-side heuristics fail.
+    """
+    models = _list_models()
+    if backend:
+        try:
+            b = str(backend).lower()
+            models = [m for m in models if str(m.get("backend", "")).lower() == b]
+        except Exception:
+            pass
+    return {"ok": True, "models": models}
 
 
 # ================== TEST: dataset intake ==================
@@ -1995,7 +2475,6 @@ async def api_test_run(
     backend: Optional[str] = Form(default=None),
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
-    cameras: UploadFile = File(None),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -2199,85 +2678,21 @@ async def api_test_run(
         f"UI:INFO:test: will_request={'rgbt' if use_thermal_effective else 'rgb'}; "
         f"override={data_has_thermal_override}"
     )
-    # --- If the user uploaded Agisoft camera references, parse them now
-    # and (optionally) produce rotated images before running inference.
+
+    session_dir = out_root
     camera_meta: dict = {}
-    if cameras is not None:
+    if input_type == "images":
         try:
-            from .cameras import parse_agisoft_cameras
-            buf = await cameras.read()
-            parsed = parse_agisoft_cameras(buf)
-            # persist raw references file into session folder for future inspection
-            try:
-                session_dir = MEDIA_DIR / "sessions" / session
-                session_dir.mkdir(parents=True, exist_ok=True)
-                cam_filename = getattr(cameras, 'filename', 'camera_references.txt') or 'camera_references.txt'
-                cam_out = session_dir / cam_filename
-                cam_out.write_bytes(buf)
-            except Exception:
-                logger.debug("Could not persist uploaded camera references to session dir")
-
-            # helper normalizer (match by stem, strip _v/_t)
-            def _norm(fn: str) -> str:
-                s = Path(fn).stem.lower()
-                return s[:-2] if s.endswith(("_v", "_t")) else s
-
-            # Build camera_meta keyed by dataset filenames (matching files in ds_dir)
-            try:
-                ds_files = [p for p in sorted(Path(ds_dir).iterdir()) if p.is_file()]
-                # map normalized stem -> filename for quick exact/stem lookup
-                norm_map = { _norm(p.name): p.name for p in ds_files }
-
-                for pkey, pval in parsed.items():
-                    # prefer exact normalized match
-                    target = None
-                    if pkey in norm_map:
-                        target = norm_map[pkey]
-                    else:
-                        # direct filename present in dataset?
-                        fname = (pval.get('file') or '')
-                        if fname:
-                            # try direct filename match
-                            for p in ds_files:
-                                if p.name.lower() == fname.lower():
-                                    target = p.name; break
-                        # try stem containment (parsed key within dataset stem or vice-versa)
-                    if not target:
-                        for p in ds_files:
-                            stem = Path(p.name).stem.lower()
-                            if pkey in stem or stem in pkey:
-                                target = p.name
-                                break
-
-                    if target:
-                        camera_meta[target] = pval
-            except Exception:
-                logger.debug("Failed to map parsed cameras to dataset files")
-
-            # Save a JSON summary for debugging
-            try:
-                cm_out = session_dir / "camera_meta.json"
-                cm_out.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
-                try:
-                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: camera_meta entries={len(camera_meta)} sample_keys={list(camera_meta.keys())[:5]}")
-                except Exception:
-                    pass
-            except Exception:
-                logger.debug("Could not persist camera_meta.json to session dir")
-
-            # If we have camera_meta entries and this is an images dataset, DO NOT
-            # rotate images prior to inference. The model should always run on the
-            # original image pixels to preserve detection performance. Rotated
-            # assets (for display and corrected footprints) will be generated
-            # post-predict by the regeneration step below which consumes
-            # `camera_meta.json` and the predictions.
-            if camera_meta and input_type == "images":
+            camera_meta = _build_camera_meta_from_exif(ds_dir)
+            if camera_meta:
+                cm_path = session_dir / "camera_meta.json"
+                cm_path.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
                 logging.getLogger("pvrt.test").info(
-                    "UI:INFO:test: camera_meta present - not rotating images before inference; rotated assets will be created after prediction"
+                    f"UI:INFO:test: Derived camera metadata entries={len(camera_meta)}"
                 )
-
         except Exception as e:
-            logger.warning(f"Failed to parse uploaded camera references: {e}")
+            logger.warning(f"Failed to derive camera metadata from EXIF: {e}")
+            camera_meta = {}
 
     def _do_predict():
         with redirect_std_to_logger():
@@ -2312,7 +2727,14 @@ async def api_test_run(
         th_num = 0.0
 
     # Build EXIF(GPS) + image-size indices once, then merge into manifest.json
-    gps_index   = _scan_exif_latlon(ds_dir)       # {'file.jpg': (lat, lon)}
+    if camera_meta:
+        gps_index = {
+            fname: (float(entry.get("lat")), float(entry.get("lon")))
+            for fname, entry in camera_meta.items()
+            if entry.get("lat") is not None and entry.get("lon") is not None
+        }
+    else:
+        gps_index = _scan_exif_latlon(ds_dir)       # {'file.jpg': (lat, lon)}
     sizes_index = _scan_image_sizes(ds_dir)       # {'file.jpg': (w, h)}
 
     # Load the manifest produced by _draw_overlays and enrich it
@@ -2419,7 +2841,7 @@ async def api_test_run(
             camera_meta=camera_meta,
         )
 
-        # If the user uploaded camera references, ensure geojsons are regenerated
+        # If camera metadata exists, ensure geojsons are regenerated
         # using the standalone regeneration script as a fallback to guarantee
         # rotated `images.geojson` and `anomalies.geojson` are produced.
         try:
