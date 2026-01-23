@@ -1034,6 +1034,22 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
         except (TypeError, ValueError):
             return None
 
+    def _as_float(val: Any) -> Optional[float]:
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    def _as_bool(val: Any) -> Optional[bool]:
+        if isinstance(val, str):
+            return val.lower() in {"1", "true", "yes", "on"}
+        if val is None:
+            return None
+        try:
+            return bool(val)
+        except Exception:
+            return None
+
     matcher = str(params.get("matcher", "exhaustive")).lower()
     min_tri = params.get("min_triangulation_angle")
     try:
@@ -1057,6 +1073,14 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
         camera_model = camera_model.strip() or None
     else:
         camera_model = None
+    peak_threshold = _as_float(params.get("peak_threshold"))
+    edge_threshold = _as_float(params.get("edge_threshold"))
+    max_num_features = _as_int(params.get("max_num_features"))
+    num_threads = _as_int(params.get("num_threads"))
+    exhaustive_block_size = _as_int(params.get("exhaustive_block_size"))
+    ba_refine_focal_length = _as_bool(params.get("ba_refine_focal_length"))
+    ba_refine_principal_point = _as_bool(params.get("ba_refine_principal_point"))
+    ba_refine_extra_params = _as_bool(params.get("ba_refine_extra_params"))
     min_num_matches = _as_int(params.get("min_num_matches"))
     init_min_inliers = _as_int(params.get("init_min_num_inliers"))
     abs_pose_min_inliers = _as_int(params.get("abs_pose_min_num_inliers"))
@@ -1100,6 +1124,14 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
         ]
         if max_image_size is not None:
             feature_args.extend(["--SiftExtraction.max_image_size", str(max_image_size)])
+        if peak_threshold is not None:
+            feature_args.extend(["--SiftExtraction.peak_threshold", f"{peak_threshold}"])
+        if edge_threshold is not None:
+            feature_args.extend(["--SiftExtraction.edge_threshold", f"{edge_threshold}"])
+        if max_num_features is not None:
+            feature_args.extend(["--SiftExtraction.max_num_features", str(max_num_features)])
+        if num_threads is not None and num_threads > 0:
+            feature_args.extend(["--SiftExtraction.num_threads", str(num_threads)])
         if use_gpu is not None:
             feature_args.extend(["--FeatureExtraction.use_gpu", "1" if use_gpu else "0"])
         if camera_model:
@@ -1115,6 +1147,8 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
         ]
         if matcher == "sequential" and seq_overlap is not None:
             matcher_args.extend(["--SequentialMatching.overlap", str(seq_overlap)])
+        if matcher == "exhaustive" and exhaustive_block_size is not None:
+            matcher_args.extend(["--ExhaustiveMatching.block_size", str(exhaustive_block_size)])
 
         _advance_stage("matcher")
         await _run_colmap_command(job, matcher_cmd, matcher_args)
@@ -1143,6 +1177,12 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
             mapper_args.extend(["--Mapper.max_model_overlap", str(max_model_overlap)])
         if max_num_models is not None:
             mapper_args.extend(["--Mapper.max_num_models", str(max_num_models)])
+        if ba_refine_focal_length is not None:
+            mapper_args.extend(["--Mapper.ba_refine_focal_length", "1" if ba_refine_focal_length else "0"])
+        if ba_refine_principal_point is not None:
+            mapper_args.extend(["--Mapper.ba_refine_principal_point", "1" if ba_refine_principal_point else "0"])
+        if ba_refine_extra_params is not None:
+            mapper_args.extend(["--Mapper.ba_refine_extra_params", "1" if ba_refine_extra_params else "0"])
 
         await _run_colmap_command(job, "mapper", mapper_args)
         _complete_stage()

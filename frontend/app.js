@@ -57,6 +57,14 @@ const COLMAP_PARAM_FIELDS = {
   abs_pose_min_num_inliers: { id: 'inpColmapAbsInliers', type: 'value' },
   max_model_overlap: { id: 'inpColmapMaxOverlap', type: 'value' },
   max_num_models: { id: 'inpColmapMaxModels', type: 'value' },
+  peak_threshold: { id: 'inpColmapPeakThresh', type: 'value' },
+  edge_threshold: { id: 'inpColmapEdgeThresh', type: 'value' },
+  max_num_features: { id: 'inpColmapMaxFeatures', type: 'value' },
+  num_threads: { id: 'inpColmapThreads', type: 'value' },
+  exhaustive_block_size: { id: 'inpColmapExhBlock', type: 'value' },
+  ba_refine_focal_length: { id: 'chkColmapBaFocal', type: 'checkbox' },
+  ba_refine_principal_point: { id: 'chkColmapBaPpoint', type: 'checkbox' },
+  ba_refine_extra_params: { id: 'chkColmapBaExtra', type: 'checkbox' },
   use_gpu: { id: 'chkColmapUseGpu', type: 'checkbox' }
 };
 const colmapParamDefaults = {};
@@ -876,6 +884,26 @@ function buildColmapParams(){
     const val = parseInt(maxImageVal, 10);
     if(!Number.isNaN(val)) params.max_image_size = val;
   }
+  const peakVal = document.getElementById('inpColmapPeakThresh')?.value;
+  if(peakVal !== undefined && peakVal !== ''){
+    const val = Number(peakVal);
+    if(!Number.isNaN(val)) params.peak_threshold = val;
+  }
+  const edgeVal = document.getElementById('inpColmapEdgeThresh')?.value;
+  if(edgeVal !== undefined && edgeVal !== ''){
+    const val = Number(edgeVal);
+    if(!Number.isNaN(val)) params.edge_threshold = val;
+  }
+  const maxFeatVal = document.getElementById('inpColmapMaxFeatures')?.value;
+  if(maxFeatVal !== undefined && maxFeatVal !== ''){
+    const val = parseInt(maxFeatVal, 10);
+    if(!Number.isNaN(val)) params.max_num_features = val;
+  }
+  const threadsVal = document.getElementById('inpColmapThreads')?.value;
+  if(threadsVal !== undefined && threadsVal !== ''){
+    const val = parseInt(threadsVal, 10);
+    if(!Number.isNaN(val)) params.num_threads = val;
+  }
   const initInliersVal = document.getElementById('inpColmapInitInliers')?.value;
   if(initInliersVal !== undefined && initInliersVal !== ''){
     const val = parseInt(initInliersVal, 10);
@@ -895,6 +923,23 @@ function buildColmapParams(){
   if(maxModelsVal !== undefined && maxModelsVal !== ''){
     const val = parseInt(maxModelsVal, 10);
     if(!Number.isNaN(val)) params.max_num_models = val;
+  }
+  const exhBlockVal = document.getElementById('inpColmapExhBlock')?.value;
+  if(exhBlockVal !== undefined && exhBlockVal !== ''){
+    const val = parseInt(exhBlockVal, 10);
+    if(!Number.isNaN(val)) params.exhaustive_block_size = val;
+  }
+  const baFocal = document.getElementById('chkColmapBaFocal');
+  if(baFocal){
+    params.ba_refine_focal_length = !!baFocal.checked;
+  }
+  const baPp = document.getElementById('chkColmapBaPpoint');
+  if(baPp){
+    params.ba_refine_principal_point = !!baPp.checked;
+  }
+  const baExtra = document.getElementById('chkColmapBaExtra');
+  if(baExtra){
+    params.ba_refine_extra_params = !!baExtra.checked;
   }
   const useGpu = document.getElementById('chkColmapUseGpu');
   if(useGpu){
@@ -3183,20 +3228,30 @@ function _prevImg(){ if (_gIdx > 0) _setLightbox(_gIdx - 1); }
 function setupUI(){
   setupTabs();
 
-  $("#btnRefreshFolders").addEventListener("click", loadDatasets);
+  const btnRefreshFolders = $("#btnRefreshFolders");
+  if(btnRefreshFolders) btnRefreshFolders.addEventListener("click", loadDatasets);
   const selTestFolder = document.getElementById('selTestFolder');
   if(selTestFolder){ selTestFolder.addEventListener('change', onTestDatasetChange); }
-  $("#btnRefreshModels").addEventListener("click", ()=> loadModels(getSelectedBackend(), '#selModelFolder'));
-  $("#btnOpenUploadModal").addEventListener("click", openUploadModal);
-  $("#btnCloseUploadModal").addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
-  $("#btnCancelUpload").addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
-  $("#btnStartUpload").addEventListener("click", startUpload);
+  const btnRefreshModels = $("#btnRefreshModels");
+  if(btnRefreshModels) btnRefreshModels.addEventListener("click", ()=> loadModels(getSelectedBackend(), '#selModelFolder'));
+  const btnOpenUpload = $("#btnOpenUploadModal");
+  if(btnOpenUpload) btnOpenUpload.addEventListener("click", openUploadModal);
+  const btnCloseUpload = $("#btnCloseUploadModal");
+  if(btnCloseUpload) btnCloseUpload.addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
+  const btnCancelUpload = $("#btnCancelUpload");
+  if(btnCancelUpload) btnCancelUpload.addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
+  const btnStartUpload = $("#btnStartUpload");
+  if(btnStartUpload) btnStartUpload.addEventListener("click", startUpload);
 
-  $("#btnTrain").addEventListener("click", startTraining);
-  $("#btnCancelTrain").addEventListener("click", cancelTraining);
+  const btnTrain = $("#btnTrain");
+  if(btnTrain) btnTrain.addEventListener("click", startTraining);
+  const btnCancelTrain = $("#btnCancelTrain");
+  if(btnCancelTrain) btnCancelTrain.addEventListener("click", cancelTraining);
 
-  $("#btnTest").addEventListener("click", runTest);
-  $("#btnCancelTest").addEventListener("click", cancelTest);
+  const btnTest = $("#btnTest");
+  if(btnTest) btnTest.addEventListener("click", runTest);
+  const btnCancelTest = $("#btnCancelTest");
+  if(btnCancelTest) btnCancelTest.addEventListener("click", cancelTest);
   const chkAccurate = document.getElementById('chkAccurateLocations');
   if(chkAccurate){ chkAccurate.addEventListener('change', updateAccurateUI); }
   const btnGoOptimize = document.getElementById('btnGoOptimize');
@@ -3215,24 +3270,37 @@ function setupUI(){
   document.getElementById('btnColmapInfo')?.addEventListener('click', openColmapInfo);
   document.getElementById('btnCloseColmapInfo')?.addEventListener('click', closeColmapInfo);
   document.getElementById('btnColmapInfoDone')?.addEventListener('click', closeColmapInfo);
+  const openColmapConfig = ()=> document.getElementById('colmapConfigModal')?.classList.remove('hidden');
+  const closeColmapConfig = ()=> document.getElementById('colmapConfigModal')?.classList.add('hidden');
+  document.getElementById('btnColmapConfig')?.addEventListener('click', openColmapConfig);
+  document.getElementById('btnCloseColmapConfig')?.addEventListener('click', closeColmapConfig);
+  document.getElementById('btnColmapConfigDone')?.addEventListener('click', closeColmapConfig);
 
-  $("#lnkToLogsFromTest").addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
-  $("#lnkToLogsFromTrain").addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
+  const lnkLogsTest = $("#lnkToLogsFromTest");
+  if(lnkLogsTest) lnkLogsTest.addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
+  const lnkLogsTrain = $("#lnkToLogsFromTrain");
+  if(lnkLogsTrain) lnkLogsTrain.addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
 
-  $("#btnLogsConnect").addEventListener("click", connectLogs);
-  $("#btnLogsClear").addEventListener("click", ()=>{ $("#logStream").textContent=""; });
+  const btnLogsConnect = $("#btnLogsConnect");
+  if(btnLogsConnect) btnLogsConnect.addEventListener("click", connectLogs);
+  const btnLogsClear = $("#btnLogsClear");
+  if(btnLogsClear) btnLogsClear.addEventListener("click", ()=>{ const ls=$("#logStream"); if(ls) ls.textContent=""; });
 
-  $("#btnRefreshSessions").addEventListener("click", async ()=>{
+  const btnRefreshSessions = $("#btnRefreshSessions");
+  if(btnRefreshSessions) btnRefreshSessions.addEventListener("click", async ()=>{
     await loadSessions(true);
     await showResultsForSelected();
   });
-  $("#selResults").addEventListener("change", showResultsForSelected);
+  const selResults = $("#selResults");
+  if(selResults) selResults.addEventListener("change", showResultsForSelected);
 
-  $("#btnRefreshMapSessions").addEventListener("click", async ()=>{
+  const btnRefreshMapSessions = $("#btnRefreshMapSessions");
+  if(btnRefreshMapSessions) btnRefreshMapSessions.addEventListener("click", async ()=>{
     await loadSessions(true);
     await refreshMapSessionSelected();
   });
-  $("#selMapSession").addEventListener("change", refreshMapSessionSelected);
+  const selMapSession = $("#selMapSession");
+  if(selMapSession) selMapSession.addEventListener("change", refreshMapSessionSelected);
 
   // initial hidden spinners (also hidden attribute in HTML prevents flash)
   setHidden($("#spinTrain"), true);

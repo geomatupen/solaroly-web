@@ -233,18 +233,12 @@
           </div>
           <div class="optParamsHead">
             <span class="muted tiny">Parameters</span>
-            <button id="btnColmapInfo" class="infoBtn" type="button" aria-label="About COLMAP parameters">i</button>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button id="btnColmapConfig" class="secondary tiny" type="button">Advanced config</button>
+              <button id="btnColmapInfo" class="infoBtn" type="button" aria-label="About COLMAP parameters">i</button>
+            </div>
           </div>
           <div class="optParams">
-            <div>
-              <label for="selColmapCameraModel">Camera model</label>
-              <select id="selColmapCameraModel">
-                <option value="SIMPLE_RADIAL" selected>Simple radial (default)</option>
-                <option value="RADIAL">Radial (wide FOV)</option>
-                <option value="SIMPLE_PINHOLE">Simple pinhole</option>
-                <option value="PINHOLE">Pinhole</option>
-              </select>
-            </div>
             <div>
               <label for="selColmapMatcher">Matcher</label>
               <select id="selColmapMatcher">
@@ -258,40 +252,12 @@
               <small class="muted tiny">Used only with sequential matching.</small>
             </div>
             <div>
-              <label for="inpColmapTriangulation">Min triangulation angle</label>
-              <input id="inpColmapTriangulation" type="number" min="0" max="60" step="1" value="5" />
-            </div>
-            <div>
-              <label for="inpColmapMinMatches">Min matches per image</label>
-              <input id="inpColmapMinMatches" type="number" min="3" step="1" value="15" />
-            </div>
-            <div>
-              <label for="inpColmapMinSize">Min model size</label>
-              <input id="inpColmapMinSize" type="number" min="50" step="50" value="500" />
-            </div>
-            <div>
               <label for="inpColmapMaxImage">Max feature image size</label>
-              <input id="inpColmapMaxImage" type="number" min="256" step="64" placeholder="e.g. 1400" />
+              <input id="inpColmapMaxImage" type="number" min="256" step="64" value="1400" />
             </div>
             <div class="switchRow" style="align-items:center;">
               <input type="checkbox" id="chkColmapUseGpu" checked />
               <span>Use GPU for SIFT</span>
-            </div>
-            <div>
-              <label for="inpColmapInitInliers">Init min inliers</label>
-              <input id="inpColmapInitInliers" type="number" min="10" step="5" value="60" />
-            </div>
-            <div>
-              <label for="inpColmapAbsInliers">Abs pose min inliers</label>
-              <input id="inpColmapAbsInliers" type="number" min="5" step="5" value="20" />
-            </div>
-            <div>
-              <label for="inpColmapMaxOverlap">Max model overlap</label>
-              <input id="inpColmapMaxOverlap" type="number" min="0" step="5" value="20" />
-            </div>
-            <div>
-              <label for="inpColmapMaxModels">Max number of models</label>
-              <input id="inpColmapMaxModels" type="number" min="1" step="1" value="10" />
             </div>
           </div>
         </div>
@@ -486,6 +452,104 @@
       </div>
       <div class="modalFooter">
         <button class="secondary" id="btnColmapInfoDone">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- COLMAP Config Modal -->
+  <div id="colmapConfigModal" class="modal hidden">
+    <div class="modalContent" style="max-width:720px; max-height:80vh; display:flex; flex-direction:column;">
+      <div class="modalHeader">
+        <h3>Advanced COLMAP config</h3>
+        <button class="iconBtn" id="btnCloseColmapConfig" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody" style="display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start;overflow-y:auto;max-height:calc(80vh - 140px);">
+        <div class="formGrid" style="grid-template-columns:1fr 1fr;gap:14px;">
+          <div>
+            <label for="selColmapCameraModel">Camera model</label>
+            <select id="selColmapCameraModel">
+              <option value="SIMPLE_RADIAL" selected>Simple radial (default)</option>
+              <option value="RADIAL">Radial (wide FOV)</option>
+              <option value="SIMPLE_PINHOLE">Simple pinhole</option>
+              <option value="PINHOLE">Pinhole</option>
+            </select>
+          </div>
+          <div>
+            <label for="inpColmapTriangulation">Min triangulation angle</label>
+            <input id="inpColmapTriangulation" type="number" min="0" max="60" step="1" value="5" />
+          </div>
+          <div>
+            <label for="inpColmapMinMatches">Min matches per image</label>
+            <input id="inpColmapMinMatches" type="number" min="3" step="1" value="15" />
+          </div>
+          <div>
+            <label for="inpColmapMinSize">Min model size</label>
+            <input id="inpColmapMinSize" type="number" min="50" step="50" value="500" />
+          </div>
+          <div>
+            <label for="inpColmapInitInliers">Init min inliers</label>
+            <input id="inpColmapInitInliers" type="number" min="10" step="5" value="60" />
+          </div>
+          <div>
+            <label for="inpColmapAbsInliers">Abs pose min inliers</label>
+            <input id="inpColmapAbsInliers" type="number" min="5" step="5" value="20" />
+          </div>
+          <div>
+            <label for="inpColmapMaxOverlap">Max model overlap</label>
+            <input id="inpColmapMaxOverlap" type="number" min="0" step="5" value="20" />
+          </div>
+          <div>
+            <label for="inpColmapMaxModels">Max number of models</label>
+            <input id="inpColmapMaxModels" type="number" min="1" step="1" value="10" />
+          </div>
+          <div>
+            <label for="inpColmapPeakThresh">SIFT peak threshold</label>
+            <input id="inpColmapPeakThresh" type="number" min="0.0005" step="0.0005" value="0.004" />
+          </div>
+          <div>
+            <label for="inpColmapEdgeThresh">SIFT edge threshold</label>
+            <input id="inpColmapEdgeThresh" type="number" min="1" step="1" value="8" />
+          </div>
+          <div>
+            <label for="inpColmapMaxFeatures">Max SIFT features</label>
+            <input id="inpColmapMaxFeatures" type="number" min="512" step="512" value="12000" />
+          </div>
+          <div>
+            <label for="inpColmapThreads">SIFT threads</label>
+            <input id="inpColmapThreads" type="number" min="1" step="1" placeholder="auto" />
+          </div>
+          <div>
+            <label for="inpColmapExhBlock">Exhaustive block size</label>
+            <input id="inpColmapExhBlock" type="number" min="10" step="10" placeholder="e.g. 200" />
+            <small class="muted tiny">Only for exhaustive matcher.</small>
+          </div>
+          <div class="switchRow" style="align-items:center;">
+            <input type="checkbox" id="chkColmapBaFocal" checked />
+            <span>Refine focal length (BA)</span>
+          </div>
+          <div class="switchRow" style="align-items:center;">
+            <input type="checkbox" id="chkColmapBaPpoint" checked />
+            <span>Refine principal point (BA)</span>
+          </div>
+          <div class="switchRow" style="align-items:center;">
+            <input type="checkbox" id="chkColmapBaExtra" checked />
+            <span>Refine extra params (BA)</span>
+          </div>
+        </div>
+        <div class="muted tiny" style="line-height:1.5;">
+          <strong>Parameter notes</strong>
+          <ul style="padding-left:16px; margin:6px 0;">
+            <li><b>Camera model</b>: SIMPLE_RADIAL for most thermal DJI flights.</li>
+            <li><b>Triangulation</b>: Higher prunes weak geometry; lower accepts more points.</li>
+            <li><b>Matches / inliers</b>: Tighten to reject weak registrations; loosen for low-texture.</li>
+            <li><b>SIFT thresholds</b>: Lower peak → more features; edge≈8 suits thermal.</li>
+            <li><b>Block size</b>: Exhaustive only; smaller reduces RAM at cost of more steps.</li>
+            <li><b>BA refine</b>: Keep ON unless you have strong prior intrinsics.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" id="btnColmapConfigDone">Close</button>
       </div>
     </div>
   </div>
