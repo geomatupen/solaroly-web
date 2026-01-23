@@ -31,8 +31,14 @@ const colmapStates = {};
 let colmapPollHandle = null;
 let colmapPollDataset = null;
 let OPTIMIZE_MAP = null;
-let optimizeMapLayer = null;
+let optimizeMapLayer = null;       // optimized markers
+let optimizeMapOrigLayer = null;   // original EXIF/gimbal markers
 let optimizeMapFocusLayer = null;
+let optimizeMapLastBoundsSig = null;
+let optimizeMapLastDataset = null;
+let optimizeMapFootprintLayer = null;
+let optimizeShowFootprints = false;
+let optimizeCameraVisibility = {};  // { filename: true/false }
 
 // runtime caches & UI flags
 let modelsCache = {};                // name -> model metadata returned by /api/models
@@ -79,6 +85,22 @@ const CAMERA_ZOOM_ICON = '<svg viewBox="0 0 20 20" width="14" height="14" xmlns=
 // --- TIF raster globals ---
 let TIF_TILE_GROUP = null;   // Leaflet layerGroup that holds the ZXY tile layers
 let TIF_TILE_LAYERS = [];    // underlying L.tileLayer instances
+
+function removeTifTiles(){
+  if (TIF_TILE_GROUP){
+    try { MAP.removeLayer(TIF_TILE_GROUP); } catch(_){ }
+  }
+  for (const layer of TIF_TILE_LAYERS){
+    try { MAP.removeLayer(layer); } catch(_){ }
+    try { layer.remove?.(); } catch(_){ }
+  }
+  TIF_TILE_GROUP = null;
+  TIF_TILE_LAYERS = [];
+  const list = document.getElementById('imagesList');
+  if (list && list.querySelector('#chkTifTiles')){
+    list.innerHTML = '';
+  }
+}
 
 // ---------- helpers ----------
 const $ = sel => document.querySelector(sel);
@@ -188,14 +210,22 @@ function ensureOptimizeMap(){
     OPTIMIZE_MAP = L.map(host, { attributionControl:false, zoomControl:false, dragging:true, scrollWheelZoom:true, doubleClickZoom:true });
     street.addTo(OPTIMIZE_MAP);
     optimizeMapLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    optimizeMapOrigLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
     optimizeMapFocusLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    optimizeMapFootprintLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
     OPTIMIZE_MAP.setView([0,0],2);
   }else{
     if(!optimizeMapLayer){
       optimizeMapLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
     }
+    if(!optimizeMapOrigLayer){
+      optimizeMapOrigLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    }
     if(!optimizeMapFocusLayer){
       optimizeMapFocusLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
+    }
+    if(!optimizeMapFootprintLayer){
+      optimizeMapFootprintLayer = L.layerGroup().addTo(OPTIMIZE_MAP);
     }
   }
   return OPTIMIZE_MAP;
@@ -215,7 +245,11 @@ function renderOptimizeMap(state, cams = [], readyCount = 0){
     return;
   }
 
+  ensureOptimizeControls();
+
   optimizeMapLayer.clearLayers();
+  if(optimizeMapOrigLayer){ optimizeMapOrigLayer.clearLayers(); }
+  if(optimizeMapFootprintLayer){ optimizeMapFootprintLayer.clearLayers(); }
   if(!dataset){
     if(summaryEl) summaryEl.textContent = 'No dataset';
     return;
@@ -228,23 +262,70 @@ function renderOptimizeMap(state, cams = [], readyCount = 0){
   const bounds = [];
   let lociCount = 0;
   cams.forEach(cam => {
-    const lat = Number((cam?.optimized?.lat ?? cam?.lat));
-    const lon = Number((cam?.optimized?.lon ?? cam?.lon));
-    if(Number.isNaN(lat) || Number.isNaN(lon)) return;
-    lociCount += 1;
-    const ready = cam.calibrated || (cam.status && String(cam.status).toLowerCase() === 'calibrated') || (cam.optimized && cam.optimized.lat != null);
-    const color = ready ? '#18b76a' : '#f4b400';
-    const marker = L.circleMarker([lat, lon], {
-      radius: ready ? 6 : 5,
-      color,
-      weight: 1.5,
-      fillColor: color,
-      fillOpacity: 0.85
-    });
     const title = escapeHtml(cam.file || cam.name || 'image');
-    marker.bindPopup(`<div><strong>${title}</strong><br>${ready ? 'Optimized' : 'Pending'}</div>`);
-    marker.addTo(optimizeMapLayer);
-    bounds.push([lat, lon]);
+    const optLat = Number(cam?.optimized?.lat);
+    const optLon = Number(cam?.optimized?.lon);
+    const origLat = Number(cam?.lat);
+    const origLon = Number(cam?.lon);
+    const filename = cam.file || cam.name;
+    const isVisible = optimizeCameraVisibility[filename] === true;
+
+    const ready = cam.calibrated || (cam.status && String(cam.status).toLowerCase() === 'calibrated') || (cam.optimized && cam.optimized.lat != null);
+    let fitLat = null, fitLon = null;
+
+    if(!Number.isNaN(origLat) && !Number.isNaN(origLon) && optimizeMapOrigLayer){
+      const m = L.circleMarker([origLat, origLon], {
+        radius: 4,
+        color: '#f4b400',
+        weight: 1.0,
+        fillColor: '#f4b400',
+        fillOpacity: 0.55
+      }).bindPopup(`<div><strong>${title}</strong><br>Original (EXIF/gimbal)</div>`);
+      m.addTo(optimizeMapOrigLayer);
+      fitLat = origLat; fitLon = origLon;
+      lociCount += 1;
+      bounds.push([origLat, origLon]);
+    }
+
+    if(!Number.isNaN(optLat) && !Number.isNaN(optLon)){
+      const marker = L.circleMarker([optLat, optLon], {
+        radius: ready ? 6 : 5,
+        color: '#18b76a',
+        weight: 1.5,
+        fillColor: '#18b76a',
+        fillOpacity: 0.9
+      });
+      marker.bindPopup(`<div><strong>${title}</strong><br>${ready ? 'Optimized' : 'Pending'}</div>`);
+      marker.addTo(optimizeMapLayer);
+      lociCount += 1;
+      bounds.push([optLat, optLon]);
+      fitLat = optLat; fitLon = optLon;
+
+      if(!Number.isNaN(origLat) && !Number.isNaN(origLon)){
+        // draw a connector line for quick visual diff
+        const seg = L.polyline([[origLat, origLon], [optLat, optLon]], { color:'#7c3aed', weight:1.5, opacity:0.8, dashArray:'4,4' });
+        seg.addTo(optimizeMapLayer);
+      }
+
+      if(optimizeMapFootprintLayer && isVisible){
+        drawFootprint(optLat, optLon, Number(cam?.optimized?.rotation), Number(cam?.optimized?.w_px ?? cam?.w ?? 0), Number(cam?.optimized?.h_px ?? cam?.h ?? 0), Number(cam?.optimized?.meters_per_pixel ?? cam?.meters_per_pixel ?? 0.05), '#0ea5e9', optimizeMapFootprintLayer);
+      }
+    }
+
+    if(optimizeMapFootprintLayer && isVisible && !Number.isNaN(origLat) && !Number.isNaN(origLon)){
+      let origRot = cam?.rotation;
+      if(!Number.isFinite(origRot)){
+        origRot = cam?.rotation_gimbal;
+      }
+      if(!Number.isFinite(origRot)){
+        origRot = cam?.rotation_aircraft;
+      }
+      drawFootprint(origLat, origLon, Number(origRot ?? 0), Number(cam?.w ?? cam?.w_px ?? 0), Number(cam?.h ?? cam?.h_px ?? 0), Number(cam?.meters_per_pixel ?? 0.05), '#f4b400', optimizeMapFootprintLayer, true);
+    }
+
+    if(fitLat !== null && fitLon !== null){
+      bounds.push([fitLat, fitLon]);
+    }
   });
 
   if(summaryEl){
@@ -255,17 +336,188 @@ function renderOptimizeMap(state, cams = [], readyCount = 0){
     }
   }
 
+  // Only refit when dataset changes or bounds signature changes to avoid jumpy view
   if(bounds.length){
-    try{
-      map.fitBounds(L.latLngBounds(bounds).pad(0.1));
-    }catch(_){
-      const bb = L.latLngBounds(bounds);
-      map.setView(bb.getCenter(), Math.min(map.getZoom(), 18));
+    const sig = `${dataset}|${bounds.length}|${bounds.map(b=>b.join(',')).join(';')}`;
+    if(dataset !== optimizeMapLastDataset || sig !== optimizeMapLastBoundsSig){
+      try{
+        map.fitBounds(L.latLngBounds(bounds).pad(0.1));
+      }catch(_){
+        const bb = L.latLngBounds(bounds);
+        map.setView(bb.getCenter(), Math.min(map.getZoom(), 18));
+      }
+      optimizeMapLastBoundsSig = sig;
+      optimizeMapLastDataset = dataset;
     }
-  }else{
-    map.setView([0,0],2);
   }
   setTimeout(()=> map.invalidateSize(), 80);
+}
+
+function drawFootprint(lat, lon, rotDeg, wPx, hPx, mpp, color, layer, dashed=false){
+  if(!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(wPx) || !Number.isFinite(hPx) || wPx<=0 || hPx<=0){
+    return;
+  }
+  const heading = Number(rotDeg);
+  const halfWm = (wPx * mpp) / 2.0;
+  const halfHm = (hPx * mpp) / 2.0;
+  // DJI yaw is clockwise; geo math here is counterclockwise, so flip sign for map footprint
+  const rad = Number.isFinite(heading) ? (-heading) * Math.PI/180 : 0;
+  const ca = Math.cos(rad), sa = Math.sin(rad);
+  const scaleLat = 111320;
+  const scaleLon = 111320 * Math.cos(lat * Math.PI/180);
+  const corners = [
+    [-halfWm, -halfHm],
+    [ halfWm, -halfHm],
+    [ halfWm,  halfHm],
+    [-halfWm,  halfHm]
+  ].map(([x,y])=>{
+    const rx = x*ca - y*sa;
+    const ry = x*sa + y*ca;
+    return [lat + (ry/scaleLat), lon + (rx/scaleLon)];
+  });
+  const poly = L.polygon(corners, { color, weight: 1.5, opacity: 0.9, fillColor: color, fillOpacity: 0.12, dashArray: dashed ? '4,4' : null });
+  poly.addTo(layer);
+}
+
+function showCameraDetail(filename, cams){
+  const cam = cams.find(c => (c.file || c.name) === filename);
+  if(!cam) return;
+  const title = escapeHtml(cam.file || cam.name || 'image');
+  // Try to get original rotation from multiple sources in priority order
+  let origRot = cam?.rotation;
+  if(!Number.isFinite(origRot)){
+    origRot = cam?.rotation_gimbal;
+  }
+  if(!Number.isFinite(origRot)){
+    origRot = cam?.rotation_aircraft;
+  }
+  origRot = Number(origRot ?? 0);
+  const optRot = Number(cam?.optimized?.rotation ?? 0);
+  const origLat = Number(cam?.lat);
+  const origLon = Number(cam?.lon);
+  const optLat = Number(cam?.optimized?.lat);
+  const optLon = Number(cam?.optimized?.lon);
+  const w = Number(cam?.w ?? cam?.w_px ?? 0);
+  const h = Number(cam?.h ?? cam?.h_px ?? 0);
+  const mpp = Number(cam?.meters_per_pixel ?? 0.05);
+  const modal = document.createElement('div');
+  modal.style.position = 'fixed';
+  modal.style.top = '0';
+  modal.style.left = '0';
+  modal.style.width = '100%';
+  modal.style.height = '100%';
+  modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+  modal.style.zIndex = '2000';
+  modal.style.display = 'flex';
+  modal.style.alignItems = 'center';
+  modal.style.justifyContent = 'center';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:8px;padding:20px;max-width:600px;max-height:80vh;overflow:auto;box-shadow:0 4px 20px rgba(0,0,0,0.2)">
+      <h3>${title}</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0">
+        <div>
+          <h4 style="margin-top:0">Original (EXIF/Gimbal)</h4>
+          <p><strong>Rotation:</strong> ${origRot.toFixed(1)}°</p>
+          <p><strong>Location:</strong> ${Number.isFinite(origLat) && Number.isFinite(origLon) ? `${origLat.toFixed(5)}, ${origLon.toFixed(5)}` : 'N/A'}</p>
+          <p><strong>Size:</strong> ${w}×${h} px (${(w*mpp).toFixed(1)}×${(h*mpp).toFixed(1)} m)</p>
+          <div id="origFootprint" style="width:100%;height:150px;border:1px solid #ccc;border-radius:4px;background:#f9f9f9;margin-top:10px"></div>
+        </div>
+        <div>
+          <h4 style="margin-top:0">Optimized (COLMAP)</h4>
+          <p><strong>Rotation:</strong> ${optRot.toFixed(1)}° <span style="color:${Math.abs(optRot-origRot)>2?'red':'green'}">(${optRot-origRot>0?'+':''}${(optRot-origRot).toFixed(1)}°)</span></p>
+          <p><strong>Location:</strong> ${Number.isFinite(optLat) && Number.isFinite(optLon) ? `${optLat.toFixed(5)}, ${optLon.toFixed(5)}` : 'N/A'}</p>
+          <p><strong>Size:</strong> ${w}×${h} px (${(w*mpp).toFixed(1)}×${(h*mpp).toFixed(1)} m)</p>
+          <div id="optFootprint" style="width:100%;height:150px;border:1px solid #ccc;border-radius:4px;background:#f9f9f9;margin-top:10px"></div>
+        </div>
+      </div>
+      <button style="width:100%;padding:10px;margin-top:20px;background:#0ea5e9;color:white;border:none;border-radius:4px;cursor:pointer;font-size:14px" onclick="this.closest('[style*=fixed]').remove()">Close</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(()=>{
+    drawDetailFootprint('origFootprint', origLat, origLon, origRot, w, h, mpp, '#f4b400');
+    drawDetailFootprint('optFootprint', optLat, optLon, optRot, w, h, mpp, '#18b76a');
+  }, 50);
+}
+
+function drawDetailFootprint(elemId, lat, lon, rotDeg, wPx, hPx, mpp, color){
+  const el = document.getElementById(elemId);
+  if(!el) return;
+  if(!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(wPx) || !Number.isFinite(hPx) || wPx<=0 || hPx<=0) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = 300;
+  canvas.height = 150;
+  el.innerHTML = '';
+  el.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const cw = canvas.width, ch = canvas.height;
+  const cx = cw/2, cy = ch/2;
+  const heading = rotDeg * Math.PI/180;
+  const scale = Math.min((cw*0.8)/(Math.max(wPx, hPx)*mpp), (ch*0.8)/(Math.max(wPx, hPx)*mpp), 30);
+  ctx.fillStyle = '#f0f0f0';
+  ctx.fillRect(0,0,cw,ch);
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.3;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(heading);
+  const w = (wPx * mpp * scale);
+  const h = (hPx * mpp * scale);
+  ctx.fillRect(-w/2, -h/2, w, h);
+  ctx.restore();
+  ctx.globalAlpha = 1.0;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cx-w/2, cy-h/2, w, h);
+  ctx.fillStyle = color;
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${rotDeg.toFixed(0)}°`, cx, ch-5);
+}
+
+function ensureOptimizeControls(){
+  const host = document.getElementById('optimizeMap');
+  if(!host) return;
+  let btnFp = document.getElementById('btnOptShowFootprints');
+  if(!btnFp){
+    btnFp = document.createElement('button');
+    btnFp.id = 'btnOptShowFootprints';
+    btnFp.type = 'button';
+    btnFp.textContent = 'Show footprints';
+    btnFp.className = 'pill pill-muted';
+    btnFp.style.position = 'absolute';
+    btnFp.style.right = '12px';
+    btnFp.style.top = '12px';
+    btnFp.style.zIndex = 1100;
+    btnFp.style.cursor = 'pointer';
+    btnFp.style.backgroundColor = 'rgba(14,165,233,0.92)';
+    btnFp.style.color = '#fff';
+    btnFp.style.boxShadow = '0 2px 8px rgba(0,0,0,0.25)';
+    btnFp.style.border = 'none';
+    btnFp.style.padding = '8px 12px';
+    btnFp.style.borderRadius = '16px';
+    host.style.position = host.style.position || 'relative';
+    host.appendChild(btnFp);
+  }
+  btnFp.onclick = ()=>{
+    optimizeShowFootprints = !optimizeShowFootprints;
+    btnFp.textContent = optimizeShowFootprints ? 'Hide footprints' : 'Show footprints';
+    btnFp.style.backgroundColor = optimizeShowFootprints ? 'rgba(14,165,233,0.98)' : 'rgba(14,165,233,0.72)';
+    const ds = document.getElementById('selOptimizeDataset')?.value;
+    const state = getColmapState(ds);
+    if(state){
+      const cams = Array.isArray(state.cameras) ? state.cameras : Object.values(state.cameras || {});
+      // When global toggles, flip all camera visibility to match the global state
+      cams.forEach(cam => {
+        const name = cam.file || cam.name;
+        if(!name) return;
+        optimizeCameraVisibility[name] = optimizeShowFootprints;
+      });
+      renderOptimizeMap(state, cams, cams.filter(c=>c.calibrated || (c.optimized && c.optimized.lat != null)).length);
+      renderColmapCameras(state);
+    }
+  };
 }
 
 function focusOptimizeCamera(lat, lon){
@@ -418,12 +670,50 @@ function renderColmapCameras(state){
     const zoomTitle = hasLatLon ? `Zoom to ${rawName}` : 'No GPS data';
     const zoomAttrs = hasLatLon ? `data-lat="${latNum}" data-lon="${lonNum}"` : 'disabled';
     const zoomBtn = `<button class="camZoomBtn" type="button" ${zoomAttrs} title="${escapeHtml(zoomTitle)}" aria-label="${escapeHtml(zoomTitle)}">${CAMERA_ZOOM_ICON}</button>`;
-    return `<div class="cameraRow"><div class="cameraRowHead"><div class="cameraRowHeadMain"><strong>${name}</strong> ${tagHtml}</div>${zoomBtn}</div><div class="camMeta">${metaHtml}</div></div>`;
+    const isVis = optimizeCameraVisibility[rawName] === true;
+    const eyeTitle = isVis ? 'Hide on map' : 'Show on map';
+    const eyeBtn = `<button class="camEyeBtn iconBtn" data-filename="${escapeHtml(rawName)}" title="${eyeTitle}" style="width:24px;padding:0;font-size:16px">${isVis ? '👁️' : '👁‍🗨'}</button>`;
+    const detailBtn = `<button class="camDetailBtn iconBtn" data-filename="${escapeHtml(rawName)}" title="Show before/after" style="width:24px;padding:0;font-size:14px">→</button>`;
+    return `<div class="cameraRow"><div class="cameraRowHead"><div class="cameraRowHeadMain"><strong>${name}</strong> ${tagHtml}</div><div style="display:flex;gap:4px">${eyeBtn}${detailBtn}${zoomBtn}</div></div><div class="camMeta">${metaHtml}</div></div>`;
   }).join('');
   wrap.innerHTML = rows;
   if(cams.length > maxRows){
     wrap.insertAdjacentHTML('beforeend', `<div class="muted tiny">Showing first ${maxRows} of ${cams.length} cameras…</div>`);
   }
+
+  // Attach event listeners for eye toggle and detail buttons
+  wrap.querySelectorAll('.camEyeBtn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const filename = btn.getAttribute('data-filename');
+      const current = optimizeCameraVisibility[filename] === true;
+      optimizeCameraVisibility[filename] = !current;
+      const ds = document.getElementById('selOptimizeDataset')?.value;
+      const st = getColmapState(ds);
+      if(st){
+        const cams_list = Array.isArray(st.cameras) ? st.cameras : Object.values(st.cameras || {});
+        renderOptimizeMap(st, cams_list, cams_list.filter(c=>c.calibrated || (c.optimized && c.optimized.lat != null)).length);
+        renderColmapCameras(st);
+      }
+    });
+  });
+  wrap.querySelectorAll('.camDetailBtn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const filename = btn.getAttribute('data-filename');
+      showCameraDetail(filename, cams);
+    });
+  });
+  wrap.querySelectorAll('.camZoomBtn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const lat = Number(btn.getAttribute('data-lat'));
+      const lon = Number(btn.getAttribute('data-lon'));
+      if(Number.isFinite(lat) && Number.isFinite(lon)){
+        focusOptimizeCamera(lat, lon);
+      }
+    });
+  });
 }
 
 function updateColmapProgress(job){
@@ -705,19 +995,37 @@ async function startColmapJob(){
   const params = buildColmapParams();
   rememberColmapParams(dataset, params);
   colmapPrefillState = { dataset, hash: hashColmapParams(params) };
-  const fd = new FormData();
-  fd.append('dataset', dataset);
-  if(Object.keys(params).length){
-    fd.append('params', JSON.stringify(params));
-  }
-  setColmapStatus('Starting COLMAP…');
-  try{
+  async function _launch(confirmReset){
+    const fd = new FormData();
+    fd.append('dataset', dataset);
+    if(Object.keys(params).length){
+      fd.append('params', JSON.stringify(params));
+    }
+    if(confirmReset){
+      fd.append('confirm_reset', 'true');
+    }
+    setColmapStatus(confirmReset ? 'Resetting previous COLMAP run…' : 'Starting COLMAP…');
     const res = await fetch(api.colmapStart, { method:'POST', body: fd });
-    const js = await res.json();
-    if(!res.ok || !js.ok) throw new Error(js.detail || 'Failed to start COLMAP');
+    const js = await res.json().catch(()=>({}));
+    if(res.status === 412){
+      // Backend indicates previous results exist; ask user and retry with confirm_reset
+      const ok = window.confirm('Previous COLMAP results exist. Restarting will delete them. Continue?');
+      if(ok){
+        return _launch(true);
+      }
+      setColmapStatus('Restart cancelled.', 'warn');
+      return;
+    }
+    if(!res.ok || !js.ok){
+      throw new Error(js.detail || 'Failed to start COLMAP');
+    }
     setColmapStatus('COLMAP started.', 'ok');
     applyColmapState(dataset, js.state || null);
     scheduleColmapPoll(dataset, js.state);
+  }
+
+  try{
+    await _launch(false);
   }catch(err){
     console.error('colmap start', err);
     setColmapStatus(err.message || 'Failed to start COLMAP', 'err');

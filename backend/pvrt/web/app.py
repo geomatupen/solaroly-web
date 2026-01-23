@@ -793,14 +793,11 @@ def _dataset_image_list(dataset: str) -> List[Path]:
 def _colmap_image_sources(dataset: str) -> List[Tuple[Path, str]]:
     ds_dir = _colmap_dataset_dir(dataset)
     records: List[Tuple[Path, str]] = []
-    for root, _, files in os.walk(ds_dir):
-        root_path = Path(root)
-        for name in files:
-            path = root_path / name
-            if not path.is_file() or not _is_image(path):
-                continue
-            rel = path.relative_to(ds_dir).as_posix()
-            records.append((path, rel))
+    for entry in sorted(ds_dir.iterdir()):
+        if not entry.is_file() or not _is_image(entry):
+            continue
+        rel = entry.relative_to(ds_dir).as_posix()
+        records.append((entry, rel))
     records.sort(key=lambda pair: pair[1])
     return records
 
@@ -839,6 +836,10 @@ def _gather_colmap_cameras(dataset: str) -> Dict[str, Dict[str, Any]]:
             "w": w_px,
             "h": h_px,
             "meters_per_pixel": mpp,
+            "rotation": entry.get("rotation") if entry else None,
+            "rotation_gimbal": entry.get("rotation_gimbal") if entry else None,
+            "rotation_aircraft": entry.get("rotation_aircraft") if entry else None,
+            "rotation_source": entry.get("rotation_source") if entry else None,
             "status": "pending",
             "calibrated": False,
             "has_gps": lat is not None and lon is not None,
@@ -1246,11 +1247,24 @@ async def api_colmap_state(dataset: str):
 
 
 @app.post("/api/colmap/start")
-async def api_colmap_start(dataset: str = Form(...), params: str = Form(default="")):
+async def api_colmap_start(dataset: str = Form(...), params: str = Form(default=""), confirm_reset: bool = Form(default=False)):
     _colmap_dataset_dir(dataset)
     existing = COLMAP_JOBS.get(dataset)
     if existing and _should_poll(existing):
         raise HTTPException(status_code=409, detail="COLMAP optimization is already running for this dataset.")
+
+    # If a previous run exists and the caller didn't confirm, ask for confirmation first
+    base_dir = COLMAP_BASE / dataset
+    prior_exists = base_dir.exists() and any(base_dir.iterdir())
+    if prior_exists and not bool(confirm_reset):
+        raise HTTPException(status_code=412, detail="Previous COLMAP results exist. Call start again with confirm_reset=true to overwrite.")
+
+    # On confirmed reset, delete previous results to avoid cross-run contamination
+    if prior_exists:
+        try:
+            shutil.rmtree(base_dir)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to clear previous COLMAP results: {exc}")
 
     job_id = uuid.uuid4().hex[:12]
     job: Dict[str, Any] = {
@@ -1324,10 +1338,14 @@ def _quaternion_to_matrix(qw: float, qx: float, qy: float, qz: float) -> np.ndar
 
 def _rotation_matrix_to_heading(rot: np.ndarray) -> float:
     try:
-        forward = rot.T @ np.array([0.0, 0.0, 1.0])
+        # COLMAP stores a world-to-camera R; the camera forward vector in world
+        # space is -R^T * [0,0,1]. Using +Z here produces a 180° flipped heading
+        # relative to EXIF/gimbal yaw, so apply the negative to align with DJI yaw.
+        forward = rot.T @ np.array([0.0, 0.0, -1.0])
         east = forward[0]
         north = forward[1]
-        heading = math.degrees(math.atan2(east, north))
+        # DJI yaw: 0=N, +CW. atan2(east, north) is +CCW; negate to align with DJI.
+        heading = -math.degrees(math.atan2(east, north))
         while heading > 180.0:
             heading -= 360.0
         while heading < -180.0:
@@ -1475,6 +1493,7 @@ def _write_colmap_meta(dataset: str, solution: Dict[str, Dict[str, Any]], alignm
         camera_meta = {}
     sizes_index = _scan_image_sizes(ds_dir)
     meta_out: Dict[str, Dict[str, Any]] = {}
+    heading_offsets: List[float] = []
     for name, pose in solution.items():
         base = _lookup_camera_meta_entry(camera_meta, name) or {}
         aligned = alignment.get(name)
@@ -1484,6 +1503,17 @@ def _write_colmap_meta(dataset: str, solution: Dict[str, Dict[str, Any]], alignm
         lon = aligned.get("lon")
         alt = aligned.get("alt")
         heading = aligned.get("rotation")
+        # Track how far COLMAP heading deviates from EXIF/gimbal yaw, if present
+        try:
+            preferred = _coerce_float(base.get("rotation"))
+            if preferred is None:
+                preferred = _coerce_float(base.get("rotation_gimbal")) or _coerce_float(base.get("rotation_aircraft"))
+            if preferred is not None and heading is not None:
+                delta = _normalize_heading_deg(float(heading) - float(preferred))
+                if delta is not None:
+                    heading_offsets.append(delta)
+        except Exception:
+            pass
         entry = {
             "file": name,
             "lat": lat,
@@ -1507,6 +1537,20 @@ def _write_colmap_meta(dataset: str, solution: Dict[str, Dict[str, Any]], alignm
 
     if not meta_out:
         raise RuntimeError("COLMAP alignment produced no entries.")
+
+    # If we have enough overlap, compute a median heading correction to align COLMAP yaw to gimbal/aircraft yaw.
+    if heading_offsets:
+        try:
+            offset = float(np.median(heading_offsets))
+            for entry in meta_out.values():
+                if entry.get("rotation") is not None:
+                    corrected = _normalize_heading_deg(entry["rotation"] - offset)
+                    if corrected is not None:
+                        entry["rotation"] = corrected
+                        entry["rotation_source"] = "colmap+gimbal_align"
+                        entry["rotation_offset_deg"] = float(offset)
+        except Exception:
+            pass
 
     meta_path = _colmap_meta_path(dataset)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
