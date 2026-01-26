@@ -3604,6 +3604,7 @@ async def api_test_run(
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
     accurate_locations: bool = Form(default=False),
+    mosaic_enabled: bool = Form(default=False),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -3841,10 +3842,114 @@ async def api_test_run(
             cm_path.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
             source_label = "colmap" if accurate_locations else "exif"
             logging.getLogger("pvrt.test").info(
-                f"UI:INFO:test: Camera metadata entries={len(camera_meta)} source={source_label}"
+                f"UI:INFO:test: Camera metadata entries={len(camera_meta)} source={source_label}, written to {cm_path}"
             )
         except Exception as e:
-            logger.warning(f"Failed to persist camera metadata: {e}")
+            import traceback
+            logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to persist camera metadata: {e}")
+            logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Traceback: {traceback.format_exc()}")
+
+    # ===== PRE-INFERENCE MOSAIC & ROTATION HANDLING =====
+    # If mosaic_enabled and camera_meta exists, rotate images and create mosaic BEFORE inference
+    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Mosaic check - enabled={mosaic_enabled}, input_type={input_type}, camera_meta_count={len(camera_meta) if camera_meta else 0}")
+    if mosaic_enabled and input_type == "images" and camera_meta:
+        try:
+            logging.getLogger("pvrt.test").info("UI:INFO:test: ✓ Conditions met: Starting mosaic generation...")
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: session_dir={session_dir}, out_root={out_root}")
+            
+            # Verify camera_meta.json was actually written
+            cm_path = session_dir / "camera_meta.json"
+            if not cm_path.exists():
+                raise RuntimeError(f"camera_meta.json not found at {cm_path}")
+            cm_size = cm_path.stat().st_size
+            
+            # Verify it's valid JSON and has entries
+            try:
+                cm_json = json.loads(cm_path.read_text(encoding='utf-8'))
+                cm_count = len([k for k in cm_json.keys() if not k.startswith('__')])
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ camera_meta.json exists (size={cm_size} bytes, entries={cm_count})")
+            except Exception as e:
+                raise RuntimeError(f"camera_meta.json invalid: {e}")
+            
+            # Debug: list what's in session_dir before script
+            session_contents_before = sorted([x.name for x in session_dir.glob("*")])
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: session_dir before rotation: {session_contents_before}")
+            
+            # Call regenerate script to create rotated_images from camera_meta
+            # Pass source images directory (ds_dir) so script can access original images
+            import subprocess, sys, time
+            script = PROJECT_ROOT / "scripts" / "regenerate_geojson_from_preds.py"
+            if script.exists():
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for rotation (session={session}, src_images={ds_dir})")
+                
+                # subprocess.run() BLOCKS until rotation completes - no env needed (inherited automatically)
+                proc = subprocess.run(
+                    [sys.executable, str(script), session, str(ds_dir)],
+                    stdout=subprocess.DEVNULL,  # Avoid pipe buffer deadlock with large output
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=str(PROJECT_ROOT),
+                    timeout=300
+                )
+                
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Rotation completed (exit={proc.returncode})")
+                if proc.stderr:
+                    for line in proc.stderr.splitlines()[-10:]:  # Last 10 error lines only
+                        logging.getLogger("pvrt.test").warning(f"UI:INFO:test: [script] {line}")
+                
+                # Brief delay for filesystem sync after script completes
+                time.sleep(0.3)
+            else:
+                logging.getLogger("pvrt.test").warning(f"UI:INFO:test: Script not found at {script}")
+            
+            # Check if rotated_images exist and create mosaic
+            rotated_images_dir = session_dir / "rotated_images"
+            # Force clear Python's directory listing cache
+            import importlib
+            from pathlib import Path as PathlibPath
+            rotated_images_dir = PathlibPath(str(rotated_images_dir))  # Fresh Path object
+            
+            rotated_files = list(rotated_images_dir.glob("*")) if rotated_images_dir.exists() else []
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: rotated_images_dir={rotated_images_dir}, exists={rotated_images_dir.exists()}, file_count={len(rotated_files)}")
+            
+            # Debug: list what's in session_dir after script
+            session_contents_after = sorted([x.name for x in session_dir.glob("*")])
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: session_dir after rotation: {session_contents_after}")
+            
+            if rotated_images_dir.exists() and rotated_files:
+                # Import and call mosaic function
+                sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+                from mosaic_from_colmap import create_mosaic_from_rotated_images
+                
+                mosaic_path = out_root / "mosaic.tif"
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Creating mosaic from {len(rotated_files)} rotated images...")
+                create_mosaic_from_rotated_images(
+                    rotated_images_dir=rotated_images_dir,
+                    out_mosaic_path=mosaic_path,
+                    plane_z=0.0,
+                    resolution=0.1,
+                    camera_meta=camera_meta,  # Pass camera metadata for georeferencing
+                )
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Mosaic created: {mosaic_path}")
+                
+                # Switch to TIF pipeline: tile the mosaic and set input_type to "tif"
+                tiles_dir = out_root / "tiles"
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Tiling mosaic from {mosaic_path} to {tiles_dir}")
+                _tile_tif_to_dir(mosaic_path, tiles_dir, tile_size=1024, stride=1024)
+                run_images_dir = tiles_dir
+                input_type = "tif"
+                tif_src = mosaic_path
+                
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Mosaic tiled; running orthophoto pipeline on {len(list(tiles_dir.glob('*')))} tiles")
+            else:
+                logging.getLogger("pvrt.test").warning(f"✗ Mosaic enabled but rotated_images not found or empty; proceeding with per-image pipeline")
+        except Exception as e:
+            import traceback
+            logging.getLogger("pvrt.test").warning(f"✗ Failed to generate mosaic: {e}")
+            logging.getLogger("pvrt.test").warning(f"Traceback: {traceback.format_exc()}")
+            # Continue with original input_type (per-image pipeline)
+    elif mosaic_enabled:
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: Mosaic skipped - input_type={input_type}, camera_meta_count={len(camera_meta) if camera_meta else 0}")
 
     def _do_predict():
         with redirect_std_to_logger():
@@ -3996,9 +4101,10 @@ async def api_test_run(
         # If camera metadata exists, ensure geojsons are regenerated
         # using the standalone regeneration script as a fallback to guarantee
         # rotated `images.geojson` and `anomalies.geojson` are produced.
+        # Skip if mosaic was already created (rotation already done before inference)
         try:
-            # Only attempt when camera_meta entries exist (user provided refs)
-            if camera_meta:
+            # Only attempt when camera_meta entries exist (user provided refs) AND mosaic wasn't already created
+            if camera_meta and not mosaic_enabled:
                 import subprocess, sys
                 script = PROJECT_ROOT / "scripts" / "regenerate_geojson_from_preds.py"
                 if script.exists():

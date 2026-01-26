@@ -80,6 +80,15 @@
             <button id="btnGoOptimize" class="secondary tiny">Optimize…</button>
           </div>
 
+          <div class="row wrap" id="mosaicControls" hidden>
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkMosaicImages" />
+              <span>
+                Mosaic rotated images before inference
+                <span id="mosaicHint" class="muted tiny hintLine">Stitch rotated images into single orthophoto</span>
+              </span>
+            </label>
+          </div>
 
           <div class="row">
             <label for="inpResultName">Result Name</label>

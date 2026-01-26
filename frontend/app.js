@@ -619,6 +619,13 @@ function updateAccurateUI(){
     btn.disabled = disable;
     btn.classList.toggle('disabled', disable);
   }
+
+  // Update mosaic checkbox visibility: show only if camera_meta exists (rotation will happen)
+  const mosaicControls = document.getElementById('mosaicControls');
+  if(mosaicControls){
+    const cameraMetaExists = state?.camera_meta && Object.keys(state.camera_meta).length > 0;
+    mosaicControls.hidden = !cameraMetaExists;
+  }
 }
 
 function describeMetaPath(path){
@@ -1894,6 +1901,8 @@ async function runTest(){
   fd.append("result_name", resultName);
   fd.append("test_threshold", testThreshold);
   if(wantsAccurate) fd.append("accurate_locations", "true");
+  const wantsMosaic = document.getElementById("chkMosaicImages")?.checked;
+  if(wantsMosaic) fd.append("mosaic_enabled", "true");
   const backend = getSelectedBackend();
   fd.append('backend', backend);
   if(backend === 'yolo'){
