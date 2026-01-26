@@ -1406,13 +1406,27 @@ async def api_colmap_start(dataset: str = Form(...), params: str = Form(default=
 async def api_colmap_finish(dataset: str = Form(...), job_id: str = Form(...)):
     _colmap_dataset_dir(dataset)
     job = COLMAP_JOBS.get(dataset)
-    if not job or job.get("id") != job_id:
-        raise HTTPException(status_code=404, detail="COLMAP job not found for dataset.")
-    if job.get("status") != "awaiting_finish":
-        raise HTTPException(status_code=400, detail="Job is not ready to finalize.")
-    meta_path = job.get("meta_path")
-    if not meta_path or not Path(meta_path).exists():
+    meta_path = _colmap_meta_path(dataset)
+
+    # If backend was reloaded, the in-memory job is gone; allow finalization if metadata exists
+    if not meta_path.exists():
         raise HTTPException(status_code=400, detail="COLMAP metadata missing; rerun optimization.")
+
+    if job:
+        if job.get("id") != job_id:
+            raise HTTPException(status_code=404, detail="COLMAP job not found for dataset.")
+        if job.get("status") != "awaiting_finish":
+            raise HTTPException(status_code=400, detail="Job is not ready to finalize.")
+    else:
+        # Recreate minimal job to log and return state
+        job = {
+            "id": job_id,
+            "dataset": dataset,
+            "status": "awaiting_finish",
+            "logs": [],
+            "meta_path": str(meta_path),
+        }
+        COLMAP_JOBS[dataset] = job
 
     _set_colmap_ready(dataset, job_id)
     job["status"] = "finalized"

@@ -837,7 +837,11 @@ function updateOptimizePanel(state){
   updateColmapProgress(state?.job || null);
 
   const finishBtn = document.getElementById('btnFinishColmap');
-  if(finishBtn){ finishBtn.disabled = !(state?.job?.status === 'awaiting_finish'); }
+  if(finishBtn){ 
+    // Enable if job is awaiting_finish, OR if meta file exists and not yet marked ready (job lost on reload)
+    const canFinish = (state?.job?.status === 'awaiting_finish') || (state?.meta_path && !state?.ready);
+    finishBtn.disabled = !canFinish;
+  }
   const startBtn = document.getElementById('btnStartColmap');
   if(startBtn){
     const blocked = state?.job && ['running','queued'].includes(state.job.status);
@@ -1161,10 +1165,15 @@ async function finishColmapJob(){
     setColmapStatus('Select a dataset to finish.', 'warn');
     return;
   }
-  const jobId = state?.job?.id;
+  // If backend was restarted, job may be missing from state; allow finish when meta exists and not ready yet
+  let jobId = state?.job?.id;
   if(!jobId){
-    setColmapStatus('No COLMAP job ready to finish.', 'warn');
-    return;
+    if(state?.meta_path && !state?.ready){
+      jobId = `resume-${dataset}`;
+    } else {
+      setColmapStatus('No COLMAP job ready to finish.', 'warn');
+      return;
+    }
   }
   const fd = new FormData();
   fd.append('dataset', dataset);
