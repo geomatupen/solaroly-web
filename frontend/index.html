@@ -535,6 +535,19 @@
             <input type="checkbox" id="chkColmapBaExtra" checked />
             <span>Refine extra params (BA)</span>
           </div>
+          <div>
+            <label for="inpColmapMaxReprojError">Max reproj error (thermal)</label>
+            <input id="inpColmapMaxReprojError" type="number" min="4" step="1" placeholder="12 for thermal, blank for default" />
+            <small class="muted tiny">Set 12+ for thermal to prevent de-registration.</small>
+          </div>
+          <div>
+            <label for="inpColmapBaGlobalIter">BA global max iterations</label>
+            <input id="inpColmapBaGlobalIter" type="number" min="5" step="5" placeholder="15 for thermal, blank for default" />
+          </div>
+          <div>
+            <label for="inpColmapBaLocalIter">BA local max iterations</label>
+            <input id="inpColmapBaLocalIter" type="number" min="5" step="5" placeholder="10 for thermal, blank for default" />
+          </div>
         </div>
         <div class="muted tiny" style="line-height:1.5;">
           <strong>Parameter notes</strong>
@@ -545,6 +558,7 @@
             <li><b>SIFT thresholds</b>: Lower peak → more features; edge≈8 suits thermal.</li>
             <li><b>Block size</b>: Exhaustive only; smaller reduces RAM at cost of more steps.</li>
             <li><b>BA refine</b>: Keep ON unless you have strong prior intrinsics.</li>
+            <li><b>Thermal BA</b>: Set max reproj error 12+, BA iters 15/10 to prevent crash.</li>
           </ul>
         </div>
       </div>

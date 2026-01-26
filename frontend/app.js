@@ -12,6 +12,7 @@ const api = {
   sessionSummary: "/api/session_summary",
   sessionTiles: "/api/session_tiles",
   colmapState: "/api/colmap/state",
+  colmapCameras: "/api/colmap/cameras",
   colmapStart: "/api/colmap/start",
   colmapFinish: "/api/colmap/finish"
 };
@@ -30,6 +31,9 @@ let testAbort = null;
 const colmapStates = {};
 let colmapPollHandle = null;
 let colmapPollDataset = null;
+let colmapCamerasPage = 0;
+let colmapCamerasHasMore = false;
+let colmapCamerasList = [];  // accumulated cameras list
 let OPTIMIZE_MAP = null;
 let optimizeMapLayer = null;       // optimized markers
 let optimizeMapOrigLayer = null;   // original EXIF/gimbal markers
@@ -65,7 +69,10 @@ const COLMAP_PARAM_FIELDS = {
   ba_refine_focal_length: { id: 'chkColmapBaFocal', type: 'checkbox' },
   ba_refine_principal_point: { id: 'chkColmapBaPpoint', type: 'checkbox' },
   ba_refine_extra_params: { id: 'chkColmapBaExtra', type: 'checkbox' },
-  use_gpu: { id: 'chkColmapUseGpu', type: 'checkbox' }
+  use_gpu: { id: 'chkColmapUseGpu', type: 'checkbox' },
+  max_reproj_error: { id: 'inpColmapMaxReprojError', type: 'value' },
+  ba_global_max_iterations: { id: 'inpColmapBaGlobalIter', type: 'value' },
+  ba_local_max_iterations: { id: 'inpColmapBaLocalIter', type: 'value' }
 };
 const colmapParamDefaults = {};
 const colmapSavedParams = new Map();
@@ -190,6 +197,15 @@ function renderImagesList(){
 
 
 // ---------- Accurate locations / COLMAP ----------
+
+// Common heading conversion utility: DJI heading (0=N, +CW) to radians
+// For map rendering: negate=true for standard geo counterclockwise rotation
+// For canvas rendering: negate=false for visual clockwise rotation
+function headingToRadians(headingDeg, negate = true) {
+  const rad = Number.isFinite(headingDeg) ? (negate ? -headingDeg : headingDeg) * Math.PI / 180 : 0;
+  return rad;
+}
+
 function cacheColmapState(dataset, state){
   if(!dataset) return;
   colmapStates[dataset] = state;
@@ -365,11 +381,10 @@ function drawFootprint(lat, lon, rotDeg, wPx, hPx, mpp, color, layer, dashed=fal
   if(!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(wPx) || !Number.isFinite(hPx) || wPx<=0 || hPx<=0){
     return;
   }
-  const heading = Number(rotDeg);
   const halfWm = (wPx * mpp) / 2.0;
   const halfHm = (hPx * mpp) / 2.0;
-  // DJI yaw is clockwise; geo math here is counterclockwise, so flip sign for map footprint
-  const rad = Number.isFinite(heading) ? (-heading) * Math.PI/180 : 0;
+  // Align with backend footprint math: use camera heading directly (CW positive) and adjust lat sign below.
+  const rad = headingToRadians(rotDeg, false);
   const ca = Math.cos(rad), sa = Math.sin(rad);
   const scaleLat = 111320;
   const scaleLon = 111320 * Math.cos(lat * Math.PI/180);
@@ -381,7 +396,8 @@ function drawFootprint(lat, lon, rotDeg, wPx, hPx, mpp, color, layer, dashed=fal
   ].map(([x,y])=>{
     const rx = x*ca - y*sa;
     const ry = x*sa + y*ca;
-    return [lat + (ry/scaleLat), lon + (rx/scaleLon)];
+    // subtract ry to mirror backend geojson corner construction (pixel y is down).
+    return [lat - (ry/scaleLat), lon + (rx/scaleLon)];
   });
   const poly = L.polygon(corners, { color, weight: 1.5, opacity: 0.9, fillColor: color, fillOpacity: 0.12, dashArray: dashed ? '4,4' : null });
   poly.addTo(layer);
@@ -460,7 +476,7 @@ function drawDetailFootprint(elemId, lat, lon, rotDeg, wPx, hPx, mpp, color){
   const ctx = canvas.getContext('2d');
   const cw = canvas.width, ch = canvas.height;
   const cx = cw/2, cy = ch/2;
-  const heading = rotDeg * Math.PI/180;
+  const rad = headingToRadians(rotDeg, false);
   const scale = Math.min((cw*0.8)/(Math.max(wPx, hPx)*mpp), (ch*0.8)/(Math.max(wPx, hPx)*mpp), 30);
   ctx.fillStyle = '#f0f0f0';
   ctx.fillRect(0,0,cw,ch);
@@ -469,7 +485,7 @@ function drawDetailFootprint(elemId, lat, lon, rotDeg, wPx, hPx, mpp, color){
   ctx.globalAlpha = 0.3;
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.rotate(heading);
+  ctx.rotate(rad);
   const w = (wPx * mpp * scale);
   const h = (hPx * mpp * scale);
   ctx.fillRect(-w/2, -h/2, w, h);
@@ -612,6 +628,33 @@ function describeMetaPath(path){
   return parts.pop() || path;
 }
 
+async function loadColmapCameras(dataset, page = 0){
+  if(!dataset) return;
+  try {
+    const res = await fetch(`${api.colmapCameras}?dataset=${encodeURIComponent(dataset)}&page=${page}&limit=50`);
+    const js = await res.json();
+    if(!res.ok || !js.ok) throw new Error(js.detail || 'Failed to load cameras');
+    
+    if(page === 0){
+      colmapCamerasList = [];  // reset on first page
+    }
+    colmapCamerasList.push(...js.cameras);
+    colmapCamerasPage = page;
+    colmapCamerasHasMore = js.has_more;
+    
+    // Re-render list with newly loaded paginated data
+    const st = getColmapState(dataset);
+    if(st){
+      renderColmapCameras(st);
+    }
+    
+    return { cameras: colmapCamerasList, total: js.total, hasMore: js.has_more };
+  } catch(err){
+    console.error('Error loading cameras:', err);
+    return null;
+  }
+}
+
 function renderColmapCameras(state){
   const wrap = document.getElementById('colmapCameraList');
   const summaryEl = document.getElementById('colmapCameraSummary');
@@ -629,20 +672,28 @@ function renderColmapCameras(state){
     renderOptimizeMap(null, []);
     return;
   }
-  const cams = Array.isArray(state.cameras) ? state.cameras : [];
-  if(!cams.length){
+  
+  // Use ALL cameras from state for the map (not paginated)
+  const allCams = Array.isArray(state.cameras) ? state.cameras : [];
+  
+  // Use paginated list for the sidebar display
+  const displayCams = colmapCamerasList.length > 0 ? colmapCamerasList : allCams;
+  
+  if(!allCams.length){
     wrap.innerHTML = `<div class="muted tiny">No images detected for this dataset.</div>`;
     if(summaryEl) summaryEl.textContent = 'No cameras';
     renderOptimizeMap(state, []);
     return;
   }
-  const readyCount = cams.filter(cam => cam.calibrated || String(cam.status || '').toLowerCase() === 'calibrated').length;
+  const readyCount = allCams.filter(cam => cam.calibrated || String(cam.status || '').toLowerCase() === 'calibrated').length;
   if(summaryEl){
-    summaryEl.textContent = `${readyCount}/${cams.length} calibrated`;
+    summaryEl.textContent = `${readyCount}/${allCams.length} calibrated`;
   }
-  renderOptimizeMap(state, cams, readyCount);
-  const maxRows = 120;
-  const rows = cams.slice(0, maxRows).map(cam => {
+  // Render map with ALL cameras
+  renderOptimizeMap(state, allCams, readyCount);
+  
+  // Render list with paginated cameras
+  const rows = displayCams.map(cam => {
     const rawName = cam.file || cam.name || 'image';
     const name = escapeHtml(rawName);
     const ready = cam.calibrated || (cam.status && String(cam.status).toLowerCase() === 'calibrated') || (cam.optimized && cam.optimized.lat != null);
@@ -684,9 +735,16 @@ function renderColmapCameras(state){
     const detailBtn = `<button class="camDetailBtn iconBtn" data-filename="${escapeHtml(rawName)}" title="Show before/after" style="width:24px;padding:0;font-size:14px">→</button>`;
     return `<div class="cameraRow"><div class="cameraRowHead"><div class="cameraRowHeadMain"><strong>${name}</strong> ${tagHtml}</div><div style="display:flex;gap:4px">${eyeBtn}${detailBtn}${zoomBtn}</div></div><div class="camMeta">${metaHtml}</div></div>`;
   }).join('');
+  
   wrap.innerHTML = rows;
-  if(cams.length > maxRows){
-    wrap.insertAdjacentHTML('beforeend', `<div class="muted tiny">Showing first ${maxRows} of ${cams.length} cameras…</div>`);
+  
+  // Add "Load more" button if there are more cameras to display
+  if(colmapCamerasHasMore){
+    wrap.insertAdjacentHTML('beforeend', `<button id="btnLoadMoreCameras" class="secondary tiny" style="width:100%; margin-top:8px;">Load more cameras (${colmapCamerasList.length} loaded)</button>`);
+    document.getElementById('btnLoadMoreCameras')?.addEventListener('click', async () => {
+      await loadColmapCameras(selectedDataset, colmapCamerasPage + 1);
+      renderColmapCameras(state);
+    });
   }
 
   // Attach event listeners for eye toggle and detail buttons
@@ -699,8 +757,9 @@ function renderColmapCameras(state){
       const ds = document.getElementById('selOptimizeDataset')?.value;
       const st = getColmapState(ds);
       if(st){
-        const cams_list = Array.isArray(st.cameras) ? st.cameras : Object.values(st.cameras || {});
-        renderOptimizeMap(st, cams_list, cams_list.filter(c=>c.calibrated || (c.optimized && c.optimized.lat != null)).length);
+        // Re-render map with ALL cameras
+        const allCamsList = Array.isArray(st.cameras) ? st.cameras : [];
+        renderOptimizeMap(st, allCamsList, allCamsList.filter(c=>c.calibrated || (c.optimized && c.optimized.lat != null)).length);
         renderColmapCameras(st);
       }
     });
@@ -709,7 +768,8 @@ function renderColmapCameras(state){
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const filename = btn.getAttribute('data-filename');
-      showCameraDetail(filename, cams);
+      // Use all cameras for detail lookup, not just paginated list
+      showCameraDetail(filename, allCams);
     });
   });
   wrap.querySelectorAll('.camZoomBtn').forEach(btn => {
@@ -796,6 +856,8 @@ function applyColmapState(dataset, state){
   if(optSel && optSel.value === dataset){
     maybeApplySavedColmapParams(dataset);
     updateOptimizePanel(state);
+    // Load paginated cameras in background (doesn't block rendering)
+    loadColmapCameras(dataset, 0).catch(err => console.error('Failed to load cameras:', err));
   }
 }
 
@@ -944,6 +1006,21 @@ function buildColmapParams(){
   const useGpu = document.getElementById('chkColmapUseGpu');
   if(useGpu){
     params.use_gpu = !!useGpu.checked;
+  }
+  const maxReprojVal = document.getElementById('inpColmapMaxReprojError')?.value;
+  if(maxReprojVal !== undefined && maxReprojVal !== ''){
+    const val = Number(maxReprojVal);
+    if(!Number.isNaN(val)) params.max_reproj_error = val;
+  }
+  const baGlobalIterVal = document.getElementById('inpColmapBaGlobalIter')?.value;
+  if(baGlobalIterVal !== undefined && baGlobalIterVal !== ''){
+    const val = parseInt(baGlobalIterVal, 10);
+    if(!Number.isNaN(val)) params.ba_global_max_iterations = val;
+  }
+  const baLocalIterVal = document.getElementById('inpColmapBaLocalIter')?.value;
+  if(baLocalIterVal !== undefined && baLocalIterVal !== ''){
+    const val = parseInt(baLocalIterVal, 10);
+    if(!Number.isNaN(val)) params.ba_local_max_iterations = val;
   }
   return params;
 }
@@ -1136,8 +1213,15 @@ function onOptimizeDatasetChange(){
   const ds = sel?.value;
   if(!ds){
     updateOptimizePanel(null);
+    colmapCamerasPage = 0;
+    colmapCamerasList = [];
     return;
   }
+  // Reset pagination for new dataset
+  colmapCamerasPage = 0;
+  colmapCamerasList = [];
+  colmapCamerasHasMore = false;
+  
   const cached = getColmapState(ds);
   if(cached){
     updateOptimizePanel(cached);
