@@ -755,6 +755,78 @@ def _load_colmap_meta(dataset: str) -> Dict[str, Any]:
         return {}
 
 
+def _merge_optical_metadata(
+    base_thermal_meta: Dict[str, Any],
+    optimization_project: str,
+) -> Dict[str, Any]:
+    """
+    Merge optical project geometry (rotation, gimbal_yaw, heading, lat, lon)
+    into thermal metadata by matching image names (strip _T/_V suffixes).
+    """
+    logger = logging.getLogger("pvrt.test")
+    merged = dict(base_thermal_meta)
+    
+    optical_meta = _load_colmap_meta(optimization_project)
+    if not optical_meta:
+        logger.warning(f"UI:WARN:test: optimization_project '{optimization_project}' has no colmap_meta.json")
+        return merged
+    
+    def normalize_basename(fname: str) -> str:
+        """Remove _T, _V, -T, -V suffixes from filename"""
+        base = fname.rsplit(".", 1)[0] if "." in fname else fname
+        for suffix in ["_T", "_V", "-T", "-V"]:
+            if base.endswith(suffix):
+                base = base[:-len(suffix)]
+                break
+        return base
+    
+    optical_index = {}
+    for fname, entry in optical_meta.items():
+        if fname.startswith("__") or not isinstance(entry, dict):
+            continue
+        optical_index[normalize_basename(fname)] = entry
+    
+    matched_count = 0
+    total_thermal = sum(1 for k in merged.keys() if not k.startswith("__"))
+    
+    for fname in list(merged.keys()):
+        if fname.startswith("__"):
+            continue
+        norm = normalize_basename(fname)
+        if norm in optical_index:
+            optical_entry = optical_index[norm]
+            thermal_entry = merged[fname]
+            for field in ["rotation", "gimbal_yaw", "heading", "lat", "lon", "latitude", "longitude"]:
+                if field in optical_entry:
+                    thermal_entry[field] = optical_entry[field]
+            matched_count += 1
+    
+    match_pct = (matched_count * 100 // total_thermal) if total_thermal > 0 else 0
+    
+    logger.info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
+    logger.info(f"UI:INFO:test: Optical/Thermal Image Matching Summary:")
+    logger.info(f"UI:INFO:test:   - Thermal images: {total_thermal}")
+    logger.info(f"UI:INFO:test:   - Optical project: {optimization_project}")
+    logger.info(f"UI:INFO:test:   - Matched images: {matched_count}/{total_thermal} ({match_pct}%)")
+    
+    if match_pct < 80:
+        logger.warning(f"UI:WARN:test: Match percentage ({match_pct}%) is below 80% threshold")
+        logger.warning(f"UI:WARN:test: Reverting to standard EXIF metadata (non-accurate poses)")
+        logger.info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
+        raise ValueError(f"Insufficient match rate: only {matched_count}/{total_thermal} images ({match_pct}%) matched. Need ≥80% for optical sync.")
+    
+    logger.info(f"UI:INFO:test: ✓ Using accurate poses from optical project '{optimization_project}'")
+    logger.info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
+    
+    meta_info = merged.setdefault("__meta__", {})
+    if isinstance(meta_info, dict):
+        meta_info["source"] = "thermal_exif+optical_geometry"
+        meta_info["optimization_project"] = optimization_project
+        meta_info["match_percent"] = match_pct
+    
+    return merged
+
+
 def _colmap_ready(dataset: str) -> bool:
     rp = _colmap_ready_path(dataset)
     if not rp.exists():
@@ -3175,6 +3247,7 @@ def _list_datasets() -> list[dict]:
             "name": p.name,
             "count": _count_top_level_images(p),
             "mtime": int(p.stat().st_mtime),
+            "colmap_ready": _colmap_ready(p.name),
         })
     return items
 
@@ -3605,6 +3678,7 @@ async def api_test_run(
     channel_count: int = Form(3),
     accurate_locations: bool = Form(default=False),
     mosaic_enabled: bool = Form(default=False),
+    optimization_project: Optional[str] = Form(default=None),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -3819,6 +3893,14 @@ async def api_test_run(
         camera_meta = _load_colmap_meta(dataset)
         if not camera_meta:
             raise HTTPException(status_code=400, detail="COLMAP metadata missing. Rerun optimization before enabling accurate locations.")
+        
+        img_count = sum(1 for k in camera_meta.keys() if not k.startswith("__"))
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: Using COLMAP Accurate Locations")
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test:   - Dataset: {dataset}")
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test:   - Images with poses: {img_count}")
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
+        
         meta_info = camera_meta.setdefault("__meta__", {})
         if isinstance(meta_info, dict):
             meta_info["source"] = "colmap"
@@ -3835,6 +3917,18 @@ async def api_test_run(
         except Exception as e:
             logger.warning(f"Failed to derive camera metadata from EXIF: {e}")
             camera_meta = {}
+    
+    # Apply optimization_project merge if provided (thermal + optical geometry)
+    if optimization_project and input_type == "images" and camera_meta and not accurate_locations:
+        try:
+            camera_meta = _merge_optical_metadata(camera_meta, optimization_project)
+        except ValueError as e:
+            # Match rate too low - this is expected, just use EXIF
+            logging.getLogger("pvrt.test").warning(f"UI:WARN:test: Optical sync failed: {e}")
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
+        except Exception as e:
+            logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to merge optimization_project metadata: {e}")
+            logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
 
     if camera_meta:
         try:

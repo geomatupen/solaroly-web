@@ -72,12 +72,35 @@
             <label class="switchRow wide">
               <input type="checkbox" id="chkAccurateLocations" />
               <span>
-                Accurate locations (COLMAP)
+                Accurate poses
                 <span id="accurateHint" class="muted tiny hintLine">Requires optimized poses</span>
               </span>
             </label>
             <span id="accurateStatusBadge" class="pill pill-muted">No dataset</span>
             <button id="btnGoOptimize" class="secondary tiny">Optimize…</button>
+          </div>
+
+          <div class="row" id="accurateModeRow" hidden>
+            <div style="margin-left: 2em;">
+              <div style="margin-bottom: 0.5em;">
+                <label>
+                  <input type="radio" name="accurateMode" id="radAccurateColmap" value="colmap" />
+                  <span>Accurate locations (COLMAP)</span>
+                </label>
+              </div>
+              <div>
+                <label>
+                  <input type="radio" name="accurateMode" id="radAccurateOptical" value="optical" />
+                  <span>Use optimization from (thermal/optical sync)</span>
+                </label>
+                <div id="useOptimizationFromRow" hidden style="margin-left: 2em; margin-top: 0.5em;">
+                  <select id="selUseOptimizationFrom" style="width: 100%; max-width: 400px;">
+                    <option value="">-- Select optimized dataset --</option>
+                  </select>
+                  <div class="muted tiny" style="margin-top: 0.25em;">Uses calibrated poses from optical images. Images matched by name (e.g., IMG_001_V.jpg ↔ IMG_001_T.jpg).</div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="row wrap" id="mosaicControls" hidden>

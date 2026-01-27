@@ -46,6 +46,7 @@ let optimizeCameraVisibility = {};  // { filename: true/false }
 
 // runtime caches & UI flags
 let modelsCache = {};                // name -> model metadata returned by /api/models
+let datasetsCache = [];              // cached dataset list with colmap_ready flag
 let userToggledThermalTrain = false; // whether user manually toggled the train thermal checkbox
 let userToggledThermalTest = false;  // whether user manually toggled the test thermal checkbox
 
@@ -577,15 +578,77 @@ function updateAccurateUI(){
   const badge = document.getElementById('accurateStatusBadge');
   const hint = document.getElementById('accurateHint');
   const chk = document.getElementById('chkAccurateLocations');
+  const radColmap = document.getElementById('radAccurateColmap');
+  const radOptical = document.getElementById('radAccurateOptical');
+  const modeRow = document.getElementById('accurateModeRow');
+  const optRow = document.getElementById('useOptimizationFromRow');
+  const optSel = document.getElementById('selUseOptimizationFrom');
   const btn = document.getElementById('btnTest');
   const ready = !!(state && state.ready);
   const jobStatus = state?.job?.status;
+  const wantsAccurate = !!chk?.checked;
+  
+  // Show/hide mode selection
+  if(modeRow){
+    setHidden(modeRow, !wantsAccurate);
+  }
+  
+  // Clear radios when unchecked
+  if(!wantsAccurate){
+    if(radColmap) radColmap.checked = false;
+    if(radOptical) radOptical.checked = false;
+  }
+  
+  const modeColmap = wantsAccurate && !!radColmap?.checked;
+  const modeOptical = wantsAccurate && !!radOptical?.checked;
+  const modeSelected = modeColmap || modeOptical;
+  const opticalProject = (optSel && optSel.value) ? optSel.value : "";
+  const readyProjects = (datasetsCache || []).filter(d => d && d.colmap_ready);
+  
+  // Show/hide optimization dropdown
+  if(optRow){
+    setHidden(optRow, !modeOptical);
+  }
+  
+  // Populate optimization dropdown when optical mode selected
+  if(modeOptical && optSel){
+    const prevVal = optSel.value;
+    optSel.innerHTML = readyProjects.length
+      ? '<option value="">-- Select optimized dataset --</option>'
+      : '<option value="">-- No optimized datasets --</option>';
+    readyProjects.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.name;
+      o.textContent = d.name;
+      optSel.appendChild(o);
+    });
+    if(prevVal && readyProjects.some(d => d.name === prevVal)){
+      optSel.value = prevVal;
+    }
+  }
+  
+  // Disable optical radio if no projects
+  if(radOptical){
+    radOptical.disabled = readyProjects.length === 0;
+    if(radOptical.disabled && radOptical.checked && radColmap){
+      radColmap.checked = true;
+      radOptical.checked = false;
+    }
+  }
 
   if(badge){
     let cls = 'pill pill-muted';
     let text = 'Select dataset';
     if(!ds){
       text = 'No dataset';
+    }else if(wantsAccurate && !modeSelected){
+      cls = 'pill pill-warn'; text = 'Select mode';
+    }else if(modeOptical){
+      if(opticalProject){
+        cls = 'pill pill-ready'; text = 'Optical poses';
+      }else{
+        cls = 'pill pill-warn'; text = 'Select project';
+      }
     }else if(ready){
       cls = 'pill pill-ready'; text = 'Ready';
     }else if(jobStatus === 'running' || jobStatus === 'queued'){
@@ -602,6 +665,10 @@ function updateAccurateUI(){
   if(hint){
     if(!ds){
       hint.textContent = 'Select a dataset';
+    }else if(wantsAccurate && !modeSelected){
+      hint.textContent = 'Choose COLMAP or optical sync';
+    }else if(modeOptical){
+      hint.textContent = opticalProject ? 'Using optical project' : 'Select optimized project';
     }else if(ready){
       hint.textContent = 'Using aligned poses';
     }else if(jobStatus === 'awaiting_finish'){
@@ -614,8 +681,11 @@ function updateAccurateUI(){
   }
 
   if(chk && btn){
-    const wantsAccurate = !!chk.checked;
-    const disable = wantsAccurate && !ready;
+    const disable = wantsAccurate && (
+      !modeSelected ||
+      (modeColmap && !ready) ||
+      (modeOptical && !opticalProject)
+    );
     btn.disabled = disable;
     btn.classList.toggle('disabled', disable);
   }
@@ -623,7 +693,9 @@ function updateAccurateUI(){
   // Update mosaic checkbox visibility: show only if camera_meta exists (rotation will happen)
   const mosaicControls = document.getElementById('mosaicControls');
   if(mosaicControls){
-    const cameraMetaExists = state?.camera_meta && Object.keys(state.camera_meta).length > 0;
+    const cameraMetaExists = wantsAccurate && modeSelected && (
+      modeOptical ? !!opticalProject : (state?.camera_meta && Object.keys(state.camera_meta).length > 0)
+    );
     mosaicControls.hidden = !cameraMetaExists;
   }
 }
@@ -1680,6 +1752,7 @@ async function loadDatasets(){
   const res = await fetch(api.datasets);
   const js = await res.json();
   if(js.ok){
+    datasetsCache = js.datasets || [];
     populateFolders(js.datasets);
     onTestDatasetChange();
     onOptimizeDatasetChange();
@@ -1863,11 +1936,33 @@ async function runTest(){
   }
   const model = getSelectedModel();
   const wantsAccurate = document.getElementById("chkAccurateLocations")?.checked;
+  let accurateMode = null;
+  let optimizationProject = "";
+  
   if(wantsAccurate){
-    const state = getColmapState(ds);
-    if(!state || !state.ready){
-      warn("test","Run Optimize Locations and finish before enabling accurate mode.");
+    if(document.getElementById("radAccurateColmap")?.checked){
+      accurateMode = "colmap";
+    }else if(document.getElementById("radAccurateOptical")?.checked){
+      accurateMode = "optical";
+      optimizationProject = document.getElementById("selUseOptimizationFrom")?.value || "";
+    }
+    
+    if(!accurateMode){
+      warn("test","Choose COLMAP or optical sync for accurate poses.");
       return;
+    }
+    
+    if(accurateMode === "colmap"){
+      const state = getColmapState(ds);
+      if(!state || !state.ready){
+        warn("test","Run Optimize Locations and finish before enabling COLMAP mode.");
+        return;
+      }
+    }else if(accurateMode === "optical"){
+      if(!optimizationProject){
+        warn("test","Select an optimized project for optical sync.");
+        return;
+      }
     }
   }
   // Decide channels based solely on the selected model's metadata.
@@ -1900,7 +1995,8 @@ async function runTest(){
   // only attempt decoding when the selected model declares RGB+thermal input.
   fd.append("result_name", resultName);
   fd.append("test_threshold", testThreshold);
-  if(wantsAccurate) fd.append("accurate_locations", "true");
+  if(accurateMode === "colmap") fd.append("accurate_locations", "true");
+  if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
   const wantsMosaic = document.getElementById("chkMosaicImages")?.checked;
   if(wantsMosaic) fd.append("mosaic_enabled", "true");
   const backend = getSelectedBackend();
@@ -3356,6 +3452,9 @@ function setupUI(){
   if(btnCancelTest) btnCancelTest.addEventListener("click", cancelTest);
   const chkAccurate = document.getElementById('chkAccurateLocations');
   if(chkAccurate){ chkAccurate.addEventListener('change', updateAccurateUI); }
+  document.getElementById('radAccurateColmap')?.addEventListener('change', updateAccurateUI);
+  document.getElementById('radAccurateOptical')?.addEventListener('change', updateAccurateUI);
+  document.getElementById('selUseOptimizationFrom')?.addEventListener('change', updateAccurateUI);
   const btnGoOptimize = document.getElementById('btnGoOptimize');
   if(btnGoOptimize){
     btnGoOptimize.addEventListener('click', (e)=>{
