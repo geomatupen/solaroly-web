@@ -3140,6 +3140,9 @@ def _preds_to_geojson(
 
         rotation_deg = float(heading_deg) if heading_deg is not None else 0.0
 
+        # Images are rotated to north-up before inference, so anomalies don't need rotation
+        rotation_deg = 0.0
+
         # Convert each box using CENTER-based deltas (matches reference notebook)
         cx = w / 2.0
         cy = h / 2.0
@@ -3943,12 +3946,13 @@ async def api_test_run(
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to persist camera metadata: {e}")
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Traceback: {traceback.format_exc()}")
 
-    # ===== PRE-INFERENCE MOSAIC & ROTATION HANDLING =====
-    # If mosaic_enabled and camera_meta exists, rotate images and create mosaic BEFORE inference
-    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Mosaic check - enabled={mosaic_enabled}, input_type={input_type}, camera_meta_count={len(camera_meta) if camera_meta else 0}")
-    if mosaic_enabled and input_type == "images" and camera_meta:
+    # ===== PRE-INFERENCE IMAGE ROTATION & OPTIONAL MOSAIC =====
+    # Always rotate images before inference when working with image datasets (non-orthophoto)
+    # so predictions run on north-up imagery; mosaic builds from rotated images if enabled.
+    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Rotation check - mosaic_enabled={mosaic_enabled}, input_type={input_type}, camera_meta_count={len(camera_meta) if camera_meta else 0}")
+    if input_type == "images" and camera_meta:
         try:
-            logging.getLogger("pvrt.test").info("UI:INFO:test: ✓ Conditions met: Starting mosaic generation...")
+            logging.getLogger("pvrt.test").info("UI:INFO:test: ✓ Conditions met: Starting image rotation...")
             logging.getLogger("pvrt.test").info(f"UI:INFO:test: session_dir={session_dir}, out_root={out_root}")
             
             # Verify camera_meta.json was actually written
@@ -4011,39 +4015,38 @@ async def api_test_run(
             logging.getLogger("pvrt.test").info(f"UI:INFO:test: session_dir after rotation: {session_contents_after}")
             
             if rotated_images_dir.exists() and rotated_files:
-                # Import and call mosaic function
-                sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-                from mosaic_from_colmap import create_mosaic_from_rotated_images
-                
-                mosaic_path = out_root / "mosaic.tif"
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Creating mosaic from {len(rotated_files)} rotated images...")
-                create_mosaic_from_rotated_images(
-                    rotated_images_dir=rotated_images_dir,
-                    out_mosaic_path=mosaic_path,
-                    plane_z=0.0,
-                    resolution=0.1,
-                    camera_meta=camera_meta,  # Pass camera metadata for georeferencing
-                )
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Mosaic created: {mosaic_path}")
-                
-                # Switch to TIF pipeline: tile the mosaic and set input_type to "tif"
-                tiles_dir = out_root / "tiles"
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Tiling mosaic from {mosaic_path} to {tiles_dir}")
-                _tile_tif_to_dir(mosaic_path, tiles_dir, tile_size=1024, stride=1024)
-                run_images_dir = tiles_dir
-                input_type = "tif"
-                tif_src = mosaic_path
-                
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Mosaic tiled; running orthophoto pipeline on {len(list(tiles_dir.glob('*')))} tiles")
+                if mosaic_enabled:
+                    # MOSAIC PATH: Create mosaic from rotated images, then tile it
+                    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+                    from mosaic_from_colmap import create_mosaic_from_rotated_images
+                    mosaic_path = out_root / "mosaic.tif"
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Creating mosaic from {len(rotated_files)} rotated images...")
+                    create_mosaic_from_rotated_images(
+                        rotated_images_dir=rotated_images_dir,
+                        out_mosaic_path=mosaic_path,
+                        plane_z=0.0,
+                        resolution=0.1,
+                        camera_meta=camera_meta,
+                    )
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Mosaic created: {mosaic_path}")
+                    tiles_dir = out_root / "tiles"
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Tiling mosaic from {mosaic_path} to {tiles_dir}")
+                    _tile_tif_to_dir(mosaic_path, tiles_dir, tile_size=1024, stride=1024)
+                    run_images_dir = tiles_dir
+                    input_type = "tif"
+                    tif_src = mosaic_path
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Mosaic tiled; running orthophoto pipeline on {len(list(tiles_dir.glob('*')))} tiles")
+                else:
+                    # PER-IMAGE PATH: Use rotated images for inference
+                    run_images_dir = rotated_images_dir
+                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: ✓ Using rotated images for per-image inference: {run_images_dir}")
             else:
-                logging.getLogger("pvrt.test").warning(f"✗ Mosaic enabled but rotated_images not found or empty; proceeding with per-image pipeline")
+                logging.getLogger("pvrt.test").warning(f"✗ Rotated images not found or empty; proceeding with original images (alignment may be incorrect)")
         except Exception as e:
             import traceback
-            logging.getLogger("pvrt.test").warning(f"✗ Failed to generate mosaic: {e}")
+            logging.getLogger("pvrt.test").warning(f"✗ Failed to generate rotation/mosaic: {e}")
             logging.getLogger("pvrt.test").warning(f"Traceback: {traceback.format_exc()}")
-            # Continue with original input_type (per-image pipeline)
-    elif mosaic_enabled:
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test: Mosaic skipped - input_type={input_type}, camera_meta_count={len(camera_meta) if camera_meta else 0}")
+            # Continue with original input_type (per-image pipeline on original images)
 
     def _do_predict():
         with redirect_std_to_logger():
@@ -4098,8 +4101,23 @@ async def api_test_run(
     for fname, entry in list(manifest_obj.items()):
         if isinstance(entry, dict):
             # add lat/lon if available
+            lat_lon = None
             if fname in gps_index:
-                lat, lon = gps_index[fname]
+                lat_lon = gps_index[fname]
+            else:
+                try:
+                    stem = Path(fname).stem
+                    for k, v in gps_index.items():
+                        try:
+                            if Path(k).stem == stem:
+                                lat_lon = v
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    lat_lon = None
+            if lat_lon:
+                lat, lon = lat_lon
                 entry["lat"] = float(lat)
                 entry["lon"] = float(lon)
             # add w/h if available
@@ -4191,38 +4209,6 @@ async def api_test_run(
             exif_index=exif_from_manifest,
             camera_meta=camera_meta,
         )
-
-        # If camera metadata exists, ensure geojsons are regenerated
-        # using the standalone regeneration script as a fallback to guarantee
-        # rotated `images.geojson` and `anomalies.geojson` are produced.
-        # Skip if mosaic was already created (rotation already done before inference)
-        try:
-            # Only attempt when camera_meta entries exist (user provided refs) AND mosaic wasn't already created
-            if camera_meta and not mosaic_enabled:
-                import subprocess, sys
-                script = PROJECT_ROOT / "scripts" / "regenerate_geojson_from_preds.py"
-                if script.exists():
-                    logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for session={session}")
-                    # Call with session id so the script finds media/sessions/<session>
-                    proc = subprocess.run([sys.executable, str(script), session], capture_output=True, text=True, cwd=str(PROJECT_ROOT))
-                    # Log stdout/stderr lines (SSE)
-                    if proc.stdout:
-                        for ln in proc.stdout.splitlines():
-                            logging.getLogger("pvrt.test").info(ln)
-                    if proc.stderr:
-                        for ln in proc.stderr.splitlines():
-                            logging.getLogger("pvrt.test").warning(ln)
-                    if proc.returncode != 0:
-                        logging.getLogger("pvrt.test").warning(f"Regenerate script returned {proc.returncode}")
-                    else:
-                        logging.getLogger("pvrt.test").info("UI:INFO:test: Regenerate script completed successfully")
-                        # refresh references to the newly-written geojsons and verify they exist
-                        anom_gj = session_dir / "anomalies.geojson"
-                        imgs_gj = session_dir / "images.geojson"
-                        if not anom_gj.exists() or not imgs_gj.exists():
-                            logging.getLogger("pvrt.test").warning("Regenerate script finished but expected geojsons not found")
-        except Exception as e:
-            logging.getLogger("pvrt.test").warning(f"Failed to run regenerate script: {e}")
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):
