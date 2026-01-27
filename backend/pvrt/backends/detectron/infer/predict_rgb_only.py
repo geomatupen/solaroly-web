@@ -51,19 +51,32 @@ def _cfg_like_before():
     cfg.MODEL.MASK_ON = False
     return cfg
 
-def _palette_bgr():
-    return [(0,255,255),(255,0,255),(255,255,0),(0,128,255),(0,255,0),(255,0,0),(128,0,255),(0,0,255)]
-
 def _draw_overlay(bgr, boxes, scores, classes, names):
-    out = bgr.copy()
-    H, W = out.shape[:2]
-    pal = _palette_bgr()
-
-    # thickness scales with image size (but never <2)
-    thickness = max(2, int(round(min(H, W) * 0.003)))
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.45
-    text_thickness = 1
+    from PIL import Image, ImageDraw, ImageFont
+    
+    # Convert BGR to RGB/RGBA for PIL, preserving alpha if present
+    H, W = bgr.shape[:2]
+    has_alpha = (bgr.ndim == 3 and bgr.shape[2] == 4)
+    
+    if has_alpha:
+        # BGRA to RGBA
+        rgba = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGBA)
+        base = Image.fromarray(rgba, mode='RGBA')
+    else:
+        # BGR to RGB
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        base = Image.fromarray(rgb, mode='RGB')
+    
+    draw = ImageDraw.Draw(base)
+    pal_rgb = _palette_rgb()
+    
+    # thickness scales with image size
+    thickness = max(1, int(round(min(H, W) * 0.003)))
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+    
     pad = 4  # label padding inside the pill
 
     for bx, sc, cl in zip(boxes, scores, classes):
@@ -88,56 +101,63 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
         pct = int(round(float(sc) * 100))
         label = f"{name} {pct}%"
 
-        # vivid color per class
-        color = pal[int(cl) % len(pal)] if isinstance(cl, int) else pal[0]
+        # vivid color per class (RGB for PIL)
+        color_rgb = pal_rgb[int(cl) % len(pal_rgb)] if isinstance(cl, int) else pal_rgb[0]
 
-        # draw the detection box
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
+        # draw the detection box outline
+        draw.rectangle([x1, y1, x2, y2], outline=color_rgb, width=thickness)
 
         # compute label box
-        (tw, th), _ = cv2.getTextSize(label, font, font_scale, text_thickness)
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th_txt = 40, 10  # fallback
+        
         pill_w = tw + 2 * pad
-        pill_h = th + 2 * pad
+        pill_h = th_txt + 2 * pad
 
         # default: place above the box; if not enough room, place below
-        top = y1 - pill_h
-        bottom = y1
-        if top < 0:
-            top = y1
-            bottom = y1 + pill_h
-
+        top = y1 - pill_h if (y1 - pill_h) >= 0 else y1
         left = x1
-        right = min(W - 1, x1 + pill_w)
+        
+        # draw colored pill background
+        draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color_rgb)
+        
+        # draw text with black shadow
+        tx, ty = left + pad, top + pad
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
+        draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
 
-        # translucent colored background ("pill")
-        overlay = out.copy()
-        cv2.rectangle(overlay, (left, top), (right, bottom), color, thickness=-1)
-        cv2.addWeighted(overlay, 0.6, out, 0.4, 0.0, out)
-
-        # text position
-        tx = left + pad
-        ty = bottom - pad if top >= y1 else y1 - pad  # account for above/below placement
-
-        # text with black outline for contrast
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                cv2.putText(out, label, (tx + dx, ty + dy), font, font_scale,
-                            (0, 0, 0), text_thickness, lineType=cv2.LINE_AA)
-        cv2.putText(out, label, (tx, ty), font, font_scale,
-                    (255, 255, 255), text_thickness, lineType=cv2.LINE_AA)
-
+    # Convert back to BGR/BGRA, preserving alpha
+    if has_alpha:
+        out = cv2.cvtColor(np.array(base), cv2.COLOR_RGBA2BGRA)
+    else:
+        out = cv2.cvtColor(np.array(base), cv2.COLOR_RGB2BGR)
     return out
+
+def _palette_rgb():
+    """RGB palette (for PIL)"""
+    return [
+        (255, 0, 0),     # red
+        (0, 170, 255),   # cyan
+        (0, 200, 0),     # green
+        (255, 0, 200),   # magenta
+        (255, 165, 0),   # orange
+        (128, 0, 255),   # purple
+        (0, 255, 255),   # yellow
+        (255, 255, 0),   # yellow-green
+    ]
 
 def _draw_overlay_with_masks(bgr, boxes, scores, classes, masks, names):
     out = bgr.copy()
     H, W = out.shape[:2]
-    pal = _palette_bgr()
+    pal_bgr = [(c[2], c[1], c[0]) for c in _palette_rgb()]  # Convert RGB to BGR for mask coloring
     # Draw masks first if present
     if masks:
         for idx, mask in enumerate(masks):
-            color = pal[idx % len(pal)]
+            color = pal_bgr[idx % len(pal_bgr)]
             mask_arr = np.array(mask, dtype=np.uint8)
             if mask_arr.shape != (H, W):
                 mask_arr = cv2.resize(mask_arr, (W, H), interpolation=cv2.INTER_NEAREST)
@@ -211,6 +231,11 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
             log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: 0 detections (read_failed)")
             continue
 
+        # For overlay drawing, try to load image with alpha channel (preserves transparency in PNG files)
+        overlay_base = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+        if overlay_base is None or overlay_base.ndim < 3:
+            overlay_base = bgr  # Fallback to BGR if alpha read fails
+        
         out = predictor(bgr)
         inst = out.get("instances")
         inst = inst.to("cpu") if inst is not None else None
@@ -240,8 +265,8 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
             preds_dir, p.stem, boxes, scores, classes,
             extra={"file": p.name, "masks": masks, "polygons": polygons}
         )
-        overlay = _draw_overlay_with_masks(bgr, boxes, scores, classes, masks, names)
-        save_overlay_png(overlay_dir, p.stem, overlay)   # PNG only, drawn BEFORE save
+        overlay = _draw_overlay_with_masks(overlay_base, boxes, scores, classes, masks, names)
+        save_overlay_png(overlay_dir, p.stem, overlay)   # PNG preserves RGBA/alpha channel
         # save_overlay_jpg(overlay_dir, p.stem, overlay, exif_source=images_dir)
 
         log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")

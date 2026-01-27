@@ -1910,392 +1910,32 @@ async def _run_colmap_job(job: Dict[str, Any]):
         job["finished_at"] = _now_stamp()
         _append_colmap_log(job, f"Error: {exc}")
 
-# ----------------- overlays & geojson -----------------
-# Keep these simple and library-light; they operate on predictor JSON files.
-
-
-
-def _draw_overlays(images_dir: Path, preds_dir: Path, out_root: Path, class_names: List[str]) -> Tuple[Path, Path, Path]:
-    """
-    Produce /overlays (prefer pre-rendered overlays if present) and /thumbs under out_root,
-    plus a manifest JSON mapping original file name -> generated URLs.
-
-    No EXIF reading/writing here. Overlays are PNG for speed.
-    """
-    import logging
-    import numpy as np
-    import cv2
-    from PIL import Image, ImageDraw, ImageFont
-
-    logger   = logging.getLogger("pvrt.test")
-    overlays = out_root / "overlays"; overlays.mkdir(parents=True, exist_ok=True)
-    thumbs   = out_root / "thumbs";   thumbs.mkdir(parents=True, exist_ok=True)
-    manifest = out_root / "manifest.json"
-
-    # Standardize on "overlays/" only. If an older "overlay/" folder exists, it is
-    # not read to avoid duplicate dirs. To use a fallback copy-from, point
-    # colored_src to "overlays".
-    colored_src = overlays
-    use_colored = colored_src.exists() and any(colored_src.glob("*.png"))
-    if use_colored:
-        logger.info(f"UI:INFO:post: using existing overlays from {colored_src}")
-    else:
-        logger.info("UI:INFO:post: no pre-rendered overlays found - drawing from preds JSON")
-
-    # simple, vivid RGB palette
-    def _palette_rgb():
-        return [
-            (255, 0, 0), (0, 170, 255), (0, 200, 0), (255, 0, 200),
-            (255, 165, 0), (128, 0, 255), (0, 255, 255), (255, 255, 0),
-        ]
-
-    def _is_image(p: Path) -> bool:
-        return p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
-
-    def _coerce_pred_json(p: Path) -> dict:
-        try:
-            
-            return json.loads(p.read_text(encoding="utf-8"))
-        except COMMON_EXCEPTIONS:
-            return {"boxes": [], "scores": [], "classes": [], "file": p.stem}
-
-    mapper: Dict[str, Dict[str, str]] = {}
-
-    preds_json_dir = preds_dir / "preds"
-
-    # Read run metrics (best-effort). We use channel count to decide whether
-    # to force-regenerate overlays when a raw thermal TIFF exists for an image.
-    run_channel_count = None
-    try:
-        mpath = Path(preds_dir) / "metrics.json"
-        if mpath.exists():
-            mm = json.loads(mpath.read_text(encoding="utf-8"))
-            run_channel_count = int(mm.get("channel_count") or mm.get("channel", mm.get("input_channels", 0)) or 0)
-    except COMMON_EXCEPTIONS:
-        run_channel_count = None
-
-    def _find_thermal_candidate(p: Path) -> Path | None:
-        """Local helper mirroring predictor logic: return a Path if a thermal
-        candidate exists for `p` (pairs.json, thermal/* naming, sidecars),
-        otherwise None.
-        """
-        try:
-            exts = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
-            tdir = p.parent / "thermal"
-            # pairs.json mapping
-            pjson = tdir / "pairs.json"
-            if pjson.exists():
-                try:
-                    pairs = json.loads(pjson.read_text(encoding="utf-8"))
-                    rel = pairs.get(p.name)
-                    if rel:
-                        cand = (p.parent / rel)
-                        if cand.exists():
-                            return cand
-                except Exception as e:
-                    logger.debug("ignored web.app error: %s", e)
-            # decoder naming
-            for e in exts:
-                cand = tdir / f"{p.stem}_thermal{e}"
-                if cand.exists():
-                    return cand
-                cand2 = tdir / f"{p.stem}{e}"
-                if cand2.exists():
-                    return cand2
-            # sidecar next to image
-            for e in exts:
-                cand = p.with_name(f"{p.stem}_thermal{e}")
-                if cand.exists():
-                    return cand
-            # legacy: also accept common image preview suffixes in addition to TIFF
-            for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
-                cand = p.with_name(f"{p.stem}_thermal{ext}")
-                if cand.exists():
-                    return cand
-        except COMMON_EXCEPTIONS:
-            return None
-        return None
-
-    for img in sorted(images_dir.iterdir()):
-        if not _is_image(img):
-            continue
-
-        stem = img.stem
-        ov   = overlays / f"{stem}.png"
-        th   = thumbs   / f"{stem}.png"
-
-        im_for_thumb = None
-
-        if use_colored and (colored_src / f"{stem}.png").exists():
-            # Already rendered overlay exists — reuse it by default. However,
-            # if this run used a thermal-only source and a raw thermal TIFF
-            # exists for this image, force regeneration so we produce a
-            # thermal-preview overlay instead of reusing any previously-colored PNG.
-            force_regen = False
-            try:
-                # legacy behavior: treat explicit single-channel runs as thermal-only
-                if run_channel_count == 1:
-                    if _find_thermal_candidate(img) is not None:
-                        force_regen = True
-            except Exception:
-                force_regen = False
-
-            if force_regen:
-                logger.info(f"UI:INFO:post: forcing regeneration for {img.name} (thermal-only source and TIFF available)")
-                im_for_thumb = None
-            else:
-                try:
-                    # ensure in-place file exists (we point colored_src==overlays, so this is a no-op)
-                    im_for_thumb = Image.open(colored_src / f"{stem}.png").convert("RGB")
-                except Exception:
-                    im_for_thumb = None
-
-        if im_for_thumb is None:
-            # Draw overlay from JSON preds (fast; no EXIF)
-            pred_json = preds_json_dir / f"{stem}.json"
-            jj = _coerce_pred_json(pred_json) if pred_json.exists() else {
-                "boxes": [], "scores": [], "classes": [], "file": img.name
-            }
-
-            # Choose base image for overlay depending on run channel count:
-            # - if run_channel_count == 3: always use the RGB original (ignore thermal TIFFs)
-            # - if run_channel_count == 1: prefer the decoded thermal TIFF (grayscale preview)
-            # - if run_channel_count == 4: blend thermal (colormapped) onto RGB as the base
-            base = None
-            try:
-                tdir = img.parent / "thermal"
-                tpath = None
-                # Only consider thermal sidecars when the run is NOT an RGB-only run.
-                if run_channel_count is None or run_channel_count != 3:
-                    # 1) pairs.json mapping
-                    pjson = tdir / "pairs.json"
-                    if pjson.exists():
-                        try:
-                            pairs = json.loads(pjson.read_text(encoding="utf-8"))
-                            rel = pairs.get(img.name)
-                            if rel:
-                                cand = (img.parent / rel)
-                                if cand.exists():
-                                    tpath = cand
-                        except Exception:
-                            tpath = None
-                    # 2) decoder naming: {stem}_thermal.*
-                    if tpath is None:
-                        for ext in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
-                            cand = tdir / f"{img.stem}_thermal{ext}"
-                            if cand.exists():
-                                tpath = cand
-                                break
-
-                # If we have a thermal path and the run expects a pure thermal
-                # preview, create a grayscale preview and use that as the base. If the run
-                # expects 4 channels, blend the thermal colormap onto the RGB base.
-                if tpath is not None and tpath.exists():
-                    try:
-                        tdir = tpath.parent
-                        preview = tdir / f"{img.stem}_thermal_preview.png"
-                        if run_channel_count == 1:
-                            # Single-channel run: prefer cached grayscale preview
-                            if preview.exists() and preview.stat().st_mtime >= tpath.stat().st_mtime:
-                                try:
-                                    base = Image.open(preview).convert("RGB")
-                                    logger.info(f"UI:INFO:post: using cached thermal preview {preview} for {img.name}")
-                                except COMMON_EXCEPTIONS:
-                                    base = None
-                            else:
-                                try:
-                                    import tifffile as _tifffile
-                                    arr = _tifffile.imread(str(tpath))
-                                except COMMON_EXCEPTIONS:
-                                    with Image.open(tpath) as _im:
-                                        arr = np.array(_im)
-
-                                if issubclass(getattr(arr, 'dtype').type, np.floating) or getattr(arr, 'dtype').itemsize > 1:
-                                    mn = float(np.nanmin(arr)) if arr.size else 0.0
-                                    mx = float(np.nanmax(arr)) if arr.size else 1.0
-                                    if mx > mn:
-                                        norm = (np.clip(arr, mn, mx) - mn) / (mx - mn)
-                                    else:
-                                        norm = np.zeros_like(arr, dtype=np.float32)
-                                    arr8 = (np.clip(norm * 255.0, 0, 255)).astype(np.uint8)
-                                else:
-                                    arr8 = np.clip(arr, 0, 255).astype(np.uint8)
-
-                                if arr8.ndim == 3:
-                                    try:
-                                        gray = cv2.cvtColor(arr8, cv2.COLOR_BGR2GRAY)
-                                    except COMMON_EXCEPTIONS:
-                                        gray = arr8[..., 0]
-                                else:
-                                    gray = arr8
-
-                                try:
-                                    gray_u8 = gray.astype(np.uint8)
-                                    cv2.imwrite(str(preview), gray_u8)
-                                    base = Image.fromarray(cv2.cvtColor(gray_u8, cv2.COLOR_GRAY2RGB))
-                                    logger.info(f"UI:INFO:post: generated thermal preview {preview} for {img.name}")
-                                except COMMON_EXCEPTIONS:
-                                    try:
-                                        base = Image.fromarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB))
-                                    except COMMON_EXCEPTIONS:
-                                        base = None
-
-                        elif run_channel_count == 4:
-                            # 4-channel run: blend thermal (colormapped) onto RGB
-                            try:
-                                # load RGB original
-                                rgb_base = Image.open(img).convert("RGB")
-                                rgb_arr = np.array(rgb_base)
-                                # load thermal
-                                try:
-                                    import tifffile as _tifffile
-                                    tarr = _tifffile.imread(str(tpath))
-                                except COMMON_EXCEPTIONS:
-                                    with Image.open(tpath) as _tim:
-                                        tarr = np.array(_tim)
-
-                                if issubclass(getattr(tarr, 'dtype').type, np.floating) or getattr(tarr, 'dtype').itemsize > 1:
-                                    mn = float(np.nanmin(tarr)) if tarr.size else 0.0
-                                    mx = float(np.nanmax(tarr)) if tarr.size else 1.0
-                                    if mx > mn:
-                                        tnorm = (np.clip(tarr, mn, mx) - mn) / (mx - mn)
-                                    else:
-                                        tnorm = np.zeros_like(tarr, dtype=np.float32)
-                                    t8 = (np.clip(tnorm * 255.0, 0, 255)).astype(np.uint8)
-                                else:
-                                    t8 = np.clip(tarr, 0, 255).astype(np.uint8)
-
-                                if t8.ndim == 3:
-                                    try:
-                                        tgray = cv2.cvtColor(t8, cv2.COLOR_BGR2GRAY)
-                                    except COMMON_EXCEPTIONS:
-                                        tgray = t8[..., 0]
-                                else:
-                                    tgray = t8
-
-                                # simple inferno-like colormap (reuse helper if available)
-                                lut = _inferno_lut_256()
-                                cmap = lut[tgray]
-                                # ensure same shape as rgb_arr
-                                if cmap.shape[:2] != rgb_arr.shape[:2]:
-                                    cmap = cv2.resize(cmap, (rgb_arr.shape[1], rgb_arr.shape[0]), interpolation=cv2.INTER_LINEAR)
-                                # blend: 60% rgb + 40% thermal colormap
-                                blended = cv2.addWeighted(rgb_arr.astype(np.uint8), 0.6, cmap.astype(np.uint8), 0.4, 0)
-                                base = Image.fromarray(blended)
-                            except COMMON_EXCEPTIONS:
-                                base = None
-
-                    except COMMON_EXCEPTIONS:
-                        base = None
-
-            except COMMON_EXCEPTIONS:
-                base = None
-
-            if base is None:
-                try:
-                    base = Image.open(img).convert("RGB")
-                except Exception:
-                    base = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
-
-            draw = ImageDraw.Draw(base)
-            W, H = base.size
-            pal = _palette_rgb()
-
-            boxes   = jj.get("boxes", []) or []
-            scores  = jj.get("scores", []) or []
-            classes = jj.get("classes", []) or []
-
-            # thickness + font based on image size
-            thickness = max(1, int(round(min(W, H) * 0.003)))
-            try:
-                font = ImageFont.load_default()  # no TTF to keep it fast
-            except COMMON_EXCEPTIONS:
-                font = ImageFont.load_default()
-
-            for i, b in enumerate(boxes):
-                try:
-                    x1, y1, x2, y2 = map(int, b)
-                except COMMON_EXCEPTIONS:
-                    continue
-                if x2 <= x1 or y2 <= y1:
-                    continue
-
-                cls_id = classes[i] if i < len(classes) else 0
-                name   = class_names[cls_id] if 0 <= cls_id < len(class_names) else f"cls_{cls_id}"
-                sc     = float(scores[i]) if i < len(scores) else 0.0
-                label  = f"{name} {int(round(sc * 100))}%"
-
-                color  = pal[cls_id % len(pal)]
-                draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
-
-                # simple label background
-                try:
-                    bbox = draw.textbbox((0, 0), label, font=font)
-                    tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                except COMMON_EXCEPTIONS:
-                    tw, th_txt = draw.textsize(label, font=font)
-                pad = 4
-                pill_w = tw + 2 * pad
-                pill_h = th_txt + 2 * pad
-
-                top = y1 - pill_h if (y1 - pill_h) >= 0 else y1
-                left = x1
-                draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color)
-                tx, ty = left + pad, top + pad
-                # thin black shadow
-                for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
-                    draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
-                draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
-
-            # Save overlay (fast): prefer OpenCV PNG write for speed, fall back to PIL
-            try:
-                try:
-                    arr_out = np.array(base)  # RGB
-                    bgr = cv2.cvtColor(arr_out, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(str(ov), bgr)
-                    logger.info(f"UI:INFO:post: wrote overlay {ov} for {img.name}")
-                except COMMON_EXCEPTIONS:
-                    # fallback to PIL save
-                    base.save(ov, format="PNG", optimize=True)
-                    logger.info(f"UI:INFO:post: wrote overlay (PIL fallback) {ov} for {img.name}")
-            except COMMON_EXCEPTIONS:
-                # final fallback: ensure file exists
-                try:
-                    Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8)).save(ov, format="PNG", optimize=True)
-                except COMMON_EXCEPTIONS as e:
-                    logger.debug("ignored web.app error: %s", e)
-            im_for_thumb = base
-
-        # Thumb from overlay (fast write via OpenCV)
-        try:
-            w, h = im_for_thumb.size
-            tw = max(96, w // 6); thh = max(96, h // 6)
-            im_thumb = im_for_thumb.resize((tw, thh))
-            try:
-                arr_thumb = np.array(im_thumb)  # RGB
-                bgr_thumb = cv2.cvtColor(arr_thumb, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(str(th), bgr_thumb)
-                logger.info(f"UI:INFO:post: wrote thumb {th} for {img.name}")
-            except COMMON_EXCEPTIONS:
-                im_thumb.save(th, format="PNG", optimize=True)
-                logger.info(f"UI:INFO:post: wrote thumb (PIL fallback) {th} for {img.name}")
-        except COMMON_EXCEPTIONS:
-            try:
-                Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(th, format="PNG", optimize=True)
-            except COMMON_EXCEPTIONS as e:
-                logger.debug("ignored web.app error: %s", e)
-        mapper[img.name] = {
-            "overlay": f"/media/{ov.relative_to(MEDIA_DIR).as_posix()}" if str(ov).startswith(str(MEDIA_DIR)) else ov.name,
-            "thumb":   f"/media/{th.relative_to(MEDIA_DIR).as_posix()}" if str(th).startswith(str(MEDIA_DIR)) else th.name,
-        }
-
-    manifest.write_text(json.dumps(mapper, indent=2), encoding="utf-8")
-    return overlays, thumbs, manifest
-
-
+# Overlays are generated during inference and saved directly to overlays/ folder
 
 
 # ---------- Geo helpers: EXIF GPS + input type detection ----------
+
+def _palette_rgb():
+    return [
+        (255, 0, 0), (0, 170, 255), (0, 200, 0), (255, 0, 200),
+        (255, 165, 0), (128, 0, 255), (0, 255, 255), (255, 255, 0),
+    ]
+
+def _is_image(p: Path) -> bool:
+    return p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
+def _coerce_pred_json(p: Path) -> dict:
+    try:
+        
+        return json.loads(p.read_text(encoding="utf-8"))
+    except COMMON_EXCEPTIONS:
+        return {"boxes": [], "scores": [], "classes": [], "file": p.stem}
+
+
+# ---------- Geo helpers: EXIF GPS + input type detection ----------
+
+# Overlays are generated during inference and saved directly to overlays/ folder.
+# This eliminates post-test processing overhead and preserves transparency from rotated images.
 
 # map EXIF tag ids → names once
 _EXIF_GPS_TAG = None
@@ -2903,7 +2543,7 @@ def _preds_to_geojson(
     # 2) Image sizes (w,h) for center-based conversion
     sizes_index = _scan_image_sizes(images_dir)              # {'file.jpg': (w,h)}
 
-    # 3) (optional) overlay/thumb URLs from manifest.json (written by _draw_overlays)
+    # 3) (optional) overlay/thumb URLs from manifest.json (generated during inference)
     manifest_map: Dict[str, Dict[str, str]] = {}
     mpath = out_session / "manifest.json"
     if mpath.exists():
@@ -4071,9 +3711,10 @@ async def api_test_run(
         raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
 
     preds_dir = Path(presp["results_dir"])
+    manifest_path = out_root / "manifest.json"
     class_names = (_read_model_meta(model_dir).get("class_names") or [])
-    # use the run_images_dir (may be rotated copies) when drawing overlays
-    ov_dir, th_dir, manifest_path = _draw_overlays(run_images_dir, preds_dir, out_root, class_names)
+    # Overlays are generated during inference, no post-processing needed
+    logger.info(f"UI:INFO:post: Overlays were generated during inference")
     # gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
     try:
         th_num = float(test_threshold) if str(test_threshold).strip() else 0.0
@@ -4091,11 +3732,51 @@ async def api_test_run(
         gps_index = _scan_exif_latlon(ds_dir)       # {'file.jpg': (lat, lon)}
     sizes_index = _scan_image_sizes(ds_dir)       # {'file.jpg': (w, h)}
 
-    # Load the manifest produced by _draw_overlays and enrich it
+    # Load the manifest produced during inference and enrich it
     try:
         manifest_obj = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
         manifest_obj = {}
+
+    # If manifest is empty, populate it from overlays directory (generated during inference)
+    if not manifest_obj or manifest_obj == {}:
+        overlays_dir = out_root / "overlays"
+        thumbs_dir = out_root / "thumbs"
+        if overlays_dir.exists():
+            for overlay_png in sorted(overlays_dir.glob("*.png")):
+                # Use the overlay stem with common image extensions to find the original image
+                # The overlay filename is based on the rotated image stem
+                # Map to original image by checking camera_meta or common extensions
+                stem = overlay_png.stem
+
+                # Try to find original image with this stem in camera_meta
+                orig_name = None
+                if camera_meta:
+                    # camera_meta keys are original filenames like "DJI_...jpg"
+                    for fname in camera_meta.keys():
+                        if Path(fname).stem == stem:
+                            orig_name = fname
+                            break
+
+                # Fallback: use stem with common image extension
+                if not orig_name:
+                    for ext in [".jpeg", ".jpg", ".png", ".tif", ".tiff"]:
+                        orig_name = f"{stem}{ext}"
+                        # We don't actually verify the file exists here, just use the name
+                        break
+
+                if orig_name:
+                    overlay_url = f"/media/{overlay_png.relative_to(MEDIA_DIR)}"
+                    thumb_path = thumbs_dir / f"{stem}.png"
+                    thumb_url = (
+                        f"/media/{thumb_path.relative_to(MEDIA_DIR)}"
+                        if thumb_path.exists()
+                        else overlay_url
+                    )
+                    manifest_obj[orig_name] = {
+                        "overlay": overlay_url,
+                        "thumb": thumb_url,
+                    }
 
     # manifest_obj is {"orig_filename": {"overlay": "...", "thumb": "..."}, ...}
     for fname, entry in list(manifest_obj.items()):
@@ -4209,6 +3890,9 @@ async def api_test_run(
             exif_index=exif_from_manifest,
             camera_meta=camera_meta,
         )
+        # For images branch, overlays/thumbs are in session dir
+        ov_dir = out_root / "overlays"
+        th_dir = out_root / "thumbs"
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):

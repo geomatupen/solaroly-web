@@ -2080,10 +2080,10 @@ function pairThumbs(assets){
   const out = [];
   for(const ov of overlays){
     const fn = ov.split("/").pop();
-    const rotatedUrl = getRotatedImageUrl(fn) || getRotatedImageUrl(ov);
-    const overlayUrl = rotatedUrl || ov;
-    const thumbUrl = rotatedUrl || mapThumb.get(fn) || overlayUrl;
-    out.push({ file: fn, overlay: overlayUrl, thumb: thumbUrl });
+    // Use overlays as-is (they contain annotations/predictions)
+    // Do not replace with rotated_images (those are for inference only)
+    const thumbUrl = mapThumb.get(fn) || ov;
+    out.push({ file: fn, overlay: ov, thumb: thumbUrl });
   }
   return out;
 }
@@ -2117,19 +2117,9 @@ function getRotatedImageUrl(name){
 }
 
 function preferRotatedOverlays(manifest){
-  if(!Array.isArray(manifest) || !manifest.length) return manifest;
-  const lookup = ensureRotatedLookup();
-  if(!lookup.size) return manifest;
-
-  return manifest.map(item => {
-    const next = { ...item };
-    const rotatedUrl = getRotatedImageUrl(next.overlay) || getRotatedImageUrl(next.file) || getRotatedImageUrl(next.thumb);
-    if(rotatedUrl){
-      next.overlay = rotatedUrl;
-      next.thumb = rotatedUrl;
-    }
-    return next;
-  });
+  // Use overlays as-is (they contain annotations/predictions)
+  // Do not replace with rotated_images (those are for inference only)
+  return manifest;
 }
 function renderResultsGrid(manifest){
   const grid = $("#resultsGrid");
@@ -3010,12 +3000,11 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       const file = f?.properties?.image || f?.properties?.file || f?.properties?.name;
       if (!file) continue;
 
-      // prepared overlay PNG path (server writes PNG overlays now)
+      // Use overlay PNG path (contains annotations/predictions)
+      // Do not use rotated_images (those are for inference only)
       const stem = file.replace(/\.[^.]+$/, '');
-      const rotatedUrl = getRotatedImageUrl(file) || getRotatedImageUrl(`${stem}.png`);
       const defaultOverlay = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
-      const url = rotatedUrl || defaultOverlay;
-      const isRotated = !!rotatedUrl;
+      const url = defaultOverlay;
 
       // If the backend provided true footprint corners, use them (and rotation)
       let bounds = null;
@@ -3059,7 +3048,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
         bounds = L.latLngBounds(sw, ne);
       }
 
-      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null, isRotated });
+      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null });
     }
 
     renderImagesList();

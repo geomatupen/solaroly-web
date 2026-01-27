@@ -179,103 +179,169 @@ def _read_rgb_and_thermal_from_path(p: Path):
 # def _normalize_thermal(arr: np.ndarray) -> np.ndarray:
 #     (replaced by normalize_thermal)
 
-def _palette_bgr():  # high contrast on false-color
-    return [(0,255,255),(255,0,255),(255,255,0),(0,128,255),(0,255,0),(255,0,0),(128,0,255),(0,0,255)]
+def _palette_rgb():
+    """RGB palette (for PIL)"""
+    return [
+        (255, 0, 0),     # red
+        (0, 170, 255),   # cyan
+        (0, 200, 0),     # green
+        (255, 0, 200),   # magenta
+        (255, 165, 0),   # orange
+        (128, 0, 255),   # purple
+        (0, 255, 255),   # yellow
+        (255, 255, 0),   # yellow-green
+    ]
 
 def _falsecolor(th01: np.ndarray) -> np.ndarray:
     th8 = np.clip(th01*255.0,0,255).astype(np.uint8)
     return cv2.applyColorMap(th8, cv2.COLORMAP_JET)
 
 def _draw_overlay_rgbt(bgr: np.ndarray, th01: np.ndarray, boxes, scores, classes, names) -> np.ndarray:
-    base = cv2.addWeighted(bgr, 0.5, _falsecolor(th01), 0.5, 0.0)
-    pal  = _palette_bgr()
-    for bx, sc, cl in zip(boxes, scores, classes):
-        if not bx: continue
-        x1,y1,x2,y2 = map(int, bx)
-        name  = names[cl] if 0 <= cl < len(names) else f"cls_{cl}"
-        label = f"{name} {int(round(float(sc)*100))}%"
-        color = pal[cl % len(pal)]
-        cv2.rectangle(base, (x1,y1), (x2,y2), color, 2)
-        (tw,th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        bx2, by2 = x1+tw+8, y1-th-8
-        if by2 < 0:
-            cv2.rectangle(base, (x1,y1), (bx2,y1+th+8), color, -1)
-            cv2.putText(base, label, (x1+4,y1+th+2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
-        else:
-            cv2.rectangle(base, (x1,y1), (bx2,by2),    color, -1)
-            cv2.putText(base, label, (x1+4,y1-6),      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
-    return base
-
-def _draw_overlay(bgr, boxes, scores, classes, names):
-    out = bgr.copy()
-    H, W = out.shape[:2]
-    pal = _palette_bgr()
-
-    # thickness scales with image size (but never <2)
-    thickness = max(2, int(round(min(H, W) * 0.003)))
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.45
-    text_thickness = 1
-    pad = 4  # label padding inside the pill
-
+    """Draw overlays using PIL for better text rendering (matching deleted _draw_overlays)"""
+    from PIL import Image, ImageDraw, ImageFont
+    
+    # Create blended base image
+    base_bgr = cv2.addWeighted(bgr, 0.5, _falsecolor(th01), 0.5, 0.0)
+    H, W = base_bgr.shape[:2]
+    
+    # Convert to PIL
+    rgb = cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)
+    base = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(base)
+    pal_rgb = _palette_rgb()
+    
+    thickness = max(1, int(round(min(H, W) * 0.003)))
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+    
+    pad = 4
+    
     for bx, sc, cl in zip(boxes, scores, classes):
         if not bx:
             continue
-        x1, y1, x2, y2 = map(int, bx)
-
-        # clamp to image bounds
+        try:
+            x1, y1, x2, y2 = map(int, bx)
+        except (TypeError, ValueError):
+            continue
+        
         x1 = max(0, min(W - 1, x1))
         y1 = max(0, min(H - 1, y1))
         x2 = max(0, min(W - 1, x2))
         y2 = max(0, min(H - 1, y2))
         if x2 <= x1 or y2 <= y1:
             continue
+        
+        name = names[cl] if 0 <= cl < len(names) else f"cls_{cl}"
+        label = f"{name} {int(round(float(sc)*100))}%"
+        color = pal_rgb[cl % len(pal_rgb)]
+        
+        # Draw box outline
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
+        
+        # Compute label box
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th_txt = 40, 10
+        
+        pill_w = tw + 2 * pad
+        pill_h = th_txt + 2 * pad
+        
+        top = y1 - pill_h if (y1 - pill_h) >= 0 else y1
+        left = x1
+        
+        # Draw colored pill
+        draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color)
+        
+        # Draw text with shadow
+        tx, ty = left + pad, top + pad
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
+        draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
+    
+    # Convert back to BGR
+    out = cv2.cvtColor(np.array(base), cv2.COLOR_RGB2BGR)
+    return out
 
-        # label text
+def _draw_overlay(bgr, boxes, scores, classes, names):
+    """Draw overlays on grayscale thermal image using PIL"""
+    from PIL import Image, ImageDraw, ImageFont
+    
+    H, W = bgr.shape[:2]
+    has_alpha = (bgr.ndim == 3 and bgr.shape[2] == 4)
+    
+    # Convert BGR/BGRA to RGB/RGBA for PIL
+    if has_alpha:
+        rgba = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGBA)
+        base = Image.fromarray(rgba, mode='RGBA')
+    else:
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        base = Image.fromarray(rgb, mode='RGB')
+    
+    draw = ImageDraw.Draw(base)
+    pal_rgb = _palette_rgb()
+    
+    thickness = max(1, int(round(min(H, W) * 0.003)))
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+    
+    pad = 4
+    
+    for bx, sc, cl in zip(boxes, scores, classes):
+        if not bx:
+            continue
+        try:
+            x1, y1, x2, y2 = map(int, bx)
+        except (TypeError, ValueError):
+            continue
+        
+        x1 = max(0, min(W - 1, x1))
+        y1 = max(0, min(H - 1, y1))
+        x2 = max(0, min(W - 1, x2))
+        y2 = max(0, min(H - 1, y2))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        
         name = names[cl] if isinstance(cl, int) and 0 <= cl < len(names) else f"cls_{cl}"
         pct = int(round(float(sc) * 100))
         label = f"{name} {pct}%"
-
-        # vivid color per class
-        color = pal[int(cl) % len(pal)] if isinstance(cl, int) else pal[0]
-
-        # draw the detection box
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
-
-        # compute label box
-        (tw, th), _ = cv2.getTextSize(label, font, font_scale, text_thickness)
+        color = pal_rgb[int(cl) % len(pal_rgb)] if isinstance(cl, int) else pal_rgb[0]
+        
+        # Draw box outline
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
+        
+        # Compute label box
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th_txt = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th_txt = 40, 10
+        
         pill_w = tw + 2 * pad
-        pill_h = th + 2 * pad
-
-        # default: place above the box; if not enough room, place below
-        top = y1 - pill_h
-        bottom = y1
-        if top < 0:
-            top = y1
-            bottom = y1 + pill_h
-
+        pill_h = th_txt + 2 * pad
+        
+        top = y1 - pill_h if (y1 - pill_h) >= 0 else y1
         left = x1
-        right = min(W - 1, x1 + pill_w)
-
-        # translucent colored background ("pill")
-        overlay = out.copy()
-        cv2.rectangle(overlay, (left, top), (right, bottom), color, thickness=-1)
-        cv2.addWeighted(overlay, 0.6, out, 0.4, 0.0, out)
-
-        # text position
-        tx = left + pad
-        ty = bottom - pad if top >= y1 else y1 - pad  # account for above/below placement
-
-        # text with black outline for contrast
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                cv2.putText(out, label, (tx + dx, ty + dy), font, font_scale,
-                            (0, 0, 0), text_thickness, lineType=cv2.LINE_AA)
-        cv2.putText(out, label, (tx, ty), font, font_scale,
-                    (255, 255, 255), text_thickness, lineType=cv2.LINE_AA)
-
+        
+        # Draw colored pill
+        draw.rectangle([left, top, left + pill_w, top + pill_h], fill=color)
+        
+        # Draw text with shadow
+        tx, ty = left + pad, top + pad
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            draw.text((tx + dx, ty + dy), label, fill=(0, 0, 0), font=font)
+        draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
+    
+    # Convert back to BGR/BGRA, preserving alpha
+    if has_alpha:
+        out = cv2.cvtColor(np.array(base), cv2.COLOR_RGBA2BGRA)
+    else:
+        out = cv2.cvtColor(np.array(base), cv2.COLOR_RGB2BGR)
     return out
 
 # use core helpers for layout / JSON / PNG save
@@ -400,6 +466,11 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
         # unified reader: GeoTIFF band-4 thermal OR sidecar *_thermal.tif
         bgr, therm = _read_rgb_and_thermal_from_path(p)
 
+        # For overlay drawing, try to load image with alpha channel (preserves transparency in PNG files)
+        overlay_base = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+        if overlay_base is None or overlay_base.ndim < 3:
+            overlay_base = bgr  # Fallback to BGR if alpha read fails
+
     # 4-channel model: require both RGB and thermal. Thermal-only runs
     # are no longer supported; we require both BGR and a thermal
         # source for RGB+Thermal inference.
@@ -513,7 +584,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5, 
             overlay = _draw_overlay(bgr_vis, boxes, scores, classes, names)
         else:
             # color RGB + falsecolor thermal blend for RGB+Thermal runs
-            overlay = _draw_overlay_rgbt(bgr, th, boxes, scores, classes, names)
+            overlay = _draw_overlay_rgbt(overlay_base, th, boxes, scores, classes, names)
         save_overlay_png(overlays_dir, p.stem, overlay)
         log.info(f"UI:INFO:test: [{i}/{n}] {p.name}: {k} detections")
 
