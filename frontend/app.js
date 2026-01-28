@@ -27,6 +27,9 @@ let currentSession = null;
 let styleTarget = null;
 let layerMenuState = { name: null, info: null };
 let testAbort = null;
+let currentManifest = null;            // store current manifest for filtering
+let mapDetectionFilterActive = false;
+let anomaliesFilterActive = false;
 
 const colmapStates = {};
 let colmapPollHandle = null;
@@ -102,6 +105,9 @@ const CAMERA_ZOOM_ICON = '<svg viewBox="0 0 20 20" width="14" height="14" xmlns=
 let TIF_TILE_GROUP = null;   // Leaflet layerGroup that holds the ZXY tile layers
 let TIF_TILE_LAYERS = [];    // underlying L.tileLayer instances
 
+// Pending map bounds to apply when map tab becomes visible
+let pendingMapBounds = null;
+
 function removeTifTiles(){
   if (TIF_TILE_GROUP){
     try { MAP.removeLayer(TIF_TILE_GROUP); } catch(_){ }
@@ -163,6 +169,10 @@ function toggleImageOverlay(id, on){
     if (ov){ try{ imagesLayerGroup.removeLayer(ov); }catch(_){ } }
     rec.on = false;
   }
+
+  if (anomaliesFilterActive){
+    applyAnomaliesFilter();
+  }
 }
 
 // turn ALL images on/off (used by Show all / Hide all buttons)
@@ -172,6 +182,9 @@ function setAllImageOverlays(on){
     const sel = `.imgToggle[data-id="${CSS.escape(rec.id)}"]`;
     const cb = document.querySelector(sel);
     if (cb) cb.checked = on;
+  }
+  if (anomaliesFilterActive){
+    applyAnomaliesFilter();
   }
 }
 
@@ -185,15 +198,96 @@ function renderImagesList(){
     return;
   }
 
-  ul.innerHTML = imageCatalog.map(rec => `
+  const showOnlyDetections = document.getElementById('chkMapShowOnlyDetections')?.checked || false;
+  const filtered = showOnlyDetections 
+    ? imageCatalog.filter(rec => rec.n && rec.n > 0)
+    : imageCatalog;
+
+  ul.innerHTML = filtered.map(rec => `
     <li>
       <label class="chk">
-        <input type="checkbox" class="imgToggle" data-id="${escapeHtml(rec.id)}">
-        <span>${escapeHtml(rec.name)}</span>
+        <input type="checkbox" class="imgToggle" data-id="${escapeHtml(rec.id)}" ${rec.on ? 'checked' : ''}>
+        <span>${escapeHtml(rec.name)}${rec.n ? ` <span style="color:#0a84ff; font-weight:bold;">(${rec.n})</span>` : ''}</span>
       </label>
       <button class="iconDots openImg" data-id="${escapeHtml(rec.id)}" title="Open image">🔍</button>
     </li>
   `).join('');
+}
+
+function applyMapDetectionFilter(){
+  const chk = document.getElementById('chkMapShowOnlyDetections');
+  const on = chk?.checked || false;
+  mapDetectionFilterActive = on;
+
+  if (on){
+    // Only turn OFF non-detection images; keep current states for detected images
+    for (const rec of imageCatalog){
+      if (!(rec.n && rec.n > 0) && rec.on){
+        toggleImageOverlay(rec.id, false);
+      }
+    }
+  }
+
+  renderImagesList();
+}
+
+function applyAnomaliesFilter(){
+  const chk = document.getElementById('chkMapFilterAnomalies');
+  const on = chk?.checked || false;
+  anomaliesFilterActive = on;
+
+  const rec = overlayRegistry["Anomalies"];
+  if (!rec || !rec.data) return;
+
+  const base = rec.style || {
+    color: "#ff5722", weight: 1, opacity: 1,
+    fillColor: "#ff5722", fillOpacity: 0.25
+  };
+
+  // Build list of active image stems
+  const activeStems = new Set(
+    imageCatalog
+      .filter(r => r.on)
+      .map(r => String(r.id).replace(/\.[^.]+$/, ''))
+  );
+
+  const full = rec.data;
+  const filtered = on ? {
+    ...full,
+    features: (full.features || []).filter(f => {
+      const img = f?.properties?.image || f?.properties?.file || f?.properties?.name;
+      if (!img) return false;
+      const stem = String(img).replace(/\.[^.]+$/, '');
+      return activeStems.has(stem);
+    })
+  } : full;
+
+  // Remove existing layer
+  try{ if (rec.layer){ MAP.removeLayer(rec.layer); } }catch(_){ }
+
+  const layer = L.geoJSON(filtered, {
+    style: (f)=> styleForAnomalyFeature(f, base),
+    pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
+    onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
+  }).addTo(MAP);
+
+  overlayRegistry["Anomalies"] = { ...rec, layer };
+  renderLegend();
+}
+
+function updateMapDetectionFilterVisibility(hasTifTiles){
+  const wrap = document.getElementById('mapDetectionsFilter');
+  if (!wrap) return;
+  // Hide filters for orthophoto/tiles pipeline
+  wrap.style.display = hasTifTiles ? 'none' : 'flex';
+}
+
+function updateImageListButtonsVisibility(hasTifTiles){
+  const btnShowAll = document.getElementById('btnShowAllImages');
+  const btnHideAll = document.getElementById('btnHideAllImages');
+  // Hide "Show all" and "Hide all" buttons for orthophoto/tiles pipeline
+  if (btnShowAll) btnShowAll.style.display = hasTifTiles ? 'none' : 'block';
+  if (btnHideAll) btnHideAll.style.display = hasTifTiles ? 'none' : 'block';
 }
 
 
@@ -1731,7 +1825,15 @@ function setupTabs(){
       const id = btn.dataset.tab;
       $$(".tabPanel").forEach(p=>p.classList.remove("active"));
       $(`#${id}`).classList.add("active");
-      if(id === "tab-map" && MAP){ setTimeout(()=>MAP.invalidateSize(), 30); }
+      if(id === "tab-map" && MAP){ 
+        setTimeout(()=>{
+          MAP.invalidateSize();
+          if(pendingMapBounds){
+            MAP.fitBounds(pendingMapBounds.bounds, pendingMapBounds.options);
+            pendingMapBounds = null;
+          }
+        }, 30);
+      }
       if(id === "tab-optimize"){ invalidateOptimizeMap(); }
       if(id === "tab-logs"){
         const pane = $("#logStream");
@@ -1743,7 +1845,15 @@ function setupTabs(){
 function switchToTab(tabId){
   $$(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab === tabId));
   $$(".tabPanel").forEach(p=>p.classList.toggle("active", p.id === tabId));
-  if(tabId === "tab-map" && MAP){ setTimeout(()=>MAP.invalidateSize(), 30); }
+  if(tabId === "tab-map" && MAP){ 
+    setTimeout(()=>{
+      MAP.invalidateSize();
+      if(pendingMapBounds){
+        MAP.fitBounds(pendingMapBounds.bounds, pendingMapBounds.options);
+        pendingMapBounds = null;
+      }
+    }, 30);
+  }
   if(tabId === "tab-optimize"){ invalidateOptimizeMap(); }
 }
 
@@ -2122,32 +2232,47 @@ function preferRotatedOverlays(manifest){
   return manifest;
 }
 function renderResultsGrid(manifest){
+  currentManifest = manifest;  // Store for filter re-rendering
   const grid = $("#resultsGrid");
   grid.innerHTML = "";
-  // console.log(manifest)
-  // console.log(manifest.length)
   
   if(!manifest || !manifest.length){
     grid.innerHTML = `<div class="muted">No overlays generated.</div>`;
-    // return;
   }
 
   manifest = preferRotatedOverlays(manifest);
-  // console.log(manifest)
+  const showOnlyDetections = document.getElementById('chkShowOnlyDetections')?.checked || false;
+  
   manifest.forEach((item, idx)=>{
-    // console.log("inside loop")
     const div = document.createElement("div");
     div.className = "thumb";
+    
+    // Add detection indicator badge if detections exist
+    const detectionBadge = (item.n && item.n > 0) 
+      ? `<div class="detection-badge">${item.n}</div>` 
+      : '';
+    
     div.innerHTML = `
       <img src="${item.thumb}" alt="${item.file}">
       <div class="meta" title="${item.file}">${item.file}</div>
+      ${detectionBadge}
     `;
+    
+    // Hide if filter is on and no detections
+    if (showOnlyDetections && (!item.n || item.n === 0)) {
+      div.classList.add('hidden-by-filter');
+    }
+    
     div.addEventListener("click", ()=>{
       _openLightboxWithGallery(manifest, idx);
     });
     grid.appendChild(div);
   });
+}
 
+function _applyDetectionFilter(){
+  if(!currentManifest) return;
+  renderResultsGrid(currentManifest);
 }
 
 // ---------- map ----------
@@ -2354,48 +2479,6 @@ function rebuildCategoryEditors(prop){
 
 
 
-
-
-// async function applySessionToMap(sessionName){
-//   // always get summary first
-//   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
-//   if(!res.ok){ console.warn('session_summary failed'); return; }
-//   const sum = await res.json();
-
-//   // Build safe fallbacks (in case backend omitted fields)
-//   const sessRoot = `/media/sessions/${encodeURIComponent(sessionName)}/`;
-//   const anomaliesUrl =
-//     sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + "anomalies.geojson");
-//   const imagesUrl =
-//     sum.images_geojson || sum.images || sum.images_gj || (sessRoot + "images.geojson");
-
-//   // 1) anomalies (polygons)
-//   if (anomaliesUrl) {
-//     try {
-//       await loadGeoJSON(anomaliesUrl);
-//     } catch (e) {
-//       console.warn("anomalies_geojson fetch failed:", e);
-//     }
-//   }
-
-//   // 2) images (points -> markers list)
-//   if (imagesUrl) {
-//     try {
-//       const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
-//       installImageMarkers(gj);   // fills imageMarkers[] + adds to imageMarkersLayer
-//     } catch (e) {
-//       console.warn("images_geojson fetch failed:", e);
-//       clearImageMarkers();
-//     }
-//   } else {
-//     clearImageMarkers();
-//   }
-
-//   // 3) update sidebar after layers installed
-//   refreshLayersPanel();
-// }
-
-
 function propsTable(props = {}) {
   const rows = Object.entries(props).map(([k, v]) => {
     const val = (v == null) ? "" : (typeof v === "string" ? v : JSON.stringify(v));
@@ -2476,7 +2559,7 @@ async function loadGeoJSON(url){
 
   overlayRegistry["Anomalies"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Anomalies"]?.categorical || null };
   renderLegend();
-  try{ MAP.fitBounds(layer.getBounds(), {padding:[20,20]}); }catch(_){}
+  // Don't auto-fit bounds here - let applySessionToMap handle it after all layers loaded
 }
 
 
@@ -2773,6 +2856,11 @@ async function applySessionToMap(sessionName){
   const hasTifTiles = !!(tiles?.ok && Array.isArray(tiles.layers) && tiles.layers.length);
 
   if (hasTifTiles){
+    updateMapDetectionFilterVisibility(true);
+    updateImageListButtonsVisibility(true);
+    const chkMapFilterAnomalies = document.getElementById('chkMapFilterAnomalies');
+    if (chkMapFilterAnomalies) chkMapFilterAnomalies.checked = false;
+    anomaliesFilterActive = false;
     const b = createTifTileGroup(tiles.layers);
     TIF_TILE_GROUP  = b.group;
     TIF_TILE_LAYERS = b.layers;
@@ -2785,8 +2873,26 @@ async function applySessionToMap(sessionName){
       try{ MAP.fitBounds(b.firstBounds, { padding:[20,20] }); }catch(_){}
     }
   } else {
+    updateMapDetectionFilterVisibility(false);
+    updateImageListButtonsVisibility(false);
     // Fallback: point markers loaded from images.geojson
     await loadImagesCatalog(sessionName, imagesUrl);
+    // Apply anomalies filter if enabled
+    applyAnomaliesFilter();
+    
+    // Fit to camera locations (image markers) after all layers loaded
+    const bounds = L.latLngBounds([]);
+    
+    try {
+      const imagesRec = overlayRegistry["Image markers"];
+      if (imagesRec?.layer) bounds.extend(imagesRec.layer.getBounds());
+      if (bounds.isValid()) {
+        // Store bounds to apply when map tab becomes visible
+        pendingMapBounds = { bounds, options: {padding:[50,50]} };
+        // Also try to apply now (works if map is already visible)
+        try { MAP.fitBounds(bounds, {padding:[50,50]}); } catch(_){}
+      }
+    } catch(_){}
   }
 
   refreshLayersPanel();
@@ -2965,6 +3071,19 @@ async function loadImagesCatalog(sessionName, imagesUrl){
     lastLoadedSessionName = sessionName;
     lastLoadedImagesUrl = imagesUrl;
 
+    // Build manifest lookup for detection counts
+    const manifestLookup = {};
+    const manifestStemLookup = {};
+    if (lastLoadedSessionSummary?.manifest && Array.isArray(lastLoadedSessionSummary.manifest)){
+      for (const item of lastLoadedSessionSummary.manifest){
+        if (item.file && item.n != null){
+          manifestLookup[item.file] = item.n;
+          const stem = String(item.file).replace(/\.[^.]+$/, '');
+          manifestStemLookup[stem] = item.n;
+        }
+      }
+    }
+
     // Build modified copy of gj where we apply any cameraPositionOverrides
     const modifiedGJ = JSON.parse(JSON.stringify(gj));
     let matched = 0;
@@ -3048,10 +3167,23 @@ async function loadImagesCatalog(sessionName, imagesUrl){
         bounds = L.latLngBounds(sw, ne);
       }
 
-      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null });
+      // Get detection count from manifest
+      const fileStr = String(file);
+      const fileStem = fileStr.replace(/\.[^.]+$/, '');
+      const decoded = (()=>{ try{ return decodeURIComponent(fileStr); }catch(_){ return fileStr; }})();
+      const decodedStem = decoded.replace(/\.[^.]+$/, '');
+      const detectionCount = (
+        manifestLookup[fileStr] ??
+        manifestLookup[decoded] ??
+        manifestStemLookup[fileStem] ??
+        manifestStemLookup[decodedStem] ??
+        0
+      );
+
+      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null, n: detectionCount });
     }
 
-    renderImagesList();
+    applyMapDetectionFilter();
     // update info UI if camera positions present
     const totalOverrides = Object.keys(cameraPositionOverrides).length;
     updateCameraPositionsInfo(matched, totalOverrides);
@@ -3354,15 +3486,23 @@ let _gallery = [];     // array of {src, file}
 let _gIdx = 0;
 let _lightboxOpen = false;
 let _lightboxScale = 1.0;
+let _lightboxPanX = 0;
+let _lightboxPanY = 0;
+let _isDragging = false;
+let _dragStartX = 0;
+let _dragStartY = 0;
+let _dragStartPanX = 0;
+let _dragStartPanY = 0;
 
 function _applyLightboxScale(){
   const img = document.getElementById('lightboxImg');
   if(!img) return;
-  // ensure img displays transforms correctly
-  img.style.transform = `scale(${_lightboxScale})`;
-  img.style.transition = 'transform 120ms ease-out';
+  // apply both scale and pan transformations
+  img.style.transform = `translate(${_lightboxPanX}px, ${_lightboxPanY}px) scale(${_lightboxScale})`;
+  img.style.transition = _isDragging ? 'none' : 'transform 120ms ease-out';
   img.style.display = 'block';
   img.style.maxWidth = 'none';
+  img.style.cursor = _lightboxScale > 1.0 ? 'grab' : 'default';
 }
 
 function _zoomIn(step = 0.15){
@@ -3375,6 +3515,8 @@ function _zoomOut(step = 0.15){
 }
 function _resetZoom(){
   _lightboxScale = 1.0;
+  _lightboxPanX = 0;
+  _lightboxPanY = 0;
   _applyLightboxScale();
 }
 
@@ -3387,6 +3529,12 @@ function _setLightbox(idx){
   if (img) img.src = it.src;
   if (ttl) ttl.textContent = it.file || "";
   if (ctr) ctr.textContent = `${_gIdx + 1} / ${_gallery.length}`;
+
+  // Reset zoom and pan when changing images
+  _lightboxScale = 1.0;
+  _lightboxPanX = 0;
+  _lightboxPanY = 0;
+  _applyLightboxScale();
 
   const prev = document.getElementById("imgPrev");
   const next = document.getElementById("imgNext");
@@ -3439,6 +3587,15 @@ function setupUI(){
   if(btnTest) btnTest.addEventListener("click", runTest);
   const btnCancelTest = $("#btnCancelTest");
   if(btnCancelTest) btnCancelTest.addEventListener("click", cancelTest);
+  
+  // Detection filter toggles
+  const chkShowOnlyDetections = document.getElementById('chkShowOnlyDetections');
+  if(chkShowOnlyDetections){ chkShowOnlyDetections.addEventListener('change', _applyDetectionFilter); }
+  const chkMapShowOnlyDetections = document.getElementById('chkMapShowOnlyDetections');
+  if(chkMapShowOnlyDetections){ chkMapShowOnlyDetections.addEventListener('change', applyMapDetectionFilter); }
+  const chkMapFilterAnomalies = document.getElementById('chkMapFilterAnomalies');
+  if(chkMapFilterAnomalies){ chkMapFilterAnomalies.addEventListener('change', applyAnomaliesFilter); }
+  
   const chkAccurate = document.getElementById('chkAccurateLocations');
   if(chkAccurate){ chkAccurate.addEventListener('change', updateAccurateUI); }
   document.getElementById('radAccurateColmap')?.addEventListener('change', updateAccurateUI);
@@ -3597,6 +3754,36 @@ function setupUI(){
       const delta = Math.sign(ev.deltaY) * -0.075; // wheel up -> zoom in
       if (delta > 0) _zoomIn(delta); else _zoomOut(-delta);
     }, { passive: false });
+
+    // Mouse drag to pan when zoomed
+    lbImg.addEventListener('mousedown', (ev)=>{
+      if (!_lightboxOpen || _lightboxScale <= 1.0) return;
+      ev.preventDefault();
+      _isDragging = true;
+      _dragStartX = ev.clientX;
+      _dragStartY = ev.clientY;
+      _dragStartPanX = _lightboxPanX;
+      _dragStartPanY = _lightboxPanY;
+      lbImg.style.cursor = 'grabbing';
+    });
+
+    document.addEventListener('mousemove', (ev)=>{
+      if (!_isDragging) return;
+      ev.preventDefault();
+      const dx = ev.clientX - _dragStartX;
+      const dy = ev.clientY - _dragStartY;
+      _lightboxPanX = _dragStartPanX + dx;
+      _lightboxPanY = _dragStartPanY + dy;
+      _applyLightboxScale();
+    });
+
+    document.addEventListener('mouseup', ()=>{
+      if (_isDragging) {
+        _isDragging = false;
+        const img = document.getElementById('lightboxImg');
+        if (img) img.style.cursor = _lightboxScale > 1.0 ? 'grab' : 'default';
+      }
+    });
   }
 
   // keyboard: ← - Esc (also allow A/D)

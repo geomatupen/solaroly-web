@@ -3806,6 +3806,19 @@ async def api_test_run(
                 w, h = sizes_index[fname]
                 entry["w"] = int(w)
                 entry["h"] = int(h)
+            
+            # add detection count (n) from predictions
+            try:
+                stem = Path(fname).stem
+                pred_file = preds_dir / "preds" / f"{stem}.json"
+                if pred_file.exists():
+                    pred_data = json.loads(pred_file.read_text(encoding="utf-8"))
+                    boxes = pred_data.get("boxes", [])
+                    entry["n"] = len(boxes)
+                else:
+                    entry["n"] = 0
+            except Exception:
+                entry["n"] = 0
 
     # Write back as the single source of truth
     Path(manifest_path).write_text(json.dumps(manifest_obj, indent=2), encoding="utf-8")
@@ -3899,7 +3912,12 @@ async def api_test_run(
         mp = Path(manifest_path)
         if mp.suffix.lower() == ".json" and mp.exists():
             try:
-                manifest_items = json.loads(mp.read_text(encoding="utf-8"))
+                manifest_obj = json.loads(mp.read_text(encoding="utf-8"))
+                # Convert manifest object to array with file field
+                if isinstance(manifest_obj, dict):
+                    manifest_items = [{"file": fname, **entry} for fname, entry in manifest_obj.items()]
+                else:
+                    manifest_items = manifest_obj
             except Exception:
                 manifest_items = []
         else:
@@ -3974,7 +3992,9 @@ async def api_session_summary(session: str):
     manifest = []
     if manifest_path.exists():
         try:
-            manifest = json.loads(manifest_path.read_text())
+            manifest_obj = json.loads(manifest_path.read_text())
+            # Convert manifest object to array with file field
+            manifest = [{"file": fname, **entry} for fname, entry in manifest_obj.items()]
         except Exception:
             manifest = []
     # collect assets and optional camera_meta.json

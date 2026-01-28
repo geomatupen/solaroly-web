@@ -350,7 +350,13 @@
           </div>
         </div>
         <div id="resultsInfo" class="results-info"></div>
-        <h4 id ="predictionsTitle">Predictions</h4>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+          <h4 id="predictionsTitle" style="margin: 0;">Predictions</h4>
+          <label style="display: flex; align-items: center; gap: 8px; margin: 0;">
+            <input type="checkbox" id="chkShowOnlyDetections" />
+            <span>Show only detected</span>
+          </label>
+        </div>
         <div id="resultsGrid" class="grid"></div>
       </div>
     </section>
@@ -389,6 +395,16 @@
                 <button id="btnShowAllImages" class="iconBtn tiny">Show all</button>
                 <button id="btnHideAllImages" class="iconBtn tiny">Hide all</button>
               </div>
+            </div>
+            <div id="mapDetectionsFilter" style="padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 14px;">
+              <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
+                <input type="checkbox" id="chkMapFilterAnomalies" />
+                <span>Filter anomalies</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
+                <input type="checkbox" id="chkMapShowOnlyDetections" />
+                <span>Show only detected</span>
+              </label>
             </div>
             <div class="listScroll">
               <ul id="imagesList" class="layersList"></ul>
