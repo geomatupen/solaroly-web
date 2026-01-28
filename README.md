@@ -141,7 +141,79 @@ If no errors, the SDK is ready. you can type exit() to exit python cell.
 
 ---
 
-# 8. Run Backend + Frontend
+# 7.5 Install YOLO (Optional - for YOLO backend)
+
+If you plan to use YOLO for object detection instead of Detectron2:
+
+```bash
+pip install ultralytics==8.0.*
+```
+
+Verify installation:
+```python
+python3
+from ultralytics import YOLO
+print(YOLO)
+```
+
+YOLO models will be auto-downloaded on first use, or you can pre-download:
+```bash
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"  # nano model
+```
+
+Available YOLO sizes: `yolov8n` (nano), `yolov8s` (small), `yolov8m` (medium), `yolov8l` (large), `yolov8x` (xlarge)
+
+---
+
+# 7.6 Install Additional Dependencies (Optional Features)
+
+### For GeoTIFF/Mosaic Support
+If you need to create thermal mosaics and GeoTIFF tiling:
+```bash
+pip install rasterio==1.3.*
+```
+
+### For COLMAP Integration (Advanced)
+For camera pose optimization and 3D reconstruction:
+- Install COLMAP from [colmap.github.io](https://colmap.github.io)
+- Or use conda: `conda install -c conda-forge colmap`
+
+---
+
+# 8. Configuration
+
+### Backend & Model Selection
+
+Configuration is managed in `output/config.yaml` or set via the web UI:
+
+```yaml
+backend: "yolo"              # Options: "detectron" or "yolo"
+model_folder: "models/yolo"  # Directory containing model weights
+channel_config: "rgb+thermal" # Options: "rgb", "thermal", "rgb+thermal"
+```
+
+### Datasets Structure
+
+Organize training/validation data:
+```
+data/
+├── train/
+│   ├── images/
+│   │   ├── img1.jpg
+│   │   └── img2.jpg
+│   ├── _annotations.coco.json
+│   └── labels/ (for YOLO format)
+└── valid/
+    ├── images/
+    ├── _annotations.coco.json
+    └── labels/ (for YOLO format)
+```
+
+Thermal images expected at: `data/*/thermal/<stem>_thermal.tif`
+
+---
+
+# 9. Run Backend + Frontend
 
 From the project root:
 
@@ -180,10 +252,159 @@ tail -f fastapi.log
 
 This helps diagnose issues that occur during training, evaluation, or API calls.
 
-Labelme2Coco
+---
+
+# 10. Key Features
+
+## Web Interface
+- **Dataset Management**: Upload and organize drone imagery
+- **Model Training**: Train on COCO-annotated datasets (Detectron2 or YOLO)
+- **Inference/Testing**: Run detection on new images and generate results
+- **Results Viewer**: 
+  - Results tab: View predictions with detection badges and filtering
+  - Map tab: Geo-referenced visualization with anomaly filtering
+  - Lightbox: Pan/zoom image gallery with keyboard navigation
+- **Session Management**: Save, load, and compare inference sessions
+- **GeoJSON Export**: Download detection results as geo-referenced GeoJSON
+
+## Detection Features
+- Real-time detection count badges on image thumbnails
+- Filter images by detection presence ("Show only detected")
+- Filter anomalies by active camera locations
+- Geo-referenced anomaly visualization on map
+
+## Thermal Processing
+- Automatic thermal image rotation based on camera heading
+- Normalized thermal preview generation
+- Single-plane mosaic creation from rotated images (via COLMAP poses)
+- GeoTIFF export with proper georeferencing
+
+## Supported Backends
+- **Detectron2**: Mask R-CNN and other instance segmentation models
+- **YOLO**: YOLOv8 object detection models
+- **Thermal SDK**: DJI Thermal SDK for radiometric processing
+
+---
+
+# 11. Troubleshooting
+
+### YOLO Model Not Found
+If YOLO fails to download models automatically, download manually:
+```bash
+python3 -c "from ultralytics import YOLO; YOLO('yolov8m.pt')"
+```
+
+### Thermal Image Processing Errors
+Verify DJI SDK paths are set:
+```bash
+echo $DIRP_SDK_PATH
+echo $LD_LIBRARY_PATH
+```
+
+Should show paths to the thermal SDK library. If empty, re-activate venv:
+```bash
+source venv/bin/activate
+```
+
+### Map Tab Zoom Issues
+Hard refresh browser: `Ctrl+Shift+R`  
+Camera locations must have valid lat/lon in `camera_meta.json` and `manifest.json`
+
+### Mosaic Generation Failures
+Ensure:
+- `rotated_images/` folder exists in session directory
+- `camera_meta.json` has lat/lon coordinates for all images
+- Rasterio is installed: `pip install rasterio`
+
+---
+
+# 12. Data Preparation Tools
+
+## Converting Labelme Annotations to COCO
+
+Use labelme2coco to convert Labelme JSON annotations to COCO format:
+
+```bash
 pip install labelme2coco
-labelme2coco C:\Users\ROG\Documents\Termatics\solaroly\ortho\images C:\Users\ROG\Documents\Termatics\solaroly\annotations\coco
-- Then find and replace the full path from generated coco json and only remaining should be image_name.jpg
+labelme2coco <annotations_folder> <output_coco_json>
+```
+
+Example:
+```bash
+labelme2coco data/train/labelme annotations/train_coco.json
+```
+
+Then update paths in the generated JSON (remove full paths, keep only filenames):
+```bash
+sed -i 's|/full/path/to/images/||g' annotations/train_coco.json
+```
+
+## Regenerating GeoJSON from Predictions
+
+After inference, regenerate GeoJSON and rotated images:
+
+```bash
+python backend/pvrt/dataops/regenerate_geojson_from_preds.py <session_id> <source_images_dir>
+```
+
+This creates:
+- `media/sessions/<session_id>/rotated_images/` - north-up image copies
+- `media/sessions/<session_id>/images.geojson` - image footprints with lat/lon
+- `media/sessions/<session_id>/anomalies.geojson` - detection boxes as geo-polygons
+
+## Creating Thermal Mosaics
+
+Generate a georeferenced thermal mosaic from rotated images (requires COLMAP poses):
+
+```python
+from backend.pvrt.dataops.mosaic_from_colmap import create_mosaic_from_rotated_images
+from pathlib import Path
+
+create_mosaic_from_rotated_images(
+    rotated_images_dir=Path("media/sessions/session_id/rotated_images"),
+    out_mosaic_path=Path("output/session_id/mosaic.tif"),
+    plane_z=0.0,
+    resolution=0.1,  # meters per pixel
+    camera_meta={...}  # from camera_meta.json
+)
+```
+
+---
+
+# 13. Project Structure
+
+```
+solaroly-web/
+├── backend/
+│   └── pvrt/
+│       ├── web/
+│       │   └── app.py              # FastAPI application
+│       ├── core/
+│       │   ├── registry.py         # Backend registration
+│       │   ├── io.py               # File I/O utilities
+│       │   └── thermal.py          # Thermal processing
+│       ├── dataops/
+│       │   ├── mosaic_from_colmap.py       # Mosaic generation
+│       │   ├── regenerate_geojson_from_preds.py  # GeoJSON generation
+│       │   └── scan_decode_split.py        # Data splitting
+│       ├── backends/
+│       │   ├── detectron/
+│       │   └── yolo/                # YOLO backend
+│       └── config.py
+├── frontend/
+│   ├── app.js                       # Main JavaScript
+│   ├── index.html                   # Web interface
+│   └── styles.css                   # Styling
+├── data/                            # Training/validation datasets
+├── media/sessions/                  # Session outputs
+├── output/                          # Inference results
+├── models/                          # Model weights
+└── third_party/                     # DJI Thermal SDK
+```
+
+---
+
+# 14. Converting Labelme Annotations to COCO
 
 
 https://github.com/mcp?utm_source=vscode-website&utm_campaign=mcp-registry-server-launch-2025 
