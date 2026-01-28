@@ -33,7 +33,7 @@ print(f"\nBefore running script:")
 print(f"  rotated_images exists: {rotated_images_dir.exists()}")
 
 # Run the regenerate script
-script = PROJECT_ROOT / "scripts" / "regenerate_geojson_from_preds.py"
+script = PROJECT_ROOT / "backend" / "pvrt" / "dataops" / "regenerate_geojson_from_preds.py"
 print(f"\nRunning script: {script}")
 print(f"Working directory: {PROJECT_ROOT}")
 

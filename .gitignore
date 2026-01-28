@@ -14,8 +14,6 @@ media/
 .playwright/
 **/__pycache__/
 
-scripts/
-
 # Byte-compiled / optimized / DLL files
 *.py[cod]
 *$py.class

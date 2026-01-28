@@ -3616,7 +3616,7 @@ async def api_test_run(
             # Call regenerate script to create rotated_images from camera_meta
             # Pass source images directory (ds_dir) so script can access original images
             import subprocess, sys, time
-            script = PROJECT_ROOT / "scripts" / "regenerate_geojson_from_preds.py"
+            script = PROJECT_ROOT / "backend" / "pvrt" / "dataops" / "regenerate_geojson_from_preds.py"
             if script.exists():
                 logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for rotation (session={session}, src_images={ds_dir})")
                 
@@ -3657,8 +3657,7 @@ async def api_test_run(
             if rotated_images_dir.exists() and rotated_files:
                 if mosaic_enabled:
                     # MOSAIC PATH: Create mosaic from rotated images, then tile it
-                    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-                    from mosaic_from_colmap import create_mosaic_from_rotated_images
+                    from ..dataops.mosaic_from_colmap import create_mosaic_from_rotated_images
                     mosaic_path = out_root / "mosaic.tif"
                     logging.getLogger("pvrt.test").info(f"UI:INFO:test: Creating mosaic from {len(rotated_files)} rotated images...")
                     create_mosaic_from_rotated_images(
