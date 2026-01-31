@@ -1727,7 +1727,6 @@ function populateModelsInto(list, selSelector){
       // Use compact detectron-style short names for dropdown labels
       const tl = t.toLowerCase();
       if(tl.includes('faster')) return 'fastrcnn';
-      if(tl.includes('mask')) return 'maskrcnn';
       // fallback: remove spaces/underscores and non-alphanumerics for compactness
       return tl.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
     }
@@ -1738,17 +1737,15 @@ function populateModelsInto(list, selSelector){
       const nc = (m.num_classes != null) ? Number(m.num_classes)
                  : (m.model_meta && m.model_meta.num_classes != null) ? Number(m.model_meta.num_classes)
                  : null;
-      const nch = m.channel_count ? `-${m.channel_count}ch` : '';
       const ncs = (nc != null) ? `-${nc}cls` : '';
-      return `${m.model_name}${mt ? `_${mt}` : ''}${nch}${ncs}`;
+      return `${m.model_name}${mt ? `_${mt}` : ''}${ncs}`;
     }
-    // Fallback: construct a compact run-like label: <run>_<backend>_<input_mode>_<nch>
+    // Fallback: construct a compact run-like label: <run>_<backend>_<input_mode>
     const parts = [m.name];
     if (m.backend) parts.push(String(m.backend));
   const mtf = m.model_type ? prettyModelType(m.model_type) : '';
     if (mtf) parts.push(mtf);
     let out = parts.join('_');
-  if (m.channel_count) out = `${out}-${m.channel_count}ch`;
   const nc2 = (m.num_classes != null) ? Number(m.num_classes)
         : (m.model_meta && m.model_meta.num_classes != null) ? Number(m.model_meta.num_classes)
         : null;
@@ -1766,12 +1763,12 @@ function populateModelsInto(list, selSelector){
   });
 
   // If populating the primary model selector (test-run), auto-set the test thermal checkbox
-  // according to the selected model's channel_count unless the user explicitly toggled it.
+  // according to the selected model's thermal_used or thermal_only flags
   if (selSelector === '#selModelFolder'){
     const selected = sel.value || sel.options[0]?.value;
     const m = modelsCache[selected];
     const defaultRequiresThermal = (m && m.channel_count) ? (
-      Number(m.channel_count) === 4 || (Number(m.channel_count) === 3 && (!!(m && m.thermal_only) || !!(m && m.thermal_used)))
+      Number(m.channel_count) === 3 && (!!(m && m.thermal_only) || !!(m && m.thermal_used))
     ) : false;
     const chkTest = document.getElementById('chkUseThermalTest');
     // only override the checkbox if the user hasn't manually toggled it
@@ -1812,7 +1809,7 @@ function getSelectedBackend(){
 function getYoloOptions(){
   return {
     family: $("#selYoloFamily") ? $("#selYoloFamily").value : 'v8',
-    seg: !!($("#chkYoloSeg") && $("#chkYoloSeg").checked)
+
   };
 }
 
@@ -1990,7 +1987,20 @@ async function startTraining(){
   const lr = parseFloat($("#inpLR").value || "0.002");
   const batch = parseInt($("#inpBatch").value || "4", 10);
   const modelName = (document.getElementById("inpModelName")?.value || "").trim() || makeStamp();
-  const modelType = $("#selModelType").value;
+
+  // Check if model name already exists
+  let clearExisting = false;
+  try {
+    const existingModel = modelsCache[modelName];
+    if (existingModel) {
+      const shouldClear = confirm(`A model named "${modelName}" already exists.\n\nDo you want to delete the previous model and start fresh?`);
+      if (!shouldClear) {
+        warn("train", "Training canceled.");
+        return;
+      }
+      clearExisting = true;
+    }
+  } catch (_) { }
 
   setHidden($("#spinTrain"), false);
   setText("#trainStatus","Submitting training job…");
@@ -2001,16 +2011,13 @@ async function startTraining(){
   fd.append("base_lr", String(lr));
   fd.append("ims_per_batch", String(batch));
   fd.append("model_name", String(modelName));
-  fd.append("model_type", modelType);
+  fd.append("clear_existing", clearExisting ? "true" : "false");
   const backend = getSelectedBackend();
   fd.append("backend", backend);
-  // include requested channel count for training so backend can prepare appropriate inputs
-  const channelCount = (document.getElementById('selChannelCountTrain') || { value: '3' }).value;
-  fd.append('channel_count', String(channelCount));
   if(backend === 'yolo'){
     const yo = getYoloOptions();
     fd.append('yolo_family', yo.family);
-    fd.append('yolo_seg', yo.seg ? 'true' : 'false');
+
   }
 
 
@@ -2082,13 +2089,29 @@ async function runTest(){
   const selectedModelName = model;
   const mmeta = selectedModelName ? modelsCache[selectedModelName] : null;
   let modelChannelCount = (mmeta && mmeta.channel_count) ? Number(mmeta.channel_count) : 3;
-  // Map legacy '1' markers to 3 for the UI (we no longer use 1-channel models).
-  if (modelChannelCount === 1) modelChannelCount = 3;
-  // use_thermal true when model expects 4 channels (RGB+thermal) or when a
-  // 3-channel model was prepared as thermal-only (thermal_only flag). Do not
-  // treat '1' specially anymore.
-  const useThermal = (modelChannelCount === 4 || (modelChannelCount === 3 && (!!(mmeta && mmeta.thermal_only) || !!(mmeta && mmeta.thermal_used))));
+  // All models use 3 channels: either 3-channel RGB or 3-channel thermal (decoded)
+  if (modelChannelCount !== 3) modelChannelCount = 3;
+  // use_thermal true when a 3-channel model was trained with thermal
+  // (thermal_only or thermal_used flags set).
+  const useThermal = (modelChannelCount === 3 && (!!(mmeta && mmeta.thermal_only) || !!(mmeta && mmeta.thermal_used)));
   const resultName = (document.getElementById("inpResultName")?.value || "").trim() || makeStamp();
+  
+  // Check if result name already exists
+  let clearExisting = false;
+  try {
+    const existingSessions = Array.from(document.querySelectorAll("#selResults option")).map(o => o.value);
+    const sessionExists = existingSessions.some(s => s.includes(resultName));
+    if (sessionExists) {
+      const shouldClear = confirm(`A result named "${resultName}" already exists.\n\nDo you want to delete the previous result and start fresh?`);
+      if (!shouldClear) {
+        warn("test", "Testing canceled.");
+        setHidden($("#spinTest"), true);
+        return;
+      }
+      clearExisting = true;
+    }
+  } catch (_) { }
+  
   const testThreshold = (document.getElementById("testThreshold")?.value);
 
   setHidden($("#spinTest"), false);
@@ -2104,6 +2127,7 @@ async function runTest(){
   // Note: frontend no longer offers the "extract thermal as RGB" option; backend will
   // only attempt decoding when the selected model declares RGB+thermal input.
   fd.append("result_name", resultName);
+  fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append("test_threshold", testThreshold);
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
@@ -2130,12 +2154,10 @@ async function runTest(){
     try{
       if (js.used_channel_count != null){
         const uc = Number(js.used_channel_count);
-        // If server indicates thermal_only (new behavior), show that explicitly.
-        const thermalOnly = !!js.thermal_only;
-        let msg = `Run used: ${uc}ch`;
-        if (thermalOnly) msg += ' (thermal-only)';
-        else if (uc === 3) msg = 'Run used: 3ch (RGB only)';
-        else if (uc === 4) msg = 'Run used: 4ch (RGB + thermal)';
+        // Show whether thermal or RGB was used
+        let msg = 'Run used: 3ch';
+        if (js.thermal_used || js.final_mode === 'thermal') msg += ' (thermal)';
+        else msg += ' (RGB)';
         ok("test", msg);
       }
     }catch(_){ }
@@ -3665,32 +3687,17 @@ function setupUI(){
     const b = (selBackendTrain && selBackendTrain.value) ? selBackendTrain.value : (selBackendGlobal && selBackendGlobal.value) || 'detectron';
     const show = (b === 'yolo');
     const elOpts = $("#yoloOptions");
-    const elSeg = $("#yoloSegOption");
     const elSize = $("#yoloSizeOption");
     if(elOpts) elOpts.style.display = show ? 'block' : 'none';
-    // The segmentation checkbox is meaningful for Detectron (Mask R-CNN).
-    // Show it only when Detectron is selected; hide it for YOLO.
-    if(elSeg)  elSeg.style.display = (b === 'detectron') ? 'block' : 'none';
     if(elSize) elSize.style.display = show ? 'block' : 'none';
-    // Hide Detectron-only model type selector when YOLO selected
-    const modelTypeRow = document.getElementById('selModelType') ? document.getElementById('selModelType').closest('.row') : null;
-    if(modelTypeRow) modelTypeRow.style.display = show ? 'none' : 'block';
   }
   if(selBackendGlobal) selBackendGlobal.addEventListener('change', _updateYoloUIForTrain);
   if(selBackendTrain) selBackendTrain.addEventListener('change', ()=>{ _updateYoloUIForTrain(); /* no-op for models list on train */ });
   _updateYoloUIForTrain();
 
-  // Show/hide the channel count controls when the user toggles Use thermal band on Train tab
   const chkUseThermalTrain = document.getElementById('chkUseThermalTrain');
-  const trainBandBlock = document.getElementById('trainBandControls');
-  if (chkUseThermalTrain && trainBandBlock){
-    const toggle = ()=>{
-      const show = !!chkUseThermalTrain.checked;
-      trainBandBlock.style.display = show ? 'block' : 'none';
-    };
-    // initialize
-    toggle();
-    chkUseThermalTrain.addEventListener('change', ()=>{ userToggledThermalTrain = true; toggle(); });
+  if (chkUseThermalTrain){
+    chkUseThermalTrain.addEventListener('change', ()=>{ userToggledThermalTrain = true; });
   }
 
   // Test-side: when test-backend changes, reload the models list filtered for that backend
@@ -3710,7 +3717,7 @@ function setupUI(){
       const sel = selModelFolder.value;
       const m = modelsCache[sel];
       const def = (m && m.channel_count) ? (
-        Number(m.channel_count) === 4 || (Number(m.channel_count) === 3 && (!!(m && m.thermal_only) || !!(m && m.thermal_used)))
+        Number(m.channel_count) === 3 && (!!(m && m.thermal_only) || !!(m && m.thermal_used))
       ) : false;
       const chk = document.getElementById('chkUseThermalTest');
       if (chk){ try{ chk.checked = !!def; }catch(_){ } }

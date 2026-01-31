@@ -28,14 +28,14 @@ class TrainConfig:
     ims_per_batch: int
     # optional name to store alongside artifacts
     run_name: str = ""
-    model_type: str = "maskrcnn"
+    model_type: str = "fasterrcnn"
     # YOLO-specific options (optional)
     yolo_family: str = "v8"
     yolo_seg: bool = False
     yolo_size: str = "s"
     # Bands and channel selection: list of band identifiers (e.g. ['rgb','thermal'])
     selected_bands: List[str] = None
-    # requested channel count: 1, 3, or 4
+    # requested channel count: 3 (RGB or thermal as 3-channel)
     channel_count: int = 3
     # augmentation options passed from frontend
     augment_options: TDict[str, Any] = None

@@ -162,13 +162,7 @@
             </select>
           </div>
         
-          <div class="row">
-            <label for="selModelType">Model Type</label>
-            <select id="selModelType">
-              <option value="fasterrcnn">Faster R-CNN</option>
-              <option value="maskrcnn">Mask R-CNN</option>
-            </select>
-          </div>
+
           <div class="formGrid">
           <div class="row" id="yoloOptions" style="display:none;">
             <label for="selYoloFamily">YOLO Family</label>
@@ -188,25 +182,11 @@
               <option value="x">xlarge (x)</option>
             </select>
           </div>
-          <div class="row" id="yoloSegOption" style="display:none;">
-            <label class="switchRow">
-              <input type="checkbox" id="chkYoloSeg" />
-              <span>Use segmentation model (save masks)</span>
-            </label>
-          </div>
           <label class="switchRow">
             <input type="checkbox" id="chkUseThermalTrain" />
             <span>Use thermal band</span>
+            <button type="button" class="infoBtn" title="Decode DJI thermal images and extract the thermal band as 3-channel grayscale for training.">i</button>
           </label>
-          <div class="row" id="trainBandControls" style="display:none;">
-            <div style="flex:1 1 220px;">
-              <label for="selChannelCountTrain">Channel count</label>
-              <select id="selChannelCountTrain">
-                <option value="3">3 (thermal-only, grayscale duplicated to RGB)</option>
-                <option value="4">4 (RGB + thermal)</option>
-              </select>
-            </div>
-          </div>
           <div class="row">
             <label for="inpIters">Iterations</label>
             <input id="inpIters" type="number" value="500" min="1" />

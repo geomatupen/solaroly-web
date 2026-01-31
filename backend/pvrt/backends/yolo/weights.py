@@ -30,4 +30,4 @@ def convert_yolo_checkpoint_single_removed(*_args, **_kwargs):
   convert checkpoints to a single input channel will raise a
   NotImplementedError to make the removal explicit.
   """
-  raise NotImplementedError("Single-channel YOLO checkpoint conversion removed. Use 3ch or 4ch workflows.")
+  raise NotImplementedError("Single-channel YOLO checkpoint conversion removed. Only 3-channel workflows are supported.")

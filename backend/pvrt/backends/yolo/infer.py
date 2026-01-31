@@ -200,11 +200,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         w_md5 = hashlib.md5(Path(model_weights).read_bytes()).hexdigest()[:8] if Path(model_weights).exists() else "missing"
     except (OSError, IOError):
         w_md5 = "n/a"
-    tlog.info(f"UI:OK:test: YOLO predict start | weights={Path(model_weights).name} md5={w_md5} | source={images_dir} | thr={score_thresh} | channels={channel_count}")
-    # If channel_count indicates a thermal-grayscale run (single-channel
-    # encoded as 3-channel RGB), log that information up front so the
-    # mini-log shows whether thermal-as-RGB is being used.
-    if int(channel_count) in (1, 3):
+    tlog.info(f"UI:OK:test: YOLO predict start | weights={Path(model_weights).name} md5={w_md5} | source={images_dir} | thr={score_thresh} | channels=3")
+    if use_thermal:
         tlog.info("UI:INFO:test: Using thermal grayscale images for testing (thermal)")
     # ensure outputs
     run_dir = Path(out_dir)
@@ -214,13 +211,12 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
     source_dir = Path(images_dir)
     temp_prep = None
     # Prepare a temporary folder with merged/synth images when thermal is
-    # requested. Support 4-channel (RGBA/alpha), and 3-channel thermal
-    # runs (thermal grayscale encoded as RGB). YOLO previously only
-    # prepared temp images for channel_count in (1,4) — include 3 here.
-    if use_thermal and channel_count in (1, 3, 4):
+    # requested. Prepare a temporary folder with 3-channel thermal-as-RGB
+    # images when thermal inference is enabled.
+    if use_thermal:
         temp_prep = run_dir / "predict_merged"
         temp_prep.mkdir(parents=True, exist_ok=True)
-        # iterate images and create merged/synth images
+        # iterate images and create 3-channel grayscale images
         for p in sorted(Path(images_dir).iterdir()):
             if not p.is_file():
                 continue
@@ -230,7 +226,6 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             if t is None:
                 # skip images without thermal when thermal required
                 continue
-            img = Image.open(p).convert("RGB")
             # Read thermal and normalize using the canonical normalizer so
             # YOLO and Detectron produce identical uint8 previews.
             try:
@@ -242,74 +237,58 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
                 except Exception:
                     a8 = None
 
-            if channel_count == 4:
-                alpha = Image.fromarray(a8, mode="L")
-                rgba = Image.merge("RGBA", (*img.split(), alpha))
-                out_path = temp_prep / f"{p.stem}.png"
-                rgba.save(out_path)
-            elif channel_count in (1, 3):
-                # create 3-channel grayscale from thermal for both '1' and '3'
-                if a8 is None:
-                    # If normalization/read failed, skip this image rather than
-                    # writing a tiny placeholder which will cause the model to
-                    # receive invalid input and produce no detections.
-                    logging.getLogger("pvrt.test").warning(
-                        f"YOLO preproc: skipping {Path(p).name if p else 'unknown'} because thermal normalization failed"
-                    )
-                    continue
-                gray = Image.fromarray(a8, mode="L")
-                rgb = Image.merge("RGB", (gray, gray, gray))
-                out_path = temp_prep / f"{p.stem}.png"
-                rgb.save(out_path)
+            if a8 is None:
+                logging.getLogger("pvrt.test").warning(
+                    f"YOLO preproc: skipping {Path(p).name if p else 'unknown'} because thermal normalization failed"
+                )
+                continue
+            gray = Image.fromarray(a8, mode="L")
+            rgb = Image.merge("RGB", (gray, gray, gray))
+            out_path = temp_prep / f"{p.stem}.png"
+            rgb.save(out_path)
+
             # Also save the exact uint8 normalized thermal preview into a
             # dedicated folder so temp runs contain a one-to-one grayscale
-            # artifact that matches training previews. This helps parity
-            # comparisons between train and test artifacts.
+            # artifact that matches training previews.
             try:
                 tdir = run_dir / "predict_thermal"
                 tdir.mkdir(parents=True, exist_ok=True)
-                if a8 is not None:
-                    import cv2 as _cv
-                    _cv.imwrite(str(tdir / f"{p.stem}.png"), a8)
-                    # also write a small display-enhanced copy for UI
-                    try:
-                        from ...core.thermal import enhance_preview_for_display
-                        vis_dir = run_dir / "predict_thermal_vis"
-                        vis_dir.mkdir(parents=True, exist_ok=True)
-                        vis_img = enhance_preview_for_display(a8)
-                        _cv.imwrite(str(vis_dir / f"{p.stem}.png"), vis_img)
-                    except Exception:
-                        tlog = logging.getLogger("pvrt.test")
-                        tlog.debug("failed to write predict_thermal_vis for %s", Path(p).name if p else 'unknown')
+                import cv2 as _cv
+                _cv.imwrite(str(tdir / f"{p.stem}.png"), a8)
+                # also write a small display-enhanced copy for UI
+                try:
+                    from ...core.thermal import enhance_preview_for_display
+                    vis_dir = run_dir / "predict_thermal_vis"
+                    vis_dir.mkdir(parents=True, exist_ok=True)
+                    vis_img = enhance_preview_for_display(a8)
+                    _cv.imwrite(str(vis_dir / f"{p.stem}.png"), vis_img)
+                except Exception:
+                    tlog = logging.getLogger("pvrt.test")
+                    tlog.debug("failed to write predict_thermal_vis for %s", Path(p).name if p else 'unknown')
             except Exception:
                 tlog = logging.getLogger("pvrt.test")
                 tlog.debug("failed to write predict_thermal preview for %s", Path(p).name if p else 'unknown')
         source_dir = temp_prep
 
-    # Safety: if the effective model expects 3 channels (no thermal) but
-    # the source tiles/images may contain 4 channels (RGBA or 4-band TIFFs),
-    # convert them to 3-channel RGB in a temporary folder so the Ultralytics
-    # loader doesn't pass 4-channel arrays to a 3-channel model and raise
-    # a channel-mismatch error. This mirrors Detectron's band selection behavior.
-    if channel_count != 4:
-        temp_rgb = run_dir / "predict_rgb"
-        # Only create/convert if it doesn't already exist to avoid rework.
-        if not temp_rgb.exists():
-            from PIL import Image
-            temp_rgb.mkdir(parents=True, exist_ok=True)
-            for p in sorted(source_dir.iterdir()):
-                if not p.is_file():
-                    continue
-                if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}:
-                    continue
-                # PIL's convert("RGB") will drop alpha or expand single-band
-                # images to RGB; it's a pragmatic choice here to ensure the
-                # YOLO model always sees 3-channel inputs when expected.
-                im = Image.open(p)
-                rgb = im.convert("RGB")
-                outp = temp_rgb / f"{p.stem}.png"
-                rgb.save(outp, format="PNG")
-        source_dir = temp_rgb
+    # Ensure all images are converted to 3-channel RGB for YOLO inference
+    temp_rgb = run_dir / "predict_rgb"
+    # Only create/convert if it doesn't already exist to avoid rework.
+    if not temp_rgb.exists():
+        from PIL import Image
+        temp_rgb.mkdir(parents=True, exist_ok=True)
+        for p in sorted(source_dir.iterdir()):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}:
+                continue
+            # PIL's convert("RGB") will drop alpha or expand single-band
+            # images to RGB; it's a pragmatic choice here to ensure the
+            # YOLO model always sees 3-channel inputs when expected.
+            im = Image.open(p)
+            rgb = im.convert("RGB")
+            outp = temp_rgb / f"{p.stem}.png"
+            rgb.save(outp, format="PNG")
+    source_dir = temp_rgb
 
     # Diagnostic logging: report how many images will be fed to the model and
     # a small sample of image sizes. This helps detect cases where the source
@@ -446,12 +425,9 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         alpha = None
         has_rgb = False
 
-        # If the run used thermal-as-RGB (3-channel) or single-channel thermal,
-        # prefer to use the canonical thermal preview as the overlay background
-        # when available. This makes overlays show the original grayscale
-        # thermal image instead of the merged/synth RGB image produced for the
-        # model input.
-        if (channel_count == 1 or (channel_count == 3 and use_thermal)):
+        # If the run used thermal-as-RGB, prefer to use the canonical
+        # thermal preview as the overlay background when available.
+        if use_thermal:
             # attempt to find the original RGB path and its thermal
             rgb_candidate = Path(images_dir) / Path(key).name
             tpath = _find_thermal(rgb_candidate)
@@ -497,17 +473,12 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             # fallback to the predicted image (merged/synth or original)
             if im is None:
                 continue
-            if im.ndim == 3 and im.shape[2] == 4:
-                bgr = im[..., :3]
-                alpha = im[..., 3]
-                has_rgb = True
+            if im.ndim == 2:
+                bgr = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
             else:
-                if im.ndim == 2:
-                    bgr = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
-                else:
-                    bgr = im
-                alpha = None
-                has_rgb = True
+                bgr = im[..., :3]
+            alpha = None
+            has_rgb = True
 
         H, W = bgr.shape[:2]
 
@@ -543,7 +514,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
 
     metrics = {
         "backend": "yolo",
-        "input_mode": "rgbt" if use_thermal else "rgb",
+        "input_mode": "thermal" if use_thermal else "rgb",
         "use_thermal": bool(use_thermal),
         "device": device,
         "score_thresh_test": float(score_thresh),

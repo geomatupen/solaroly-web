@@ -6,7 +6,7 @@ Implements the Backend protocol so the web layer can call YOLO similarly to
 Detectron. Uses the ultralytics.YOLO API to train and run predictions.
 
 This adapter follows the same semantics as the Detectron backend:
-- respects rgb vs rgbt (thermal) when requested and available
+- respects rgb vs thermal-as-RGB when requested and available
 - writes a `model_meta.json` with normalized input_mode and train params
 """
 
@@ -41,33 +41,17 @@ class YOLOBackend(Backend):
         out_dir.mkdir(parents=True, exist_ok=True)
 
         thermal_ok = bool(cfg_in.use_thermal and has_thermal_for_images(train_dir))
-    # Determine requested channel count (caller intent). If thermal is not
-    # available the requested channels are coerced to 3 to avoid confusing
-        # log messages and to ensure the training preproc uses RGB-only lists.
+        # All models are 3-channel: either RGB or thermal (extracted from radiometric data)
         requested_channels = int(getattr(cfg_in, "channel_count", 3))
-        # Single-channel models are not supported; coerce any '1' requests to 3.
-        if requested_channels == 1:
-            log.warning("requested_channels=1 is deprecated; coercing to 3")
-            requested_channels = 3
-        if not thermal_ok and requested_channels != 3:
-            log.warning("requested_channels=%s but thermal_ok=%s; coercing to 3", requested_channels, thermal_ok)
+        # Force to 3 channels
+        if requested_channels != 3:
+            log.info("UI:INFO:train: channel_count adjusted to 3 (only 3-channel models supported)")
             requested_channels = 3
 
-        # Effective channels for training.
-    # If thermal is available and enabled, honor the requested
-    # channel_count when it is 3 (thermal provided as 3-channel grayscale).
-    # If 4 is requested, use RGB+thermal (4). Single-channel models are
-    # not supported; any '1' value was coerced earlier to 3.
-        if thermal_ok and getattr(cfg_in, "use_thermal", False):
-            if requested_channels == 3:
-                effective_channels = 3
-            else:
-                # default/other requests (including explicit 4) -> RGB+thermal
-                effective_channels = 4
-        else:
-            effective_channels = 3
+        # Effective channels for training is always 3
+        effective_channels = 3
 
-        log.info("UI:INFO:train: backend=yolo | effective_channels=%s (requested=%s, thermal_ok=%s)", effective_channels, requested_channels, thermal_ok)
+        log.info("UI:INFO:train: backend=yolo | effective_channels=3 (thermal_ok=%s)", thermal_ok)
         # If thermal is available but the effective channels is 3, thermal
         # will be presented as grayscale encoded into 3 channels for training
         # (thermal-as-RGB).
@@ -98,18 +82,9 @@ class YOLOBackend(Backend):
         # Normalize and write model_meta.json (keep keys compatible with Detectron meta)
         model_name = res.get("model_name", "yolo")
         model_zoo = getattr(cfg_in, "yolo_family", "v8")
-        # append channel suffix to rgbt models
-        # Record the actual effective channel count in the saved meta so
-        # downstream components (predict) interpret the model correctly.
-        ch = int(effective_channels)
-    # Only append a _4ch suffix when the model includes thermal as an
-    # extra channel. Single-channel model names are not created.
-        if ch == 4:
-            model_name = f"{model_name}_4ch"
+        # All models are 3-channel (no channel suffix needed)
         # prepend the run name (if provided) so the UI shows runs similarly to Detectron
         run_prefix = getattr(cfg_in, "run_name", "") or out_dir.name
-        # avoid double underscores when run_prefix is empty
-        prefix_part = f"{run_prefix}_" if run_prefix else ""
 
         # Helper: when ultralytics returns only a weight filename we want to store
         # the path relative to the run folder (e.g. "train_.../model_best.pt") so
@@ -131,16 +106,17 @@ class YOLOBackend(Backend):
 
         meta = {
             "backend": "yolo",
-            "input_mode": "rgbt" if ch == 4 else "rgb",
+            "model_type": f"yolo{model_zoo}{cfg_in.yolo_size}",
+            "input_mode": "thermal" if thermal_ok else "rgb",
             # Record whether this model was trained with thermal data present
             # and enabled. For some runs thermal may be used but the effective
             # channel count is 3 (thermal-as-RGB); this flag preserves that
             # information for correct test-time selection.
             "thermal_used": bool(thermal_ok and getattr(cfg_in, "use_thermal", False)),
             "selected_bands": getattr(cfg_in, "selected_bands", None),
-            "channel_count": ch,
+            "channel_count": 3,
             # model_name includes the training run prefix + base model + zoo
-            "model_name": f"{prefix_part}{model_name}-{model_zoo}",
+            "model_name": run_prefix,
             "model_zoo": model_zoo,
             "num_classes": int(res.get("num_classes", 0)),
             "class_names": res.get("class_names", []),
@@ -183,14 +159,13 @@ class YOLOBackend(Backend):
 
         score_thresh = float(cfg_in.score_thresh) if cfg_in.score_thresh is not None else float(meta.get("score_thresh_test", 0.25))
 
-        # choose rgbt vs rgb based on user request and model capability.
+        # All models use 3 channels. Determine if we use RGB or thermal.
         # Check whether there are decoded thermal files in the images dir.
         has_thermal = bool(has_thermal_for_images(images_dir))
-        # If the model was trained with thermal data but saved as 3-channel
-        # (thermal-as-RGB), prefer decoded thermal when the user requests
-        # thermal inference and the dataset contains thermal files.
+        # If the model was trained with thermal data, prefer decoded thermal when
+        # the user requests thermal inference and the dataset contains thermal files.
         use_thermal = bool(
-            cfg_in.use_thermal and (model_mode == "rgbt" or model_trained_with_thermal) and has_thermal
+            cfg_in.use_thermal and (model_mode == "thermal" or model_trained_with_thermal) and has_thermal
         )
 
         # If the user explicitly requested thermal but no thermal files are
@@ -198,39 +173,21 @@ class YOLOBackend(Backend):
         if cfg_in.use_thermal and not has_thermal:
             log.warning(f"UI:WARN:test: requested thermal but no decoded thermal files found in {images_dir}; falling back to rgb")
 
+        # model's recorded channel_count (if any)
         try:
-            requested = int(getattr(cfg_in, "channel_count", 3))
+            model_chan = int(meta.get("channel_count", 0) or 0)
         except (TypeError, ValueError):
-            requested = 3
+            model_chan = 0
 
-        # Mirror training logic for test-time: if user requested 3-channel
-        # thermal (grayscale-as-RGB), report 3 channels; if requested==1,
-        # treat as 3; otherwise use RGB+thermal (4).
-        if use_thermal:
-            if requested == 1:
-                effective_channels_test = 3
-            elif requested == 3:
-                effective_channels_test = 3
-            else:
-                effective_channels_test = 4
-        else:
-            effective_channels_test = 3
-
-        model_chan = int(meta.get("channel_count", 0) or 0)
-
-        # Clarify what "3-channel" means in logs: rgb vs thermal-as-RGB
-        if effective_channels_test == 4:
-            selected_mode = 'rgbt'
-        elif effective_channels_test == 3:
-            selected_mode = 'thermal' if use_thermal else 'rgb'
-        else:
-            selected_mode = 'rgb'
+        # Always use 3-channel for inference
+        effective_channels_test = 3
+        selected_mode = 'thermal' if use_thermal else 'rgb'
 
         log.info(
-            f"UI:INFO:test: backend=yolo | selected={selected_mode} | model_trained={model_chan or 'unknown'} | requested={requested} | effective_channels={effective_channels_test} | score_thresh={score_thresh:.3f}"
+            f"UI:INFO:test: backend=yolo | selected={selected_mode} | model_trained={model_chan or 'unknown'} | score_thresh={score_thresh:.3f}"
         )
-        if effective_channels_test == 3 and use_thermal:
-            log.info("UI:INFO:test: Thermal grayscale will be used for testing (thermal)")
+        if use_thermal:
+            log.info("UI:INFO:test: Thermal grayscale will be used for testing")
 
         return predict_folder(
             images_dir=images_dir,

@@ -71,16 +71,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     run_dir = out_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # If the caller requested thermal channels (1 or 4) but `use_thermal`
-    # is False (no thermal available / not enabled), coerce to 3-channel
-    # behavior. This prevents creating merged/symlinked train folders that
-    # are empty and ensures the dataset loader only sees 3-channel RGB images
-    # (avoids mixed [3,H,W] and [1,H,W] tensors in a batch).
-    if not use_thermal and requested_channels != 3:
-        log.warning(
-            f"YOLO preproc: requested_channels={requested_channels} but use_thermal=False; forcing requested_channels=3 to avoid mixed-channel batches"
-        )
-        requested_channels = 3
+    # All models use 3-channel training
+    requested_channels = 3
 
     # Attempt to find classes
     class_names = _discover_class_names_from_coco(train_dir)
@@ -101,209 +93,169 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
 
     # NOTE: Do not duplicate/merge the training images into the run folder.
     # The project's datasets live in the provided `train_dir`/`val_dir` and we
-    # should reference them directly. Creating merged copies would produce
-    # duplicate image files and is unnecessary. If dataset normalization or
-    # filtering is required it should be performed in-place or via symlinks.
+    # should reference them directly.
     data_root = train_dir.parent.resolve()
 
-    # If the requested model expects 3 channels, prefer NOT to create any
-    # merged folder: instead generate small train/val list files that point
-    # to the existing RGB images under the provided `train_dir`/`val_dir`.
-    # This avoids duplicating image bytes while guaranteeing that only
-    # RGB-capable files are presented to the trainer (preventing mixed
-    # 1/3-channel batches).
+    # For 3-channel training, generate train/val list files that point
+    # to the existing RGB or thermal images.
     list_train = None
     list_val = None
     train_rel = None
     val_rel = None
-    if requested_channels == 3:
-        # If thermal is requested for a 3-channel run, prefer to prepare
-        # a merged thermal-as-RGB dataset so training sees grayscale
-        # thermal images encoded as RGB. Otherwise fall back to RGB-only lists.
-        if use_thermal:
-            # Option B behavior: never write a merged_thermal_3ch folder.
-            # Instead, prefer to reference existing decoded thermal previews
-            # under <train_dir>/thermal (or sibling _thermal files). Build
-            # train/val lists that point directly to those preview files.
-            def _load_pairs_json(images_dir: Path):
-                pj = images_dir / "thermal" / "pairs.json"
-                if pj.exists():
-                    try:
-                        j = json.loads(pj.read_text(encoding="utf-8"))
-                        return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
-                    except Exception:
-                        return {}
-                return {}
 
-            def find_thermal_for_src(src: Path, images_dir: Path):
-                # Respect pairs.json mapping if present
-                pairs = _load_pairs_json(images_dir)
-                if src.name in pairs:
-                    cand = Path(pairs[src.name])
-                    if cand.is_absolute():
+    # If thermal is requested for a 3-channel run, prepare merged thermal-as-RGB
+    if use_thermal:
+        # Prepare symlinked dataset with thermal-as-RGB images
+        def _load_pairs_json(images_dir: Path):
+            pj = images_dir / "thermal" / "pairs.json"
+            if pj.exists():
+                try:
+                    j = json.loads(pj.read_text(encoding="utf-8"))
+                    return {str(k): str(v) for k, v in j.items()} if isinstance(j, dict) else {}
+                except Exception:
+                    return {}
+            return {}
+
+        def find_thermal_for_src(src: Path, images_dir: Path):
+            # Respect pairs.json mapping if present
+            pairs = _load_pairs_json(images_dir)
+            if src.name in pairs:
+                cand = Path(pairs[src.name])
+                if cand.is_absolute():
+                    if cand.exists():
+                        return cand
+                else:
+                    pc = images_dir / cand
+                    if pc.exists():
+                        return pc
+
+            # Look in common thermal subdirs
+            THERMAL_DIR_NAMES = ("thermal", "ir", "t", "temp")
+            THERMAL_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+            for dname in THERMAL_DIR_NAMES:
+                tdir = images_dir / dname
+                if tdir.exists():
+                    for ext in THERMAL_EXTS:
+                        cand = tdir / f"{src.stem}{ext}"
                         if cand.exists():
                             return cand
-                    else:
-                        pc = images_dir / cand
-                        if pc.exists():
-                            return pc
+                        cand2 = tdir / f"{src.stem}_thermal{ext}"
+                        if cand2.exists():
+                            return cand2
 
-                # Look in common thermal subdirs (match Detectron's behavior)
-                THERMAL_DIR_NAMES = ("thermal", "ir", "t", "temp")
-                THERMAL_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
-                for dname in THERMAL_DIR_NAMES:
-                    tdir = images_dir / dname
-                    if tdir.exists():
-                        for ext in THERMAL_EXTS:
-                            cand = tdir / f"{src.stem}{ext}"
-                            if cand.exists():
-                                return cand
-                            cand2 = tdir / f"{src.stem}_thermal{ext}"
-                            if cand2.exists():
-                                return cand2
+            # Fallback: check sibling files next to the RGB image
+            for ext in THERMAL_EXTS:
+                cand = images_dir / f"{src.stem}{ext}"
+                if cand.exists():
+                    return cand
+                cand2 = images_dir / f"{src.stem}_thermal{ext}"
+                if cand2.exists():
+                    return cand2
 
-                # Fallback: check sibling/sidecar files next to the RGB image
-                for ext in THERMAL_EXTS:
-                    cand = images_dir / f"{src.stem}{ext}"
-                    if cand.exists():
-                        return cand
-                    cand2 = images_dir / f"{src.stem}_thermal{ext}"
-                    if cand2.exists():
-                        return cand2
+            # Final fallback: adjacent file named <stem>_thermal.ext next to src
+            for ext in THERMAL_EXTS:
+                cand = src.with_name(f"{src.stem}_thermal{ext}")
+                if cand.exists():
+                    return cand
+            return None
 
-                # final fallback: adjacent file named <stem>_thermal.ext next to src
-                for ext in THERMAL_EXTS:
-                    cand = src.with_name(f"{src.stem}_thermal{ext}")
-                    if cand.exists():
-                        return cand
-                return None
+        def collect_thermal_as_rgb(folder: Path):
+            out = []
+            missing = 0
+            for p in sorted(folder.rglob("*")):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
+                    continue
+                t = find_thermal_for_src(p, folder)
+                if t and t.exists():
+                    out.append(str(t.resolve()))
+                else:
+                    missing += 1
+                    log.getLogger("pvrt").warning(f"YOLO preproc: no decoded thermal preview for {p.name}; skipping")
+            return out, missing
 
-            def collect_thermal_as_rgb(folder: Path):
-                out = []
-                missing = 0
-                for p in sorted(folder.rglob("*")):
+        train_paths, train_missing = collect_thermal_as_rgb(train_dir)
+        val_paths, val_missing = collect_thermal_as_rgb(val_dir)
+
+        if train_paths or val_paths:
+            # Create a per-run images folder with symlinks named as the
+            # original RGB filenames but pointing to the decoded thermal previews
+            def _prepare_symlink_tree(src_root: Path, dst_root: Path):
+                dst_root.mkdir(parents=True, exist_ok=True)
+                for p in sorted(src_root.rglob("*")):
                     if not p.is_file():
                         continue
                     if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
                         continue
-                    t = find_thermal_for_src(p, folder)
+                    t = find_thermal_for_src(p, src_root)
                     if t and t.exists():
-                        out.append(str(t.resolve()))
-                    else:
-                        missing += 1
-                        # do not write files: skip images without previews
-                        log.getLogger("pvrt.test").warning(f"UI:WARN:train: no decoded thermal preview for {p.name}; skipping")
-                return out, missing
-
-            train_paths, train_missing = collect_thermal_as_rgb(train_dir)
-            val_paths, val_missing = collect_thermal_as_rgb(val_dir)
-
-            if train_paths or val_paths:
-                # Create a per-run images folder with symlinks named as the
-                # original RGB filenames but pointing to the decoded thermal
-                # previews. Also symlink corresponding label .txt files when
-                # present next to the original RGB images so Ultralytics can
-                # find labels by basename. This approach avoids duplicating
-                # image bytes while ensuring labels align with image names.
-                def _prepare_symlink_tree(src_root: Path, dst_root: Path):
-                    dst_root.mkdir(parents=True, exist_ok=True)
-                    for p in sorted(src_root.rglob("*")):
-                        if not p.is_file():
-                            continue
-                        if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
-                            continue
-                        t = find_thermal_for_src(p, src_root)
-                        if t and t.exists():
-                            dst_img = dst_root / p.name
+                        dst_img = dst_root / p.name
+                        try:
+                            if dst_img.exists():
+                                dst_img.unlink()
+                            dst_img.symlink_to(t.resolve())
+                        except Exception:
+                            # fallback to copying if symlink fails
                             try:
-                                if dst_img.exists():
-                                    dst_img.unlink()
-                                # create a relative symlink when possible
-                                dst_img.symlink_to(t.resolve())
+                                from shutil import copy2
+                                copy2(str(t.resolve()), str(dst_img))
                             except Exception:
-                                # fallback to copying if symlink fails
+                                log.debug(f"YOLO preproc: failed to link or copy {t} -> {dst_img}")
+                        # also link labels if found next to original RGB
+                        label_src = p.with_suffix('.txt')
+                        if label_src.exists():
+                            dst_lbl = dst_root / label_src.name
+                            try:
+                                if dst_lbl.exists():
+                                    dst_lbl.unlink()
+                                dst_lbl.symlink_to(label_src.resolve())
+                            except Exception:
                                 try:
                                     from shutil import copy2
-                                    copy2(str(t.resolve()), str(dst_img))
+                                    copy2(str(label_src.resolve()), str(dst_lbl))
                                 except Exception:
-                                    log.debug(f"YOLO preproc: failed to link or copy {t} -> {dst_img}")
-                            # also link labels if found next to original RGB
-                            # check common label extensions/naming (YOLO .txt)
-                            label_src = p.with_suffix('.txt')
-                            if label_src.exists():
-                                dst_lbl = dst_root / label_src.name
-                                try:
-                                    if dst_lbl.exists():
-                                        dst_lbl.unlink()
-                                    dst_lbl.symlink_to(label_src.resolve())
-                                except Exception:
-                                    try:
-                                        from shutil import copy2
-                                        copy2(str(label_src.resolve()), str(dst_lbl))
-                                    except Exception:
-                                        log.debug(f"YOLO preproc: failed to link or copy label {label_src} -> {dst_lbl}")
+                                    log.debug(f"YOLO preproc: failed to link or copy label {label_src} -> {dst_lbl}")
 
-                train_dst = run_dir / "images_train"
-                val_dst = run_dir / "images_val"
-                _prepare_symlink_tree(train_dir, train_dst)
-                _prepare_symlink_tree(val_dir, val_dst)
+            train_dst = run_dir / "images_train"
+            val_dst = run_dir / "images_val"
+            _prepare_symlink_tree(train_dir, train_dst)
+            _prepare_symlink_tree(val_dir, val_dst)
 
-                # Point ultralytics data.yaml to the per-run folders we created
-                list_train = None
-                list_val = None
-                data_root = run_dir
-                # use relative folder names so data.yaml resolves under data_root
-                train_rel = str(train_dst.relative_to(run_dir))
-                val_rel = str(val_dst.relative_to(run_dir))
-                log.info(f"YOLO preproc: prepared symlinked thermal-as-RGB dataset ({train_rel}, {val_rel}); skipped {train_missing}+{val_missing} missing previews")
-            else:
-                # No thermal previews were found; fall back to RGB-only lists to
-                # ensure training can still proceed rather than failing hard.
-                log.info("YOLO preproc: no decoded thermal previews found; falling back to RGB-only lists")
-        if not list_train:
-            def collect_rgb_only(folder: Path):
-                out = []
-                for p in sorted(folder.rglob("*")):
-                    if not p.is_file():
-                        continue
-                    if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
-                        continue
-                    with Image.open(p) as im:
-                        bands = im.getbands()
-                        if not bands or len(bands) == 1:
-                            continue
-                        out.append(str(p.resolve()))
-                return out
-
-            train_list = collect_rgb_only(train_dir)
-            val_list = collect_rgb_only(val_dir)
-            # write list files into run_dir (small text files)
-            list_train = run_dir / "train_images.txt"
-            list_val = run_dir / "val_images.txt"
-            list_train.write_text("\n".join(train_list), encoding="utf-8")
-            list_val.write_text("\n".join(val_list), encoding="utf-8")
+            # Point ultralytics data.yaml to the per-run folders
             data_root = run_dir
-            log.info(f"YOLO preproc: wrote RGB-only train/val lists ({len(train_list)}/{len(val_list)})")
-    else:
-        # For non-3-channel runs (thermal-based training) we still need to
-        # prepare per-run inputs. Use the symlinked merged tree to avoid
-        # duplicating bytes while presenting a consistent dataset to the
-        # trainer.
-        from .preproc import merge_rgb_with_thermal
-        merged_root = run_dir / "merged"
-        merged_root.mkdir(parents=True, exist_ok=True)
-        tcount = merge_rgb_with_thermal(train_dir, merged_root / "train", requested_channels=requested_channels, use_thermal=use_thermal, symlink=True)
-        vcount = merge_rgb_with_thermal(val_dir, merged_root / "valid", requested_channels=requested_channels, use_thermal=use_thermal, symlink=True)
-        if (tcount or vcount):
-            data_root = merged_root
-            log.info(f"YOLO preproc (symlink): prepared dataset: train={tcount}, valid={vcount}; using {merged_root}")
-            if requested_channels == 4 and use_thermal:
-                logging.getLogger("pvrt.test").warning(
-                    "WARN:train: YOLO merged RGBA created for 4-channel training. "
-                    "Ultralytics may ignore alpha by default — ensure a custom loader reads the 4th channel."
-                )
+            train_rel = str(train_dst.relative_to(run_dir))
+            val_rel = str(val_dst.relative_to(run_dir))
+            log.info(f"YOLO preproc: prepared symlinked thermal-as-RGB dataset ({train_rel}, {val_rel}); skipped {train_missing}+{val_missing} missing previews")
         else:
-            log.debug(f"YOLO preproc (symlink) produced no outputs; using original data root {data_root}")
+            # No thermal previews found; fall back to RGB-only lists
+            log.info("YOLO preproc: no decoded thermal previews found; falling back to RGB-only lists")
+
+    # If not using thermal or thermal symlinks, create RGB-only lists
+    if not train_rel:
+        def collect_rgb_only(folder: Path):
+            out = []
+            for p in sorted(folder.rglob("*")):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
+                    continue
+                with Image.open(p) as im:
+                    bands = im.getbands()
+                    if not bands or len(bands) == 1:
+                        continue
+                    out.append(str(p.resolve()))
+            return out
+
+        train_list = collect_rgb_only(train_dir)
+        val_list = collect_rgb_only(val_dir)
+        # write list files into run_dir
+        list_train = run_dir / "train_images.txt"
+        list_val = run_dir / "val_images.txt"
+        list_train.write_text("\n".join(train_list), encoding="utf-8")
+        list_val.write_text("\n".join(val_list), encoding="utf-8")
+        data_root = run_dir
+        log.info(f"YOLO preproc: wrote RGB-only train/val lists ({len(train_list)}/{len(val_list)})")
 
     # Create a temporary data.yaml compatible with ultralytics
     data_yaml = {

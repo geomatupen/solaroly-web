@@ -181,13 +181,16 @@ def _list_models() -> List[str]:
                 models.append({
                     "name": d.name,
                     "mtime": int(d.stat().st_mtime),
-                    # prefer explicit model_name from meta (may include _4ch suffix),
+                    # prefer explicit model_name from meta if available,
                     # but keep 'name' as the run folder for lookups
                     "model_name": meta.get("model_name") or None,
+                    "model_type": meta.get("model_type") or None,
                     "input_mode": meta.get("input_mode", "rgb"),
                     "channel_count": meta.get("channel_count"),
                     "backend": meta.get("backend", "detectron")
                 })
+    # Sort by mtime descending (newest first)
+    models.sort(key=lambda m: m["mtime"], reverse=True)
     return models
 
 def _unique_dataset_dir(base_name: str) -> Path:
@@ -3009,9 +3012,20 @@ async def api_train(
     yolo_size: str = Form("s"),
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
+    clear_existing: bool = Form(False),
 ):
     safe_name = _safe_name(model_name) or _now_stamp()
     run_dir = OUTPUTS / safe_name
+    
+    # Clear existing directory if requested
+    if clear_existing and run_dir.exists():
+        import shutil
+        try:
+            shutil.rmtree(run_dir)
+            logger.info(f"[train] Cleared existing run directory: {run_dir.name}")
+        except Exception as e:
+            logger.warning(f"[train] Failed to clear existing directory: {e}")
+    
     run_dir.mkdir(parents=True, exist_ok=True)
 
     CANCEL_FLAGS["train"] = False
@@ -3322,6 +3336,7 @@ async def api_test_run(
     accurate_locations: bool = Form(default=False),
     mosaic_enabled: bool = Form(default=False),
     optimization_project: Optional[str] = Form(default=None),
+    clear_existing: bool = Form(default=False),
 ):
     ds_dir = TEST_DIR / dataset
     
@@ -3341,6 +3356,15 @@ async def api_test_run(
     session = (_safe_name(result_name) or _now_stamp())
     base = MEDIA_DIR / "sessions"
     ses = base / session
+    
+    # Clear existing session directory if requested
+    if clear_existing and ses.exists():
+        import shutil
+        try:
+            shutil.rmtree(ses)
+            logger.info(f"[test] Cleared existing session directory: {ses.name}")
+        except Exception as e:
+            logger.warning(f"[test] Failed to clear existing session: {e}")
 
     out_root = MEDIA_DIR / "sessions" / session
     out_root.mkdir(parents=True, exist_ok=True)
@@ -3360,7 +3384,7 @@ async def api_test_run(
 
     if input_type == "images":
         # For image datasets we will *infer* thermal needs from the model metadata.
-        # If the selected model was trained for RGB+Thermal (rgbt/4ch) then attempt
+        # If the selected model was trained for thermal then attempt
         # an idempotent decode pass which will create thermal/ + pairs.json when
         # RJPEG payloads are present. The decode helper is safe to call repeatedly
         # and will early-exit if DIRP isn't available.
@@ -3395,21 +3419,21 @@ async def api_test_run(
     # --- Decide whether to decode / use thermal for inference ---
     meta = _read_model_meta(model_dir)
     model_mode = (meta.get("input_mode") or "rgb").strip().lower()
-    model_is_rgbt = model_mode in {"rgbt","rgb+thermal","rgb_thermal","thermal","4ch"}
+    model_is_thermal = model_mode == "thermal" or bool(meta.get("thermal_used"))
 
-    # Determine model's declared channel count (1,3,4) with safe default
+    # Determine model's declared channel count (always 3 for supported models)
     try:
-        model_chan = int(meta.get("channel_count") or (4 if model_is_rgbt else 3))
+        model_chan = int(meta.get("channel_count") or 3)
+        # Enforce 3-channel constraint
+        if model_chan != 3:
+            model_chan = 3
     except Exception:
         model_chan = 3
 
     # If model expects thermal for inference and this is an images dataset, run
     # the idempotent decode pass which will populate images_dir/thermal/pairs.json
     # when RJPEG payloads exist. This lets us infer availability afterwards.
-    # If model expects RGB+thermal, attempt the idempotent decode pass which
-    # will populate images_dir/thermal/pairs.json. The decoder is safe to call
-    # repeatedly and will early-exit if DIRP isn't available.
-    if input_type == "images" and model_is_rgbt:
+    if input_type == "images" and model_is_thermal:
         try:
             ensure_dirp_init()
             scan_split_decode_thermal(ds_dir)
@@ -3471,7 +3495,7 @@ async def api_test_run(
         pass
 
     # Use thermal only if model supports it AND data provides it
-    use_thermal_effective = bool(model_is_rgbt and data_has_thermal)
+    use_thermal_effective = bool(model_is_thermal and data_has_thermal)
 
     # Validate model <-> data channel compatibility and provide clear messages
     # Possible cases:
@@ -3615,14 +3639,20 @@ async def api_test_run(
             
             # Call regenerate script to create rotated_images from camera_meta
             # Pass source images directory (ds_dir) so script can access original images
+            # Also pass --use-thermal flag if model is thermal-trained
             import subprocess, sys, time
             script = PROJECT_ROOT / "backend" / "pvrt" / "dataops" / "regenerate_geojson_from_preds.py"
             if script.exists():
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for rotation (session={session}, src_images={ds_dir})")
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for rotation (session={session}, src_images={ds_dir}, thermal={model_is_thermal})")
+                
+                # Build command with optional --use-thermal flag
+                cmd = [sys.executable, str(script), session, str(ds_dir)]
+                if model_is_thermal:
+                    cmd.append("--use-thermal")
                 
                 # subprocess.run() BLOCKS until rotation completes - no env needed (inherited automatically)
                 proc = subprocess.run(
-                    [sys.executable, str(script), session, str(ds_dir)],
+                    cmd,
                     stdout=subprocess.DEVNULL,  # Avoid pipe buffer deadlock with large output
                     stderr=subprocess.PIPE,
                     text=True,

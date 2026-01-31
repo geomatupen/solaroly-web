@@ -95,28 +95,14 @@ def prepare_dataset_for_run(
 ) -> Dict[str, Any]:
     """Prepare a small per-run prepared dataset.
 
-    - 1-channel is coerced to 3-channel (thermal-only) for compatibility.
-    - If channel_count==4 and thermal sidecars are present, returns paths
-      to the original dirs for backends that can consume RGB+T.
-    - Otherwise creates dest_run/prepared/{train,valid} with 3-channel images.
+    - Creates dest_run/prepared/{train,valid} with 3-channel images (RGB or thermal as 3-channel).
+    - Supports 3-channel RGB and 3-channel thermal (extracted from radiometric data).
     """
     prepared_root = Path(dest_run) / "prepared"
     train_out = prepared_root / "train"
     valid_out = prepared_root / "valid"
     train_out.mkdir(parents=True, exist_ok=True)
     valid_out.mkdir(parents=True, exist_ok=True)
-
-    if channel_count == 1:
-        LOGGER.warning("1-channel datasets are deprecated; coercing to 3-channel")
-        channel_count = 3
-
-    if channel_count == 4 and has_thermal_for_images(src_train):
-        return {
-            "train_dir": str(src_train),
-            "valid_dir": str(src_valid),
-            "selected_bands": selected_bands or [],
-            "channel_count": 4,
-        }
 
     # minimal behavior: copy or convert images to RGB-like outputs
     exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -156,14 +142,14 @@ THERMAL_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
 def input_mode_from_meta(meta: Dict[str, Any], default: str = "rgb") -> str:
     """Return normalized input mode string from model metadata.
 
-    Recognizes common synonyms for RGB+thermal models and returns "rgbt"
-    for those, otherwise returns "rgb".
+    Recognizes "thermal" or "thermal_only" as thermal mode,
+    otherwise returns "rgb" for standard 3-channel RGB models.
     """
     if not isinstance(meta, dict):
         return default
     val = (meta.get("input_mode") or default).strip().lower()
-    if val in {"rgbt", "rgb+t", "rgb_thermal", "thermal_rgb", "rgb+thermal", "4ch", "rgbt4"}:
-        return "rgbt"
+    if val in {"thermal", "thermal_only"}:
+        return "thermal"
     return "rgb"
 
 

@@ -38,13 +38,13 @@ def _select_infer_mode(
     indicator the model can accept thermal-as-RGB even when `input_mode` is
     'rgb'.
     """
-    model_is_rgbt = model_mode in {"rgbt", "rgb+thermal", "thermal", "rgb_thermal", "4ch"} or bool(model_thermal_used)
+    model_is_thermal = model_mode == "thermal" or bool(model_thermal_used)
     # Allow thermal when either the frontend explicitly requested it OR
     # the model was trained with thermal (`thermal_used=True`) — provided
     # the dataset has decoded thermal previews. This makes models saved as
     # 3-channel but trained with thermal automatically use the thermal
     # previews at test time unless explicitly overridden by the caller.
-    if (use_thermal_request or bool(model_thermal_used)) and data_has_thermal and model_is_rgbt:
+    if (use_thermal_request or bool(model_thermal_used)) and data_has_thermal and model_is_thermal:
         _log_test.info(
             "decision: using thermal path (model_mode=%s, thermal_used=%s, request=%s)",
             model_mode,
@@ -75,7 +75,7 @@ def train_entry(
     base_lr: float,
     ims_per_batch: int,
     run_name: str = "",
-    model_type: str = "maskrcnn",
+    model_type: str = "fasterrcnn",
     yolo_family: str = "v8",
     yolo_seg: bool = False,
     yolo_size: str = "s",
@@ -84,7 +84,7 @@ def train_entry(
     augment_options: dict | None = None,
 ) -> dict:
     """
-    Decide RGB vs RGBT (based on data availability + user request), then train.
+    Decide RGB vs thermal-as-RGB (based on data availability + user request), then train.
 
     Returns a dict with:
       - run_dir: Path
@@ -98,7 +98,7 @@ def train_entry(
     thermal_ok = bool(use_thermal_request and has_thermal_for_images(train_dir))
     _log_full.info(
         f"INFO:train: decision: use_thermal_request={use_thermal_request}, "
-        f"data_has_thermal={thermal_ok} - {'rgbt' if thermal_ok else 'rgb'}, learning rate = {base_lr}"
+        f"data_has_thermal={thermal_ok} - {'thermal' if thermal_ok else 'rgb'}, learning rate = {base_lr}"
     )
 
     backend_impl = get_backend(backend)
@@ -147,31 +147,12 @@ def predict_entry(
     else:
         from ..core.io import has_thermal_for_images
         data_has_thermal = has_thermal_for_images(images_dir)
-
-    # If the caller requested thermal but we don't see thermal files yet, attempt
-    # an idempotent decode pass here. This mirrors the behavior in app.py but
-    # ensures any caller of predict_entry (CLI, API, tests) will attempt to
-    # populate images_dir/thermal when RJPEG payloads exist. Always catch
-    # exceptions so a missing DIRP library won't fail the whole predict call.
-    decode_stats = None
-    if use_thermal_request and not data_has_thermal:
-        # local import to avoid heavy DJI SDK import at module-load time
-        from ..dataops.scan_decode_split import ensure_dirp_init, scan_split_decode_thermal
-
-        _log_test.info(f"UI:INFO:test: attempting on-demand thermal decode: {images_dir}")
-        # Let ensure_dirp_init raise if DIRP isn't available; caller should see the error.
-        ensure_dirp_init()
-
-        pairs_path, stats = scan_split_decode_thermal(images_dir)
-        decode_stats = stats
-        _log_test.info(f"UI:INFO:test: on-demand thermal decode summary -> {stats}")
-
-        # Re-evaluate presence of thermal files after the decode attempt
-        try:
-            from ..core.io import has_thermal_for_images
-            data_has_thermal = has_thermal_for_images(images_dir)
-        except (FileNotFoundError, OSError, ValueError):
-            data_has_thermal = False
+        # Special case: rotated_images from thermal sources are already thermal-as-RGB
+        if not data_has_thermal and images_dir.name == "rotated_images":
+            camera_meta_path = images_dir.parent / "camera_meta.json"
+            if camera_meta_path.exists() and use_thermal_request:
+                _log_test.info("UI:INFO:test: rotated_images detected, treating as thermal-ready")
+                data_has_thermal = True
 
     use_thermal, _ = _select_infer_mode(
         use_thermal_request,
@@ -193,19 +174,16 @@ def predict_entry(
     # If caller passed explicit (non-None) channel_count param, prefer it; otherwise prefer model metadata
     final_channel_count = int(channel_count) if channel_count is not None and int(channel_count) != 3 else (model_chan or 3)
 
-    # Determine a human-friendly final mode string for logs when 3ch is used
-    if final_channel_count == 4:
-        final_mode = 'rgbt'
-    elif final_channel_count == 3:
-        # prefer thermal-as-RGB when use_thermal is True and thermal data/models indicate it
-        if use_thermal and (model_mode == 'rgbt' or bool(meta.get('thermal_used', False))):
+    # Determine a human-friendly final mode string for logs
+    # Only 3-channel is supported: either RGB or thermal-as-RGB
+    if final_channel_count == 3:
+        # prefer thermal when use_thermal is True and thermal data/models indicate it
+        if use_thermal and (model_mode == 'thermal' or bool(meta.get('thermal_used', False))):
             final_mode = 'thermal'
         else:
             final_mode = 'rgb'
-    elif final_channel_count == 1:
-        final_mode = 'thermal_only'
     else:
-        final_mode = 'unknown'
+        final_mode = 'rgb'  # default to rgb if unexpected channel count
 
     _log_test.info(
         f"UI:INFO:test: channel selection -> frontend_request={channel_count}, model_trained={model_chan or 'unknown'}, data_has_thermal={data_has_thermal}, use_thermal={use_thermal} -> final_channel_count={final_channel_count} ({final_mode})"
@@ -234,7 +212,6 @@ def predict_entry(
         "used_channel_count": int(final_channel_count),
         "final_mode": final_mode,
         "score_thresh": chosen_thresh,
-        "decode_stats": decode_stats,
     }
 
 

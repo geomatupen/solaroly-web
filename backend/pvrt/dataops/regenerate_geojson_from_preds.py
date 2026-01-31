@@ -61,6 +61,7 @@ def _camera_heading_from_entry(cam_entry, session_meta):
 # allow passing session id as first CLI arg, source images dir as second arg
 SESSION = sys.argv[1] if len(sys.argv) > 1 else 'test_20251125_223205'
 SRC_IMAGES_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else None  # optional source images directory
+USE_THERMAL = '--use-thermal' in sys.argv  # flag to use thermal images if available
 BASE = Path('media') / 'sessions' / SESSION
 IMAGES_DIR = BASE / 'rotated_images'
 # If rotated_images doesn't exist yet but camera_meta is available, we'll
@@ -143,6 +144,22 @@ try:
             src_count = len([f for f in src_files if f.is_file() and f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.bmp')])
             print(f"[rotation] Found {src_count} image files in {src_images.name}")
             
+            # Check if source dataset has thermal previews - only use if --use-thermal flag is set
+            src_thermal_dir = SRC_IMAGES_DIR / 'thermal' if SRC_IMAGES_DIR else None
+            src_thermal_pairs = None
+            use_thermal_for_rotation = False
+            if USE_THERMAL and src_thermal_dir and (src_thermal_dir / 'pairs.json').exists():
+                try:
+                    src_thermal_pairs = json.loads((src_thermal_dir / 'pairs.json').read_text(encoding='utf-8'))
+                    if src_thermal_pairs:
+                        use_thermal_for_rotation = True
+                        print(f"[rotation] Using thermal images for rotation ({len(src_thermal_pairs)} pairs)")
+                except Exception as e:
+                    print(f"[rotation] Error reading thermal pairs.json: {e}")
+            
+            if not use_thermal_for_rotation:
+                print(f"[rotation] Using RGB images for rotation (USE_THERMAL={USE_THERMAL})")
+            
             for p in sorted(src_images.glob('*')):
                 if not p.is_file():
                     continue
@@ -177,8 +194,40 @@ try:
                 # Add 180° to compensate for DJI gimbal heading convention vs map heading
                 angle = -float(rot or 0.0) - 180.0
 
+                # If thermal mode, load thermal preview and convert to 3-channel RGB
+                if use_thermal_for_rotation and fname in src_thermal_pairs:
+                    thermal_fname = src_thermal_pairs.get(fname)
+                    # thermal_fname includes "thermal/" prefix (e.g., "thermal/DJI_xxx_thermal.tif")
+                    # We'll use the _preview.png variant (normalized, matches training)
+                    thermal_path = SRC_IMAGES_DIR / thermal_fname
+                    thermal_preview_path = thermal_path.with_name(thermal_path.stem + '_preview.png')
+                    
+                    if thermal_preview_path.exists():
+                        try:
+                            # Load thermal preview (already normalized grayscale)
+                            from PIL import Image as PILImage
+                            import numpy as np
+                            with PILImage.open(thermal_preview_path) as tim:
+                                # Preview is already grayscale, convert to 3-channel RGB
+                                if tim.mode != 'L':
+                                    tim = tim.convert('L')
+                                thermal_arr = np.array(tim, dtype=np.uint8)
+                            
+                            # Replicate grayscale across 3 channels for RGB
+                            thermal_rgb = np.stack([thermal_arr, thermal_arr, thermal_arr], axis=2)
+                            p_img = PILImage.fromarray(thermal_rgb, mode='RGB')
+                            print(f"[rotation] Using thermal preview for {fname}")
+                        except Exception as e:
+                            print(f"[rotation] ERROR loading thermal preview for {fname}: {e}, falling back to RGB")
+                            p_img = Image.open(p)
+                    else:
+                        print(f"[rotation] Thermal preview not found for {fname}, falling back to RGB")
+                        p_img = Image.open(p)
+                else:
+                    p_img = Image.open(p)
+
                 try:
-                    with Image.open(p) as im:
+                    with p_img as im:
                         if abs(angle) < 1e-6:
                             # No rotation needed, but still convert to RGBA with transparency for consistency
                             if im.mode != "RGBA":

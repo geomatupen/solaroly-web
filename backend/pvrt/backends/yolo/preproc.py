@@ -28,11 +28,8 @@ def merge_rgb_with_thermal(
     """Prepare a YOLO-friendly dataset targeted at `requested_channels`.
 
         Behavior:
-        - requested_channels == 3: include only RGB images (skip single-channel thermals).
-        - requested_channels == 4 and use_thermal=True: include only images that have a
-            decoded thermal sidecar; output RGBA images where A is the rescaled thermal band.
-        - any other request (including 1) is treated as 3-channel RGB (thermal-as-RGB when
-            where appropriate is handled by writing 3-channel grayscale images elsewhere).
+        - requested_channels == 3: Always output 3-channel images (RGB or thermal-as-RGB).
+        - All other requests default to 3-channel behavior.
 
     The function writes outputs preserving subdirectory structure relative to
     `images_dir` into `out_dir`. Label files with the same stem (``.txt``) are
@@ -180,46 +177,17 @@ def merge_rgb_with_thermal(
                         if lbl.exists():
                             (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
                         written += 1
-
-                elif requested_channels == 4 and use_thermal:
-                    # require thermal sidecar
-                    t = find_thermal(src)
-                    if t is None or not t.exists():
-                        continue
-                    # 4-channel output requires composing RGB+thermal into an
-                    # RGBA file; symlinking is not possible because the file
-                    # doesn't exist beforehand. Always write the RGBA PNG for
-                    # requested_channels==4.
-                    rgb = im.convert("RGB")
-                    # Similar normalization for RGBA alpha channel: prefer
-                    # reading TIFFs as numeric arrays and normalizing; for
-                    # JPG/PNG previews use the existing 8-bit values.
-                    try:
-                        a8 = normalize_thermal(t)
-                    except Exception:
-                        a8 = np.array(Image.open(t).convert("L"))
-                    alpha = Image.fromarray(a8, mode="L")
-                    rgba = Image.merge("RGBA", (*rgb.split(), alpha))
-                    target = out_path.with_suffix(".png")
-                    # save RGBA
-                    rgba.save(target)
-                    lbl = src.with_suffix(".txt")
-                    if lbl.exists():
-                        (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
-                    written += 1
                 else:
-                    # any other combination: treat as 3-channel RGB behaviour
-                    # (covers requested==1 coerced to 3 or other unsupported values)
-                    # try to symlink/convert as RGB as above
-                    target = out_path.with_suffix(src.suffix)
-                    if symlink:
-                        if target.exists() or target.is_symlink():
-                            target.unlink()
-                        target.symlink_to(src.resolve())
-                    else:
-                        rgb = im.convert("RGB")
-                        target = out_path.with_suffix(".png")
-                        rgb.save(target)
+                    # Default to 3-channel RGB for any other channel count requests
+                    # include only RGB-capable images
+                    if is_single:
+                        # skip single-channel thermal-only files
+                        continue
+                    # Create 3-channel RGB from original
+                    rgb = im.convert("RGB")
+                    target = out_path.with_suffix(".png")
+                    rgb.save(target)
+                    # copy label if exists
                     lbl = src.with_suffix(".txt")
                     if lbl.exists():
                         (out_path.with_suffix(".txt")).write_bytes(lbl.read_bytes())
