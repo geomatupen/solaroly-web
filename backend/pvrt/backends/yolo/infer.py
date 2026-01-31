@@ -207,88 +207,8 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
     run_dir = Path(out_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # If thermal mode with channel variants requested, prepare a temporary folder
+    # Use rotated transparent PNGs directly for inference (preserve transparency)
     source_dir = Path(images_dir)
-    temp_prep = None
-    # Prepare a temporary folder with merged/synth images when thermal is
-    # requested. Prepare a temporary folder with 3-channel thermal-as-RGB
-    # images when thermal inference is enabled.
-    if use_thermal:
-        temp_prep = run_dir / "predict_merged"
-        temp_prep.mkdir(parents=True, exist_ok=True)
-        # iterate images and create 3-channel grayscale images
-        for p in sorted(Path(images_dir).iterdir()):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}:
-                continue
-            t = _find_thermal(p)
-            if t is None:
-                # skip images without thermal when thermal required
-                continue
-            # Read thermal and normalize using the canonical normalizer so
-            # YOLO and Detectron produce identical uint8 previews.
-            try:
-                a8 = normalize_thermal(t)
-            except Exception:
-                # fallback to older behavior (PIL grayscale)
-                try:
-                    a8 = np.array(Image.open(t).convert("L"))
-                except Exception:
-                    a8 = None
-
-            if a8 is None:
-                logging.getLogger("pvrt.test").warning(
-                    f"YOLO preproc: skipping {Path(p).name if p else 'unknown'} because thermal normalization failed"
-                )
-                continue
-            gray = Image.fromarray(a8, mode="L")
-            rgb = Image.merge("RGB", (gray, gray, gray))
-            out_path = temp_prep / f"{p.stem}.png"
-            rgb.save(out_path)
-
-            # Also save the exact uint8 normalized thermal preview into a
-            # dedicated folder so temp runs contain a one-to-one grayscale
-            # artifact that matches training previews.
-            try:
-                tdir = run_dir / "predict_thermal"
-                tdir.mkdir(parents=True, exist_ok=True)
-                import cv2 as _cv
-                _cv.imwrite(str(tdir / f"{p.stem}.png"), a8)
-                # also write a small display-enhanced copy for UI
-                try:
-                    from ...core.thermal import enhance_preview_for_display
-                    vis_dir = run_dir / "predict_thermal_vis"
-                    vis_dir.mkdir(parents=True, exist_ok=True)
-                    vis_img = enhance_preview_for_display(a8)
-                    _cv.imwrite(str(vis_dir / f"{p.stem}.png"), vis_img)
-                except Exception:
-                    tlog = logging.getLogger("pvrt.test")
-                    tlog.debug("failed to write predict_thermal_vis for %s", Path(p).name if p else 'unknown')
-            except Exception:
-                tlog = logging.getLogger("pvrt.test")
-                tlog.debug("failed to write predict_thermal preview for %s", Path(p).name if p else 'unknown')
-        source_dir = temp_prep
-
-    # Ensure all images are converted to 3-channel RGB for YOLO inference
-    temp_rgb = run_dir / "predict_rgb"
-    # Only create/convert if it doesn't already exist to avoid rework.
-    if not temp_rgb.exists():
-        from PIL import Image
-        temp_rgb.mkdir(parents=True, exist_ok=True)
-        for p in sorted(source_dir.iterdir()):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}:
-                continue
-            # PIL's convert("RGB") will drop alpha or expand single-band
-            # images to RGB; it's a pragmatic choice here to ensure the
-            # YOLO model always sees 3-channel inputs when expected.
-            im = Image.open(p)
-            rgb = im.convert("RGB")
-            outp = temp_rgb / f"{p.stem}.png"
-            rgb.save(outp, format="PNG")
-    source_dir = temp_rgb
 
     # Diagnostic logging: report how many images will be fed to the model and
     # a small sample of image sizes. This helps detect cases where the source
@@ -420,70 +340,22 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         # dataset (thermal/{stem}_thermal.*). Use that as the overlay
         # background so the UI shows the raw grayscale thermal images.
         im = cv2.imread(str(imgp), cv2.IMREAD_UNCHANGED)
-        # default background
-        bgr = None
-        alpha = None
-        has_rgb = False
+        # If the input has alpha, preserve it
+        if im is None:
+            continue
+        if im.ndim == 2:
+            bgra = cv2.cvtColor(im, cv2.COLOR_GRAY2BGRA)
+        elif im.shape[2] == 4:
+            bgra = im.copy()
+        elif im.shape[2] == 3:
+            bgra = cv2.cvtColor(im, cv2.COLOR_BGR2BGRA)
+        else:
+            continue
 
-        # If the run used thermal-as-RGB, prefer to use the canonical
-        # thermal preview as the overlay background when available.
-        if use_thermal:
-            # attempt to find the original RGB path and its thermal
-            rgb_candidate = Path(images_dir) / Path(key).name
-            tpath = _find_thermal(rgb_candidate)
-            if tpath is not None and tpath.exists():
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{Path(p).name if p else 'unknown'}] using thermal grayscale background for overlay")
-                try:
-                    timg8 = normalize_thermal(tpath)
-                    # ensure single-channel
-                    if timg8.ndim == 3:
-                        timg8 = timg8[..., 0]
-                    bgr = cv2.cvtColor(timg8.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-                    has_rgb = False
-                except Exception:
-                    # fallback to previous behavior (read as uint8, tone-map if needed)
-                    try:
-                        import tifffile
-                        timg = tifffile.imread(str(tpath))
-                    except (ImportError, OSError, Exception):
-                        timg = cv2.imread(str(tpath), cv2.IMREAD_UNCHANGED)
-                    if timg is not None:
-                        # tone-map non-8bit arrays to uint8
-                        try:
-                            if hasattr(timg, 'dtype') and str(timg.dtype).startswith('float') or (hasattr(timg, 'dtype') and getattr(timg, 'dtype').itemsize > 1):
-                                mn = float(np.nanmin(timg))
-                                mx = float(np.nanmax(timg))
-                                if mx > mn:
-                                    tnorm = (np.clip(timg, mn, mx) - mn) / (mx - mn)
-                                else:
-                                    tnorm = np.zeros_like(timg, dtype=np.float32)
-                                timg8 = (np.clip(tnorm * 255.0, 0, 255)).astype(np.uint8)
-                            else:
-                                timg8 = np.clip(timg, 0, 255).astype(np.uint8)
-                        except Exception:
-                            timg8 = np.clip(timg, 0, 255).astype(np.uint8)
-                        if timg8.ndim == 3:
-                            # reduce multi-band to gray
-                            tgray = cv2.cvtColor(timg8, cv2.COLOR_BGR2GRAY)
-                        else:
-                            tgray = timg8
-                        bgr = cv2.cvtColor(tgray.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-                        has_rgb = False
-        if bgr is None:
-            # fallback to the predicted image (merged/synth or original)
-            if im is None:
-                continue
-            if im.ndim == 2:
-                bgr = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
-            else:
-                bgr = im[..., :3]
-            alpha = None
-            has_rgb = True
-
-        H, W = bgr.shape[:2]
+        H, W = bgra.shape[:2]
 
         # draw boxes on a copy
-        vis = bgr.copy()
+        vis = bgra.copy()
         boxes = js.get("boxes", [])
         scores = js.get("scores", [])
         classes = js.get("classes", [])
@@ -493,19 +365,18 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
             except (TypeError, ValueError):
                 log.debug("yolo.infer: skipping malformed box %r", bi)
                 continue
-            color = (0, 0, 255)  # red BGR
+            color = (0, 0, 255, 255)  # red BGRA
             cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
             label = f"{int(round(float(sc)*100))}%"
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(vis, (x1, y1 - th - 6), (x1 + tw + 6, y1), color, -1)
-            cv2.putText(vis, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
+            cv2.putText(vis, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255,255), 1, cv2.LINE_AA)
 
         overlays_dir = run_dir / "overlays"
         overlays_dir.mkdir(parents=True, exist_ok=True)
-        # UI expects overlays/{stem}.png (no extra suffix)
         out_overlay = overlays_dir / f"{Path(key).stem}.png"
         cv2.imwrite(str(out_overlay), vis)
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay")
+        logging.getLogger("pvrt.test").info(f"UI:INFO:test: [{out_overlay.name}] wrote overlay (preserved transparency)")
 
     # finalize metrics
     elapsed = time.time() - t0

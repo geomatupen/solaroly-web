@@ -2265,28 +2265,35 @@ function renderResultsGrid(manifest){
   manifest = preferRotatedOverlays(manifest);
   const showOnlyDetections = document.getElementById('chkShowOnlyDetections')?.checked || false;
   
-  manifest.forEach((item, idx)=>{
+  // Build filtered list for lightbox navigation
+  const filteredItems = showOnlyDetections
+    ? manifest.filter(item => item.n && item.n > 0)
+    : manifest;
+
+  manifest.forEach((item, idx) => {
     const div = document.createElement("div");
     div.className = "thumb";
-    
+
     // Add detection indicator badge if detections exist
-    const detectionBadge = (item.n && item.n > 0) 
-      ? `<div class="detection-badge">${item.n}</div>` 
+    const detectionBadge = (item.n && item.n > 0)
+      ? `<div class="detection-badge">${item.n}</div>`
       : '';
-    
+
     div.innerHTML = `
       <img src="${item.thumb}" alt="${item.file}">
       <div class="meta" title="${item.file}">${item.file}</div>
       ${detectionBadge}
     `;
-    
+
     // Hide if filter is on and no detections
     if (showOnlyDetections && (!item.n || item.n === 0)) {
       div.classList.add('hidden-by-filter');
     }
-    
-    div.addEventListener("click", ()=>{
-      _openLightboxWithGallery(manifest, idx);
+
+    div.addEventListener("click", () => {
+      // Find the index of this item in the filtered list
+      const filteredIdx = filteredItems.indexOf(item);
+      _openLightboxWithGallery(filteredItems, filteredIdx);
     });
     grid.appendChild(div);
   });
