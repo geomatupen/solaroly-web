@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 from xml.etree import ElementTree as ET
 
-from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Response
+from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
@@ -4098,6 +4098,45 @@ def _session_tifs(session: str) -> List[Path]:
         tifs = [p for p in (ses_dir / "images").glob("*") if p.suffix.lower() in (".tif", ".tiff")]
     return tifs
 
+def _build_tile_layer_defs(tile_key: str, tifs: List[Path]) -> List[Dict[str, Any]]:
+    """
+    Register GeoTIFF sources under tile_key and return Leaflet-ready layer descriptors.
+    """
+    if not RIO_OK:
+        return []
+    _TILER_INDEX[tile_key] = tifs
+    layers: List[Dict[str, Any]] = []
+    for i, p in enumerate(tifs):
+        try:
+            with rasterio.open(p) as ds:
+                # bounds in WGS84 for fitBounds + attribution data
+                try:
+                    left, bottom, right, top = rasterio.warp.transform_bounds(
+                        ds.crs, CRS.from_epsg(4326), *ds.bounds, densify_pts=21
+                    )
+                    # Validate bounds are finite numbers
+                    if not all(math.isfinite(x) for x in [left, bottom, right, top]):
+                        raise ValueError("Invalid bounds detected")
+                    # Ensure bounds are in valid range
+                    left = max(-180.0, min(180.0, left))
+                    right = max(-180.0, min(180.0, right))
+                    bottom = max(-90.0, min(90.0, bottom))
+                    top = max(-90.0, min(90.0, top))
+                except Exception as e:
+                    logger.warning(f"Failed to transform bounds for {p}: {e}, using defaults")
+                    left, bottom, right, top = (-180.0, -85.0, 180.0, 85.0)
+                layers.append({
+                    "name": p.name,
+                    "template": f"/tiles/{tile_key}/{i}" + "/{z}/{x}/{y}.png",
+                    "minzoom": 0,
+                    "maxzoom": 22,
+                    # [[south, west], [north, east]]
+                    "bounds": [[bottom, left], [top, right]],
+                })
+        except Exception as e:
+            logger.warning(f"Tiler: failed to inspect '{p}': {e}")
+    return layers
+
 # --- small Inferno-like LUT (256x3) for single-band rasters without palette ---
 def _inferno_lut_256() -> np.ndarray:
     # coarse stops approximating matplotlib "inferno" ramp:
@@ -4137,32 +4176,174 @@ async def api_session_tiles(session: str):
         return {"ok": False, "reason": "rasterio_not_available", "layers": []}
 
     tifs = _session_tifs(session)
-    _TILER_INDEX[session] = tifs
-    layers = []
-
-    for i, p in enumerate(tifs):
-        try:
-            with rasterio.open(p) as ds:
-                # bounds in WGS84 for fitBounds + attribution data
-                try:
-                    left, bottom, right, top = rasterio.warp.transform_bounds(
-                        ds.crs, CRS.from_epsg(4326), *ds.bounds, densify_pts=21
-                    )
-                except Exception:
-                    # worst-case fallback
-                    left, bottom, right, top = (-180.0, -85.0, 180.0, 85.0)
-                layers.append({
-                    "name": p.name,
-                    "template": f"/tiles/{session}/{i}" + "/{z}/{x}/{y}.png",
-                    "minzoom": 0,
-                    "maxzoom": 22,
-                    # [[south, west], [north, east]]
-                    "bounds": [[bottom, left], [top, right]],
-                })
-        except Exception as e:
-            logger.warning(f"Tiler: failed to inspect '{p}': {e}")
+    layers = _build_tile_layer_defs(session, tifs)
 
     return {"ok": True, "session": session, "layers": layers}
+
+
+@app.get("/api/list_overlays")
+def api_list_overlays():
+    """
+    List all saved overlay directories and their metadata.
+    Returns GeoJSON and GeoTIFF overlays from media/overlays/.
+    """
+    overlays_dir = MEDIA_DIR / "overlays"
+    if not overlays_dir.exists():
+        return {"ok": True, "overlays": []}
+    
+    result = []
+    for overlay_dir in overlays_dir.iterdir():
+        if not overlay_dir.is_dir():
+            continue
+        
+        # Look for GeoJSON files
+        geojson_files = list(overlay_dir.glob("*.geojson")) + list(overlay_dir.glob("*.json"))
+        for gj_file in geojson_files:
+            result.append({
+                "type": "geojson",
+                "name": gj_file.stem,
+                "overlay_id": overlay_dir.name,
+                "file": gj_file.name,
+                "path": f"/media/overlays/{overlay_dir.name}/{gj_file.name}"
+            })
+        
+        # Look for GeoTIFF files
+        tif_files = list(overlay_dir.glob("*.tif")) + list(overlay_dir.glob("*.tiff"))
+        for tif_file in tif_files:
+            result.append({
+                "type": "tif",
+                "name": tif_file.stem,
+                "overlay_id": overlay_dir.name,
+                "file": tif_file.name,
+            })
+    
+    return {"ok": True, "overlays": result}
+
+
+@app.post("/api/upload_geojson_overlay")
+async def api_upload_geojson_overlay(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+):
+    """
+    Upload a GeoJSON file and save it under media/overlays/<overlay_id>/.
+    """
+    if not file or not file.filename:
+        raise HTTPException(400, "No file uploaded")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in (".geojson", ".json"):
+        raise HTTPException(400, "Only .geojson/.json files are supported")
+
+    safe = _safe_name(name) or _safe_name(Path(file.filename).stem) or "overlay"
+    overlay_id = f"overlay-{safe}-{_now_stamp()}-{uuid.uuid4().hex[:6]}"
+    overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+
+    dest_name = f"{safe}.geojson"
+    dest_path = overlay_dir / dest_name
+
+    content = await file.read()
+    dest_path.write_bytes(content)
+
+    return {
+        "ok": True,
+        "overlay_id": overlay_id,
+        "path": f"/media/overlays/{overlay_id}/{dest_name}",
+    }
+
+
+@app.post("/api/delete_overlay")
+async def api_delete_overlay(request: Request):
+    """
+    Delete a saved overlay directory.
+    """
+    try:
+        body = await request.json()
+        overlay_id = body.get("overlay_id")
+        
+        if not overlay_id:
+            logger.warning("Delete overlay request missing overlay_id")
+            raise HTTPException(400, "overlay_id required")
+        
+        logger.info("Attempting to delete overlay: %s", overlay_id)
+        
+        overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+        if not overlay_dir.exists():
+            logger.warning("Overlay directory not found: %s", overlay_dir)
+            return {"ok": False, "error": "Overlay not found"}
+        
+        shutil.rmtree(overlay_dir)
+        logger.info("Successfully deleted overlay: %s", overlay_id)
+        return {"ok": True, "overlay_id": overlay_id}
+    except Exception as e:
+        logger.error("Failed to delete overlay: %s", e, exc_info=True)
+        raise HTTPException(500, f"Failed to delete overlay: {e}")
+
+
+@app.post("/api/upload_tif_overlay")
+async def api_upload_tif_overlay(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+):
+    """
+    Upload a GeoTIFF and return tile layer descriptors for map overlays.
+    Stores the file under media/overlays/<overlay_id>/.
+    """
+    if not RIO_OK:
+        return {"ok": False, "error": "rasterio_not_available"}
+
+    if not file or not file.filename:
+        raise HTTPException(400, "No file uploaded")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in (".tif", ".tiff"):
+        raise HTTPException(400, "Only .tif/.tiff files are supported")
+
+    safe = _safe_name(name) or _safe_name(Path(file.filename).stem) or "overlay"
+    overlay_id = f"overlay-{safe}-{_now_stamp()}-{uuid.uuid4().hex[:6]}"
+    overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+
+    dest_name = f"{safe}{ext}"
+    dest_path = overlay_dir / dest_name
+
+    with open(dest_path, "wb") as out_f:
+        shutil.copyfileobj(file.file, out_f)
+
+    layers = _build_tile_layer_defs(overlay_id, [dest_path])
+
+    return {
+        "ok": True,
+        "overlay_id": overlay_id,
+        "tiles": {"layers": layers},
+    }
+
+
+@app.get("/api/get_overlay_tiles")
+def api_get_overlay_tiles(overlay_id: str):
+    """
+    Get tile layer definitions for a saved GeoTIFF overlay.
+    """
+    if not RIO_OK:
+        return {"ok": False, "error": "rasterio_not_available"}
+    
+    overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+    if not overlay_dir.exists():
+        raise HTTPException(404, "Overlay not found")
+    
+    # Find all TIF files in the overlay directory
+    tif_files = list(overlay_dir.glob("*.tif")) + list(overlay_dir.glob("*.tiff"))
+    if not tif_files:
+        raise HTTPException(404, "No GeoTIFF files found in overlay")
+    
+    layers = _build_tile_layer_defs(overlay_id, tif_files)
+    
+    return {
+        "ok": True,
+        "overlay_id": overlay_id,
+        "tiles": {"layers": layers},
+    }
 
 # ---------------- XYZ tile endpoint ----------------
 # Tile size (Leaflet default)
@@ -4201,6 +4382,7 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
     from rasterio.windows import from_bounds as win_from_bounds
 
     with rasterio.open(tif) as src, WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.bilinear) as vrt:
+        nodata = src.nodata
         # overlap clip (prevents boundless)
         vb = vrt.bounds
         oxmin, oymin = max(minx, vb.left),  max(miny, vb.bottom)
@@ -4253,6 +4435,17 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
             canvas = np.zeros((3, TILE_SIZE, TILE_SIZE), np.uint8)
             acan   = np.zeros((TILE_SIZE, TILE_SIZE), np.uint8)
             canvas[:, Tt:B, L:R] = raw; acan[Tt:B, L:R] = alpha
+            # Make nodata transparent (if nodata is set), else treat pure white as transparent
+            try:
+                if nodata is not None:
+                    nd = int(nodata)
+                    nd_mask = (canvas[0] == nd) & (canvas[1] == nd) & (canvas[2] == nd)
+                    acan[nd_mask] = 0
+                else:
+                    white_mask = (canvas[0] >= 250) & (canvas[1] >= 250) & (canvas[2] >= 250)
+                    acan[white_mask] = 0
+            except Exception:
+                pass
             rgba = np.dstack([canvas[0], canvas[1], canvas[2], acan])
         else:
             # path B: single-band (thermal) → stretch + LUT ; (falls back for non-uint8 RGB)
@@ -4270,6 +4463,14 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
             canvas = np.zeros((TILE_SIZE, TILE_SIZE, 3), np.uint8)
             acan   = np.zeros((TILE_SIZE, TILE_SIZE), np.uint8)
             canvas[Tt:B, L:R, :] = rgb; acan[Tt:B, L:R] = alpha
+            # Make nodata transparent for single-band
+            try:
+                if nodata is not None:
+                    nd_mask = np.isclose(band, float(nodata))
+                    if nd_mask.shape == acan[Tt:B, L:R].shape:
+                        acan[Tt:B, L:R][nd_mask] = 0
+            except Exception:
+                pass
             rgba = np.dstack([canvas, acan])
 
     im = Image.fromarray(rgba, "RGBA")

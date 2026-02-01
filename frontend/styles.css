@@ -618,3 +618,18 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 
 /* Keep it hidden when you add .hidden in JS */
 #styleModal.hidden { display: none; }
+
+/* Form modal overrides - ensure vertical layout */
+#uploadModal .modalBody,
+#addMapFileModal .modalBody {
+  display: block;
+  padding: 12px;
+  overflow: auto;
+}
+
+#uploadModal input[type="text"],
+#addMapFileModal input[type="text"],
+#addMapFileModal input[type="file"] {
+  width: 100%;
+  box-sizing: border-box;
+}

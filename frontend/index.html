@@ -360,10 +360,9 @@
           <aside id="layersPanel">
             <div class="panelHeader">
               <span>Layers</span>
-              <label class="fileDrop tiny">
-                <input id="fileGeoJSON" type="file" accept=".geojson,.json" />
-                <span>+ GeoJSON</span>
-              </label>
+              <button id="btnAddMapFile" class="fileDrop tiny" style="border: none; background: none; padding: 0; cursor: pointer; font-size: 0.875rem;">
+                <span>+ Add File</span>
+              </button>
             </div>
 
             <!-- NEW: list where we toggle anomalies / tiles -->
@@ -375,6 +374,11 @@
                 <button id="btnShowAllImages" class="iconBtn tiny">Show all</button>
                 <button id="btnHideAllImages" class="iconBtn tiny">Hide all</button>
               </div>
+            </div>
+            <div style="padding: 6px 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; font-size: 12px;">
+              <label for="imagesOpacitySlider" style="min-width: 60px; margin: 0;">Opacity:</label>
+              <input type="range" id="imagesOpacitySlider" min="0" max="100" value="100" style="flex: 1; max-width: 100px;">
+              <span id="imagesOpacityValue" style="min-width: 30px;">100%</span>
             </div>
             <div id="mapDetectionsFilter" style="padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 14px;">
               <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
@@ -439,20 +443,99 @@
           Select a .zip or multiple images. A unique folder will be created under <code>data/test/</code>
           using the zip name or the first image name.
         </p>
-        <label class="fileDrop">
-          <input id="filesTest" type="file" multiple
-                 accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.JPG,.JPEG,.PNG,.TIF,.TIFF" />
-          <span>Choose files… (or drag &amp; drop)</span>
-        </label>
-        <div class="row">
-          <label for="inpUploadName">Name</label>
-          <input id="inpUploadName" type="text" value="" placeholder="test_YYYYMMDD_HHMMSS" />
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <label for="filesTest" style="display: block; margin-bottom: 0.5rem;">Choose files</label>
+            <label class="fileDrop" style="margin: 0;">
+              <input id="filesTest" type="file" multiple
+                     accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.JPG,.JPEG,.PNG,.TIF,.TIFF" />
+              <span>Choose files… (or drag &amp; drop)</span>
+            </label>
+          </div>
+          <div>
+            <label for="inpUploadName" style="display: block; margin-bottom: 0.5rem;">Name</label>
+            <input id="inpUploadName" type="text" value="" placeholder="test_YYYYMMDD_HHMMSS" style="width: 100%; box-sizing: border-box;" />
+          </div>
         </div>
 
       </div>
       <div class="modalFooter">
         <button id="btnStartUpload">Start upload</button>
         <button id="btnCancelUpload" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Map File Overlay Modal -->
+  <div id="addMapFileModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>Add map overlay</h3>
+        <button class="iconBtn" id="btnCloseAddFileModal" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p style="margin-bottom: 1rem;">Select overlay type:</p>
+
+        <!-- Radio button selection -->
+        <div style="margin-bottom: 1.5rem; display: flex; flex-direction: row; gap: 1.5rem;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="radio" name="overlayType" id="rdoGeoJSON" value="geojson" />
+            <span>GeoJSON</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="radio" name="overlayType" id="rdoTIF" value="tif" />
+            <span>GeoTIFF</span>
+          </label>
+        </div>
+
+        <!-- GeoJSON Form -->
+        <div id="geoJsonForm" style="display:none; border-top: 1px solid var(--border); padding-top: 1rem;">
+          <p class="muted" style="margin-bottom: 1rem;">Upload a GeoJSON file to display as an overlay</p>
+          <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <div>
+              <label for="geoJsonName" style="display: block; margin-bottom: 0.5rem;">Display name</label>
+              <input id="geoJsonName" type="text" value="overlay_geojson" placeholder="My GeoJSON layer" style="width: 100%; box-sizing: border-box;" />
+            </div>
+            <div>
+              <label for="geoJsonFile" style="display: block; margin-bottom: 0.5rem;">GeoJSON file</label>
+              <input id="geoJsonFile" type="file" accept=".geojson,.json" />
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 8px;">
+                <input id="geoJsonTemporary" type="checkbox" />
+                <span>Temporary (not saved to backend)</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- TIF Form -->
+        <div id="tifForm" style="display:none; border-top: 1px solid var(--border); padding-top: 1rem;">
+          <p class="muted" style="margin-bottom: 1rem;">Upload a GeoTIFF file for orthophoto tiling and display</p>
+          <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <div>
+              <label for="tifName" style="display: block; margin-bottom: 0.5rem;">Display name</label>
+              <input id="tifName" type="text" value="overlay_ortho" placeholder="My orthophoto layer" style="width: 100%; box-sizing: border-box;" />
+            </div>
+            <div>
+              <label for="tifFile" style="display: block; margin-bottom: 0.5rem;">GeoTIFF file</label>
+              <input id="tifFile" type="file" accept=".tif,.tiff" />
+            </div>
+          </div>
+          <div id="tifUploadProgress" class="progressWrap" style="display:none; margin-top: 1rem;">
+            <div class="progressBar"><span id="tifUploadBar" style="width:0%"></span></div>
+            <div class="progressText" id="tifUploadText">Uploading… 0%</div>
+          </div>
+        </div>
+
+        <!-- Upload Form (shown after selecting file type) -->
+        <div id="addFileForm" style="display:none; border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1rem;">
+          <div style="display: flex; gap: 0.5rem;">
+            <button id="btnUploadGeoJson" class="primary" style="display:none;">Upload GeoJSON</button>
+            <button id="btnUploadTIF" class="primary" style="display:none;">Upload & Tile</button>
+            <button id="btnCancelAddFile" class="secondary">Cancel</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -666,5 +749,6 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="map-overlay.js"></script>
 </body>
 </html>

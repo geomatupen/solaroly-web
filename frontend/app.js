@@ -85,6 +85,7 @@ let colmapPrefillState = { dataset: null, hash: null };
 // catalog & runtime overlays for photos
 let imageCatalog = [];              // [{ id, name, url, bounds, on }]
 let imageOverlays = new Map();      // id -> L.ImageOverlay
+let imagesOpacity = 0.85;           // global opacity for image overlays
 
 // last loaded images.geojson and session info (used to reapply overrides)
 let lastLoadedImagesGJ = null;
@@ -104,6 +105,7 @@ const CAMERA_ZOOM_ICON = '<svg viewBox="0 0 20 20" width="14" height="14" xmlns=
 // --- TIF raster globals ---
 let TIF_TILE_GROUP = null;   // Leaflet layerGroup that holds the ZXY tile layers
 let TIF_TILE_LAYERS = [];    // underlying L.tileLayer instances
+let TIF_TILE_BOUNDS = null;  // LatLngBounds for the orthophoto tiles
 
 // Pending map bounds to apply when map tab becomes visible
 let pendingMapBounds = null;
@@ -118,6 +120,7 @@ function removeTifTiles(){
   }
   TIF_TILE_GROUP = null;
   TIF_TILE_LAYERS = [];
+  TIF_TILE_BOUNDS = null;
   const list = document.getElementById('imagesList');
   if (list && list.querySelector('#chkTifTiles')){
     list.innerHTML = '';
@@ -155,8 +158,10 @@ function toggleImageOverlay(id, on){
   if (on){
     if (!ov){
       // create overlay using provided bounds (may be conservative bbox of corners)
-      ov = L.imageOverlay(rec.url, rec.bounds, { opacity: 0.85, interactive: false });
+      ov = L.imageOverlay(rec.url, rec.bounds, { opacity: imagesOpacity, interactive: false });
       imageOverlays.set(id, ov);
+    } else {
+      try { ov.setOpacity(imagesOpacity); } catch(_){ }
     }
     ov.addTo(imagesLayerGroup);
     rec.on = true;
@@ -1502,10 +1507,25 @@ function openLayerMenu(btn){
   menu.className = 'layerMenu';
   menu.dataset.key = key;
 
+  const opacityVal = rec.layer.getOpacity ? (rec.layer.getOpacity() * 100).toFixed(0) : 100;
+  
+  // Only show Style option for GeoJSON overlays (not TIF/raster)
+  const isTifRaster = rec.type === 'tif_overlay' || rec.type === 'raster';
+  const showStyle = !isTifRaster;
+  const styleItem = showStyle ? '<li data-action="style">Style…</li>' : '';
+  
   menu.innerHTML = `
     <ul>
       <li data-action="zoom">Zoom to layer</li>
-      <li data-action="style">Style…</li>
+      ${styleItem}
+      <li data-action="delete">Delete</li>
+      <li style="border-top: 1px solid #ddd; padding-top: 8px; margin-top: 8px; padding-left: 12px; padding-right: 12px;">
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+          <label style="margin: 0;">Opacity:</label>
+          <input type="range" class="layerOpacitySlider" data-key="${escapeHtml(key)}" min="0" max="100" value="${opacityVal}" style="flex: 1; max-width: 80px;">
+          <span class="opacityVal" style="min-width: 30px; text-align: right;">${opacityVal}%</span>
+        </div>
+      </li>
     </ul>
   `;
 
@@ -1559,86 +1579,186 @@ document.addEventListener('click', (e)=>{
   const action = li.dataset.action;
 
   if (action === 'zoom') {
-    const b = computeLayerBounds(rec.layer);
-    if (b && b.isValid && b.isValid()) {
-      MAP.fitBounds(b.pad(0.2));
+    let bounds = null;
+    
+    // First try to get bounds from the layer itself
+    try {
+      bounds = computeLayerBounds(rec.layer);
+    } catch(e) { }
+    
+    // If no bounds computed, try child layer bounds from options
+    if (!bounds && rec.layer && rec.layer.eachLayer) {
+      try {
+        let childBounds = null;
+        rec.layer.eachLayer(l => {
+          const b = l?.options?.bounds;
+          if (b && typeof b.isValid === 'function' && b.isValid()) {
+            childBounds = childBounds ? childBounds.extend(b) : b;
+          }
+        });
+        if (childBounds) {
+          bounds = childBounds;
+        }
+      } catch (e) { }
+    }
+    
+    // If no bounds computed, try stored bounds
+    if (!bounds && rec.bounds) {
+      // Check if rec.bounds is a LatLngBounds object or raw array
+      if (typeof rec.bounds.isValid === 'function' && rec.bounds.isValid()) {
+        // Already a LatLngBounds object
+        bounds = rec.bounds;
+      } else if (Array.isArray(rec.bounds) && rec.bounds.length === 2) {
+        // Convert raw bounds array [[lat1, lon1], [lat2, lon2]] to LatLngBounds
+        try {
+          bounds = L.latLngBounds(rec.bounds);
+        } catch(e) { }
+      }
+    }
+    
+    if (bounds && typeof bounds.isValid === 'function' && bounds.isValid()) {
+      MAP.fitBounds(bounds, { padding: [20, 20] });
     }
     closeLayerMenu();
     return;
   }
 
   if (action === 'style') {
-  if (action === 'style') {
-  styleTarget = { name: key, info: rec };
+    styleTarget = { name: key, info: rec };
 
-  const stSelBlk = document.getElementById('stColorByBlock');
-  const stSel    = document.getElementById('stColorBy');
-  const stCat    = document.getElementById('stCatList');
+    const stSelBlk = document.getElementById('stColorByBlock');
+    const stSel    = document.getElementById('stColorBy');
+    const stCat    = document.getElementById('stCatList');
 
-  // Only Anomalies supports styling
-  if (key !== "Anomalies" || !rec?.data){
-    stSelBlk.classList.add('hidden');
+    // Only Anomalies supports styling
+    if (key !== "Anomalies" || !rec?.data){
+      stSelBlk.classList.add('hidden');
+      stCat.classList.remove('hidden');
+      stCat.innerHTML = `<div class="muted">Styling not available for this layer.</div>`;
+      document.getElementById('styleModal').classList.remove('hidden');
+      closeLayerMenu();
+      return;
+    }
+
+    // Show Category UI
+    stSelBlk.classList.remove('hidden');
     stCat.classList.remove('hidden');
-    stCat.innerHTML = `<div class="muted">Styling not available for this layer.</div>`;
+
+    // Build property list (with "None")
+    const props = new Set(['class_name','class_id','score']);
+    try{
+      const f0 = rec.data.features.find(f => f?.properties) || null;
+      if (f0) Object.keys(f0.properties).forEach(k => props.add(k));
+    }catch(_){}
+
+    // Helper: pick a sensible default
+    const CATEGORY_NONE = '__none__';
+    function pickDefaultProp(){
+      const tryProps = ['class_name','class_id','score', ...props];
+      for (const p of tryProps){
+        if (!p || p === CATEGORY_NONE) continue;
+        const u = uniqueValuesFromGJ(rec.data, p);
+        if (u.length >= 1 && u.length <= 10) return p;
+      }
+      return CATEGORY_NONE;
+    }
+
+    const currentProp = rec.categorical?.prop ?? pickDefaultProp();
+
+    // Fill dropdown
+    stSel.innerHTML = '';
+    const optNone = document.createElement('option');
+    optNone.value = CATEGORY_NONE; optNone.textContent = 'None';
+    stSel.appendChild(optNone);
+    Array.from(props).forEach(k=>{
+      const o = document.createElement('option');
+      o.value = k; o.textContent = k;
+      if (k === currentProp) o.selected = true;
+      stSel.appendChild(o);
+    });
+
+    // Build editor for selected prop
+    const choose = (val)=>{
+      rebuildCategoryEditors(val);
+    };
+
+    choose(currentProp);
+    stSel.onchange = ()=> choose(stSel.value);
+
     document.getElementById('styleModal').classList.remove('hidden');
     closeLayerMenu();
     return;
   }
 
-  // Show Category UI
-  stSelBlk.classList.remove('hidden');
-  stCat.classList.remove('hidden');
-
-  // Build property list (with "None")
-  const props = new Set(['class_name','class_id','score']);
-  try{
-    const f0 = rec.data.features.find(f => f?.properties) || null;
-    if (f0) Object.keys(f0.properties).forEach(k => props.add(k));
-  }catch(_){}
-
-  // Helper: pick a sensible default
-  const CATEGORY_NONE = '__none__';
-  function pickDefaultProp(){
-    const tryProps = ['class_name','class_id','score', ...props];
-    for (const p of tryProps){
-      if (!p || p === CATEGORY_NONE) continue;
-      const u = uniqueValuesFromGJ(rec.data, p);
-      if (u.length >= 1 && u.length <= 10) return p;
+  if (action === 'delete') {
+    // Show confirmation dialog
+    const layerName = key || 'this overlay';
+    const confirmDelete = confirm(`Are you sure you want to delete "${layerName}"?`);
+    
+    if (!confirmDelete) {
+      closeLayerMenu();
+      return;
     }
-    return CATEGORY_NONE;
+    
+    // Remove from map
+    if (MAP.hasLayer(rec.layer)) {
+      MAP.removeLayer(rec.layer);
+    }
+    
+    // Delete from backend if not temporary
+    if (rec.overlay_id && !rec.temporary) {
+      fetch('/api/delete_overlay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ overlay_id: rec.overlay_id })
+      }).then(response => {
+        if (response.ok) {
+          console.log(`✓ Deleted overlay "${layerName}" from backend`);
+        }
+      }).catch(err => console.error('Failed to delete overlay from backend:', err));
+    }
+    
+    delete overlayRegistry[key];
+    refreshLayersPanel();
+    closeLayerMenu();
+    return;
   }
-
-  const currentProp = rec.categorical?.prop ?? pickDefaultProp();
-
-  // Fill dropdown
-  stSel.innerHTML = '';
-  const optNone = document.createElement('option');
-  optNone.value = CATEGORY_NONE; optNone.textContent = 'None';
-  stSel.appendChild(optNone);
-  Array.from(props).forEach(k=>{
-    const o = document.createElement('option');
-    o.value = k; o.textContent = k;
-    if (k === currentProp) o.selected = true;
-    stSel.appendChild(o);
-  });
-
-  // Build editor for selected prop
-  const choose = (val)=>{
-    rebuildCategoryEditors(val);
-  };
-
-  choose(currentProp);
-  stSel.onchange = ()=> choose(stSel.value);
-
-  document.getElementById('styleModal').classList.remove('hidden');
-  closeLayerMenu();
-  return;
-}
-
-}
 
 });
 
+// Layer opacity slider in menu
+document.addEventListener('input', (e)=>{
+  const slider = e.target.closest('.layerOpacitySlider');
+  if (!slider) return;
+  
+  const key = slider.dataset.key;
+  const rec = overlayRegistry[key];
+  if (!rec || !rec.layer) return;
+  
+  const opacity = slider.value / 100;
+  // Update the layer opacity
+  if (rec.layer.setOpacity) {
+    rec.layer.setOpacity(opacity);
+  } else if (rec.layer.setStyle) {
+    rec.layer.setStyle({ opacity, fillOpacity: opacity });
+  } else if (rec.layer.eachLayer) {
+    let count = 0;
+    rec.layer.eachLayer(l => {
+      if (l.setOpacity) {
+        l.setOpacity(opacity);
+        count += 1;
+      } else if (l.setStyle) {
+        l.setStyle({ opacity, fillOpacity: opacity });
+        count += 1;
+      }
+    });
+  } else {
+  }
+  
+  // Update the display value in the menu
+  const opacityVal = slider.closest('li').querySelector('.opacityVal');
+  if (opacityVal) opacityVal.textContent = slider.value + '%';
+});
 
 document.addEventListener('click', (e)=>{
   const btn = e.target.closest('.camZoomBtn');
@@ -2304,6 +2424,23 @@ function _applyDetectionFilter(){
   renderResultsGrid(currentManifest);
 }
 
+function applyMapDetectionFilter() {
+  const chk = document.getElementById('chkMapShowOnlyDetections');
+  const on = chk?.checked || false;
+  mapDetectionFilterActive = on;
+
+  if (on) {
+    // Only turn OFF non-detection images; keep current states for detected images
+    for (const rec of imageCatalog) {
+      if (!(rec.n && rec.n > 0) && rec.on) {
+        toggleImageOverlay(rec.id, false);
+      }
+    }
+  }
+
+  renderImagesList();
+}
+
 // ---------- map ----------
 function initMap(){
   const street = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 22, attribution: "&copy; OpenStreetMap" });
@@ -2313,6 +2450,18 @@ function initMap(){
   baseLayers = { "Street": street, "Satellite": sat };
   L.control.layers(baseLayers, {}, { position: "topleft" }).addTo(MAP);
   MAP.setView([0,0], 2);
+
+  // Create custom panes for tile layers
+  // Session orthophoto pane - should be below overlay layers
+  if (!MAP.getPane('sessionOrthophotoPane')) {
+    const pane = MAP.createPane('sessionOrthophotoPane');
+    pane.style.zIndex = 250; // Above tile pane (200) but below overlay pane (400)
+  }
+  // Overlay TIF pane - should be above base layers but not too high to hide other overlays
+  if (!MAP.getPane('overlayTifPane')) {
+    const pane = MAP.createPane('overlayTifPane');
+    pane.style.zIndex = 210; // Just above tile pane (200)
+  }
 
   if (!imagesLayerGroup) imagesLayerGroup = L.layerGroup().addTo(MAP);
   imageMarkersLayer = L.layerGroup().addTo(MAP);
@@ -2534,35 +2683,6 @@ function featurePopupHTML(f) {
 
 
 
-// async function loadGeoJSON(url){
-//   const res = await fetch(url);
-//   const gj = await res.json();
-
-//   const st = overlayRegistry["Anomalies"]?.style || {
-//     color: "#ff5722", weight: 1, opacity: 1,
-//     fillColor: "#ff5722", fillOpacity: 0.25
-//   };
-
-//   geojsonLayer = L.geoJSON(gj, {
-//     style: () => st,
-//     pointToLayer: (f, latlng) => {
-//       if(f.properties && f.properties.type === "image"){
-//         return L.marker(latlng).bindPopup(`<div><b>${escapeHtml(f.properties.name||"image")}</b><br>${f.properties.url?`<a href="${f.properties.url}" target="_blank">open image</a>`:""}</div>`);
-//       }
-//       return L.circleMarker(latlng, { radius: 4, color: "#3388ff", fillColor:"#3388ff", fillOpacity:0.8 });
-//     },
-//     onEachFeature: (feature, layer) => {
-//       try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
-//     }
-//   }).addTo(MAP);
-
-//   overlayRegistry["Anomalies"] = { layer: geojsonLayer, type: "geojson", style: st };
-//   refreshLayersPanel();
-//   renderLegend();
-//   try{ MAP.fitBounds(geojsonLayer.getBounds(), {padding:[20,20]}); }catch(_){}
-// }
-
-
 let anomaliesProp = 'class_name';  // current property to color by
 
 async function loadGeoJSON(url){
@@ -2719,7 +2839,7 @@ function populateImagesList(features){
   ul.innerHTML = "";
 
   features.forEach((f, i)=>{
-    const name = f.properties?.name || f.properties?.file || `image ${i+1}`;
+    const name = f.properties?.name || f.properties?.file || f.properties?.image ||  `image ${i+1}`;
     const url  = f.properties?.url || "";
     const id   = `imgchk_${i}`;
 
@@ -2893,6 +3013,8 @@ async function applySessionToMap(sessionName){
     const b = createTifTileGroup(tiles.layers);
     TIF_TILE_GROUP  = b.group;
     TIF_TILE_LAYERS = b.layers;
+    TIF_TILE_BOUNDS = b.firstBounds;
+    TIF_TILE_BOUNDS = b.firstBounds;
 
     // show controller row inside Images list (replaces normal images there)
     installTilesIntoImagesList(sessionName, tiles.layers);
@@ -2927,15 +3049,21 @@ async function applySessionToMap(sessionName){
   refreshLayersPanel();
 }
 
-function createTifTileGroup(layerDefs){
+function createTifTileGroup(layerDefs, paneName = 'sessionOrthophotoPane'){
   const group = L.layerGroup();
   const layers = [];
   let firstBounds = null;
 
   layerDefs.forEach((Ldef, i) => {
+    const bounds = (Array.isArray(Ldef.bounds) && Ldef.bounds.length === 2)
+      ? L.latLngBounds(Ldef.bounds)
+      : null;
     const lyr = L.tileLayer(Ldef.template, {
       minZoom: Ldef.minzoom ?? 0,
-      maxZoom: Ldef.maxzoom ?? 22
+      maxZoom: Ldef.maxzoom ?? 22,
+      bounds: bounds || undefined,
+      opacity: 1,
+      pane: paneName
     });
     group.addLayer(lyr);
     layers.push(lyr);
@@ -2965,14 +3093,11 @@ function installTilesIntoImagesList(sessionName, layerDefs){
       <span>${escapeHtml(label)}</span>
     </label>
     <div style="margin-left:auto;display:flex;gap:.75rem;align-items:center;">
-      <span class="dim">Opacity</span>
-      <input id="tifOpacity" type="range" min="0" max="1" step="0.05" value="1" style="width:120px">
       <button class="iconDots more" title="Zoom">🔍</button>
     </div>
   `;
 
   const chk   = row.querySelector('#chkTifTiles');
-  const rng   = row.querySelector('#tifOpacity');
   const zoomB = row.querySelector('.more');
 
   chk.addEventListener('change', ()=>{
@@ -2981,16 +3106,10 @@ function installTilesIntoImagesList(sessionName, layerDefs){
     else { try{ MAP.removeLayer(TIF_TILE_GROUP); }catch(_){} }
   });
 
-  rng.addEventListener('input', ()=>{
-    const v = Math.max(0, Math.min(1, parseFloat(rng.value || '1')));
-    (TIF_TILE_LAYERS || []).forEach(l => { try { l.setOpacity(v); } catch {} });
-  });
-
   zoomB.addEventListener('click', ()=>{
-    // zoom to first layer bounds (we stored this in applySessionToMap)
-    const bounds = computeLayerBounds(TIF_TILE_GROUP);
-    if (bounds && bounds.isValid && bounds.isValid()) {
-      MAP.fitBounds(bounds.pad(0.2));
+    // zoom to orthophoto bounds
+    if (TIF_TILE_BOUNDS && TIF_TILE_BOUNDS.isValid && TIF_TILE_BOUNDS.isValid()) {
+      MAP.fitBounds(TIF_TILE_BOUNDS.pad(0.2));
     }
   });
 
@@ -3009,9 +3128,13 @@ function installTileLayers(layers){
   let firstBounds = null;
 
   layers.forEach((Ldef, i)=>{
+    const bounds = (Array.isArray(Ldef.bounds) && Ldef.bounds.length === 2)
+      ? L.latLngBounds(Ldef.bounds)
+      : null;
     const lyr = L.tileLayer(Ldef.template, {
       minZoom: Ldef.minzoom ?? 0,
-      maxZoom: Ldef.maxzoom ?? 22
+      maxZoom: Ldef.maxzoom ?? 22,
+      bounds: bounds || undefined
     });
     group.addLayer(lyr);
     tileLayers.push(lyr);
@@ -3025,7 +3148,7 @@ function installTileLayers(layers){
   });
 
   // register (replaces previous "Raster: …" entries)
-  overlayRegistry["Orthophoto"] = { layer: group, type: "raster", style: { opacity: 1 } };
+  overlayRegistry["Orthophoto"] = { layer: group, type: "raster", bounds: firstBounds };
 
   if (firstBounds){
     try{ MAP.fitBounds(firstBounds, { padding:[20,20] }); }catch(_){}
@@ -3060,7 +3183,7 @@ function installImageMarkers(gj) {
     const layer = L.geoJSON(gj, {
       pointToLayer: (feat, latlng) =>
         L.circleMarker(latlng, { radius: 4, ...style })
-          .bindPopup(`<div class="mini"><b>Image:</b> ${escapeHtml(feat?.properties?.image || '')}</div>`)
+          .bindPopup(`<div class="mini"><b>Image:</b> ${escapeHtml(feat?.properties?.image || feat?.properties?.name || feat?.properties?.file || '')}</div>`)
     }).addTo(MAP);
 
     overlayRegistry[key] = { layer, type: 'geojson', style };
@@ -3238,7 +3361,27 @@ if (imagesListEl){
     if (!btn) return;
     const id = btn.getAttribute('data-id');
     const rec = imageCatalog.find(x => x.id === id);
-    if (rec?.url) window.open(rec.url, '_blank');
+    if (!rec) return;
+
+    // Zoom to image bounds if available
+    if (rec.bounds && rec.bounds.isValid && rec.bounds.isValid()) {
+      try {
+        MAP.fitBounds(rec.bounds.pad(0.2));
+        return;
+      } catch(_) {}
+    }
+
+    // Fallback: zoom to overlay bounds if present
+    const ov = imageOverlays.get(rec.id);
+    if (ov && ov.getBounds) {
+      try {
+        const b = ov.getBounds();
+        if (b.isValid()) {
+          MAP.fitBounds(b.pad(0.2));
+          return;
+        }
+      } catch(_) {}
+    }
   });
 }
 
@@ -3264,7 +3407,7 @@ function refreshLayersPanel(){
         <input type="checkbox" class="layerToggle" data-key="${escapeHtml(key)}" ${MAP.hasLayer(rec.layer) ? 'checked' : ''}>
         <span>${escapeHtml(key)}</span>
       </label>
-      <button class="iconDots layerMenuBtn" data-key="${escapeHtml(key)}" title="Layer menu">⋯</button>
+      <button class="iconDots layerMenuBtn" data-key="${escapeHtml(key)}" title="Layer menu">⋮</button>
     </li>
   `).join('');
 
@@ -3281,6 +3424,24 @@ function refreshLayersPanel(){
       MAP.removeLayer(rec.layer);
     }
   });
+  
+  list.addEventListener('input', (e) => {
+    const slider = e.target.closest('.layerOpacity');
+    if (!slider) return;
+    const key = slider.dataset.key;
+    const rec = overlayRegistry[key];
+    if (!rec || !rec.layer) return;
+    const opacity = slider.value / 100;
+    if (rec.layer.setOpacity) {
+      rec.layer.setOpacity(opacity);
+    } else if (rec.layer.eachLayer) {
+      rec.layer.eachLayer(l => {
+        if (l.setOpacity) l.setOpacity(opacity);
+      });
+    }
+    const valSpan = document.getElementById(`opacity-val-${escapeHtml(key)}`);
+    if (valSpan) valSpan.textContent = slider.value + '%';
+  });
 
   list.addEventListener('click', (e) => {
     const btn = e.target.closest('.layerMenuBtn');
@@ -3294,6 +3455,7 @@ function refreshLayersPanel(){
 
 
 function setAllImages(show){
+  
   imageMarkers.forEach(im => {
     im.shown = show;
     if (show) im.marker.addTo(imageMarkersLayer);
@@ -3380,25 +3542,6 @@ if (btnApply) btnApply.style.display = 'none';  // hide the button
   el.addEventListener('change', applyStyleLive);
 });
 
-
-// ---------- user GeoJSON upload ----------
-$("#fileGeoJSON")?.addEventListener("change", async (e)=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  try{
-    const text = await f.text();
-    const gj = JSON.parse(text);
-    const st = { color: "#ffc107", weight: 2, opacity:1, fillColor:"#ffc107", fillOpacity:0.15 };
-    const layer = L.geoJSON(gj, { style: st }).addTo(MAP);
-    overlayRegistry[`User: ${f.name}`] = { layer, type: "geojson", style: st };
-    refreshLayersPanel();
-    try{ MAP.fitBounds(layer.getBounds(), {padding:[20,20]}); }catch(_){}
-  }catch(_){
-    alert("Invalid GeoJSON");
-  }finally{
-    e.target.value = "";
-  }
-});
 
 // Camera positions upload (WebODM) - frontend-only overrides
 $("#fileCameraPositions")?.addEventListener("change", async (e)=>{
@@ -3809,6 +3952,31 @@ function setupUI(){
     else if (k === "Escape") { _closeLightbox(); e.preventDefault(); }
   });
 
+  // Wire up images opacity slider
+  const imagesOpacitySlider = document.getElementById('imagesOpacitySlider');
+  const imagesOpacityValue = document.getElementById('imagesOpacityValue');
+  if (imagesOpacitySlider) {
+    imagesOpacitySlider.addEventListener('input', (e) => {
+      const opacity = e.target.value / 100;
+      imagesOpacity = opacity;
+      imagesOpacityValue.textContent = e.target.value + '%';
+      // Apply to all image overlays
+      imageOverlays.forEach(ov => {
+        if (ov && ov.setOpacity) {
+          ov.setOpacity(opacity);
+        }
+      });
+      // Apply to orthophoto if it exists
+      if (TIF_TILE_GROUP && TIF_TILE_GROUP.eachLayer) {
+        TIF_TILE_GROUP.eachLayer(l => {
+          if (l.setOpacity) {
+            l.setOpacity(opacity);
+          }
+        });
+      }
+    });
+  }
+
   updateAccurateUI();
   updateOptimizePanel(getColmapState(document.getElementById('selOptimizeDataset')?.value) || null);
 }
@@ -3816,6 +3984,9 @@ function setupUI(){
 document.addEventListener("DOMContentLoaded", async ()=>{
   setupUI();
   initMap();
+  if (typeof initMapOverlayUI === 'function') {
+    initMapOverlayUI();
+  }
   connectLogs();
   await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder'), loadSessions(true)]);
   if($("#selResults").value){ await showResultsForSelected(); }
