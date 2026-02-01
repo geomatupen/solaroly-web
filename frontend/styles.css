@@ -589,31 +589,85 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 
 /* "Color by" row at top */
 #stColorByBlock{
-  display:flex; align-items:center; gap:8px;
+  display:flex; 
+  flex-direction: column;
+  gap:6px;
   margin: 6px 0 8px;
 }
 #stColorByBlock label{ font-size:12px; opacity:.85; }
-#stColorByBlock select{ height:26px; font-size:13px; padding:2px 8px; border-radius:6px; }
-
-#stCatList{ margin-top: 4px; }
-#stCatList .catRow{ margin: 15px 0; }
-#stCatList .catName{
-  font-weight:700; margin-bottom:4px; font-size:13px;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+#stColorByBlock select{ 
+  height:26px; 
+  font-size:13px; 
+  padding:2px 8px; 
+  border-radius:6px;
+  width: 100%;
 }
 
-/* Controls: one line; wrap to two lines on narrow viewport */
-#stCatList .catControls{ display:flex; flex-wrap:wrap; gap:6px 10px; }
-#stCatList .catControls .ctrl{ display:flex; align-items:center; gap:6px; }
-#stCatList .catControls .ctrl label{ font-size:12px; opacity:.85; min-width:52px; }
+#stCatList{ 
+  margin-top: 4px;
+  overflow-y: auto;
+  flex: 1;
+}
+#stCatList .catRow{ 
+  margin: 12px 0; 
+  padding: 0 2px;
+  overflow: hidden;
+}
+#stCatList .catName{
+  font-weight:700; 
+  margin-bottom:6px; 
+  font-size:13px;
+  overflow:hidden; 
+  text-overflow:ellipsis; 
+  white-space:nowrap;
+  word-break: break-word;
+}
 
-#stCatList input[type="color"]{ width:32px; height:22px; padding:0; border-radius:4px; }
-#stCatList input[type="number"]{ width:64px; height:24px; font-size:13px; padding:2px 6px; }
+/* Controls: display as a grid for proper alignment */
+#stCatList .catControls{ 
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+}
+#stCatList .catControls .ctrl{ 
+  display:flex; 
+  flex-direction: column;
+  align-items: flex-start; 
+  gap: 4px;
+  min-width: 0;
+}
+#stCatList .catControls .ctrl label{ 
+  font-size:12px; 
+  opacity:.85; 
+  width: 100%;
+}
 
-/* On very small screens, let each control take ~50% so it becomes two rows */
+#stCatList input[type="color"]{ 
+  width: 100%;
+  max-width: 60px;
+  height:22px; 
+  padding:0; 
+  border-radius:4px; 
+}
+#stCatList input[type="number"]{ 
+  width: 100%;
+  height:24px; 
+  font-size:13px; 
+  padding:2px 6px;
+}
+
+/* On very small screens, adjust layout */
 @media (max-width: 540px){
-  #styleModal .modalContent { right: 8px; top: 64px; width: 92vw; }
-  #stCatList .catControls .ctrl { flex: 1 1 calc(50% - 10px); }
+  #styleModal .modalContent { 
+    right: 8px; 
+    top: 64px; 
+    width: 92vw; 
+    max-height: calc(100vh - 80px);
+  }
+  #stCatList .catControls { 
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Keep it hidden when you add .hidden in JS */

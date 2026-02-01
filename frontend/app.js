@@ -1630,8 +1630,8 @@ document.addEventListener('click', (e)=>{
     const stSel    = document.getElementById('stColorBy');
     const stCat    = document.getElementById('stCatList');
 
-    // Only Anomalies supports styling
-    if (key !== "Anomalies" || !rec?.data){
+    // Check if this is a GeoJSON layer with features
+    if (!rec?.data || !rec.data.features || rec.data.features.length === 0){
       stSelBlk.classList.add('hidden');
       stCat.classList.remove('hidden');
       stCat.innerHTML = `<div class="muted">Styling not available for this layer.</div>`;
@@ -1644,23 +1644,34 @@ document.addEventListener('click', (e)=>{
     stSelBlk.classList.remove('hidden');
     stCat.classList.remove('hidden');
 
-    // Build property list (with "None")
-    const props = new Set(['class_name','class_id','score']);
+    // Collect all properties from features
+    const props = new Set();
     try{
-      const f0 = rec.data.features.find(f => f?.properties) || null;
-      if (f0) Object.keys(f0.properties).forEach(k => props.add(k));
+      rec.data.features.forEach(f => {
+        if (f?.properties) Object.keys(f.properties).forEach(k => props.add(k));
+      });
     }catch(_){}
 
-    // Helper: pick a sensible default
+    // Filter properties: only show those with less than 20 unique values
     const CATEGORY_NONE = '__none__';
-    function pickDefaultProp(){
-      const tryProps = ['class_name','class_id','score', ...props];
-      for (const p of tryProps){
-        if (!p || p === CATEGORY_NONE) continue;
-        const u = uniqueValuesFromGJ(rec.data, p);
-        if (u.length >= 1 && u.length <= 10) return p;
+    const validProps = new Set();
+    for (const p of props){
+      const uniqueVals = uniqueValuesFromGJ(rec.data, p);
+      if (uniqueVals.length > 0 && uniqueVals.length < 20) {
+        validProps.add(p);
       }
-      return CATEGORY_NONE;
+    }
+
+    // Helper: pick a sensible default
+    function pickDefaultProp(){
+      // Try common property names first
+      const tryProps = ['class_name','class_id','category','type','name', ...validProps];
+      for (const p of tryProps){
+        if (!p || p === CATEGORY_NONE || !validProps.has(p)) continue;
+        return p;
+      }
+      // Return first valid prop or CATEGORY_NONE
+      return validProps.size > 0 ? Array.from(validProps)[0] : CATEGORY_NONE;
     }
 
     const currentProp = rec.categorical?.prop ?? pickDefaultProp();
@@ -1670,7 +1681,7 @@ document.addEventListener('click', (e)=>{
     const optNone = document.createElement('option');
     optNone.value = CATEGORY_NONE; optNone.textContent = 'None';
     stSel.appendChild(optNone);
-    Array.from(props).forEach(k=>{
+    Array.from(validProps).sort().forEach(k=>{
       const o = document.createElement('option');
       o.value = k; o.textContent = k;
       if (k === currentProp) o.selected = true;
@@ -1679,7 +1690,7 @@ document.addEventListener('click', (e)=>{
 
     // Build editor for selected prop
     const choose = (val)=>{
-      rebuildCategoryEditors(val);
+      rebuildCategoryEditors(val, key);
     };
 
     choose(currentProp);
@@ -2536,8 +2547,8 @@ function toHex(c){
 
 
 
-function rebuildCategoryEditors(prop){
-  const rec  = overlayRegistry["Anomalies"];
+function rebuildCategoryEditors(prop, layerKey = "Anomalies"){
+  const rec  = overlayRegistry[layerKey];
   const host = document.getElementById("stCatList");
   if (!rec || !rec.data || !host) return;
 
@@ -2551,7 +2562,7 @@ function rebuildCategoryEditors(prop){
   }
 
   // Auto-fallback to "None" if invalid or too many categories
-  const useNone = (!prop || prop === CATEGORY_NONE || values.length === 0 || values.length > 10);
+  const useNone = (!prop || prop === CATEGORY_NONE || values.length === 0 || values.length > 19);
   host.innerHTML = "";
 
   const base = rec.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
@@ -2595,19 +2606,19 @@ function rebuildCategoryEditors(prop){
         fillOpacity: Math.max(0, Math.min(1, parseFloat(iFO.value || "0.25"))),
       };
       rec.categorical = { prop: CATEGORY_NONE, classes, values:[ALL_KEY] };
-      if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+      if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForCategoricalFeature(f, rec.style || {}, rec.categorical));
       renderLegend();
     };
     [iStroke, iW, iSO, iFill, iFO].forEach(inp => inp.addEventListener("input", apply));
 
     // commit
     rec.categorical = { prop: CATEGORY_NONE, classes, values:[ALL_KEY] };
-    if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+    if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForCategoricalFeature(f, rec.style || {}, rec.categorical));
     renderLegend();
     return;
   }
 
-  // Real categories (<=10)
+  // Real categories (<=19)
   values.forEach((v)=>{
     const s = prev[v] || {
       strokeColor: base.color, strokeWidth: base.weight, strokeOpacity: base.opacity,
@@ -2643,14 +2654,14 @@ function rebuildCategoryEditors(prop){
         fillOpacity: Math.max(0, Math.min(1, parseFloat(iFO.value || "0.25"))),
       };
       rec.categorical = { prop, classes, values };
-      if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+      if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForCategoricalFeature(f, rec.style || {}, rec.categorical));
       renderLegend();
     };
     [iStroke, iW, iSO, iFill, iFO].forEach(inp => inp.addEventListener("input", apply));
   });
 
   rec.categorical = { prop, classes, values };
-  if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForAnomalyFeature(f, rec.style || {}));
+  if (rec.layer?.setStyle) rec.layer.setStyle(f => styleForCategoricalFeature(f, rec.style || {}, rec.categorical));
   renderLegend();
 }
 
@@ -2712,10 +2723,9 @@ async function loadGeoJSON(url){
 }
 
 
-function styleForAnomalyFeature(f, fallback){
-  const rec = overlayRegistry["Anomalies"];
-  const cat = rec?.categorical;
-  if (!cat) return fallback || rec?.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
+function styleForCategoricalFeature(f, fallback, categorical){
+  const cat = categorical;
+  if (!cat) return fallback || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
 
   const CATEGORY_NONE = '__none__';
   const ALL_KEY = '__ALL__';
@@ -2731,7 +2741,7 @@ function styleForAnomalyFeature(f, fallback){
         fillOpacity: s.fillOpacity ?? 0.25,
       };
     }
-    return fallback || rec?.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
+    return fallback || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
   }
 
   const key = String(f?.properties?.[cat.prop] ?? "");
@@ -2745,7 +2755,13 @@ function styleForAnomalyFeature(f, fallback){
       fillOpacity: s.fillOpacity ?? 0.25,
     };
   }
-  return fallback || rec?.style || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
+  return fallback || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
+}
+
+function styleForAnomalyFeature(f, fallback){
+  const rec = overlayRegistry["Anomalies"];
+  const cat = rec?.categorical;
+  return styleForCategoricalFeature(f, fallback, cat);
 }
 
 
