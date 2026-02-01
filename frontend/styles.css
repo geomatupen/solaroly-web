@@ -469,6 +469,20 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .layerMenu li{ padding: 8px 12px; cursor: pointer; white-space: nowrap; }
 .layerMenu li:hover{ background: rgba(148,163,184,.15); }
 
+.imageMenu{
+  position: fixed;
+  z-index: 1000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.15);
+  min-width: 180px;
+  background-color: rgb(18 26 34);
+  font-size: .87rem;
+}
+.imageMenu ul{ list-style: none; margin: 0; padding: 6px; }
+.imageMenu li{ padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+.imageMenu li:hover{ background: rgba(148,163,184,.15); }
+
 
 /* ---- Popup table: compact + striped rows ---- */
 .leaflet-popup-content .propTable{

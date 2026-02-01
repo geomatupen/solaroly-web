@@ -4098,6 +4098,63 @@ def _session_tifs(session: str) -> List[Path]:
         tifs = [p for p in (ses_dir / "images").glob("*") if p.suffix.lower() in (".tif", ".tiff")]
     return tifs
 
+def _stitch_tiles_to_tiff(tifs: List[Path], output_path: Path) -> bool:
+    """
+    Stitch multiple GeoTIFF tiles into a single GeoTIFF.
+    Returns True if successful.
+    """
+    if not RIO_OK or not tifs:
+        return False
+    
+    try:
+        import rasterio
+        from rasterio.merge import merge
+        from rasterio.io import MemoryFile
+        
+        # Open all source files
+        sources = []
+        try:
+            for tif_path in tifs:
+                if tif_path.exists():
+                    sources.append(rasterio.open(tif_path))
+            
+            if not sources:
+                logger.warning("No valid source files found for stitching")
+                return False
+            
+            # Merge all tiles
+            merged_data, merged_transform = merge(sources)
+            
+            # Get CRS from first source
+            crs = sources[0].crs
+            
+            # Write merged result
+            with rasterio.open(
+                output_path,
+                'w',
+                driver='GTiff',
+                height=merged_data.shape[1],
+                width=merged_data.shape[2],
+                count=merged_data.shape[0],
+                dtype=merged_data.dtype,
+                crs=crs,
+                transform=merged_transform,
+                compress='lzw'
+            ) as dest:
+                dest.write(merged_data)
+            
+            logger.info(f"Successfully stitched {len(tifs)} tiles to {output_path}")
+            return True
+        finally:
+            # Close all source files
+            for src in sources:
+                if src:
+                    src.close()
+    except Exception as e:
+        logger.error(f"Failed to stitch tiles: {e}", exc_info=True)
+        return False
+
+
 def _build_tile_layer_defs(tile_key: str, tifs: List[Path]) -> List[Dict[str, Any]]:
     """
     Register GeoTIFF sources under tile_key and return Leaflet-ready layer descriptors.
@@ -4279,6 +4336,88 @@ async def api_delete_overlay(request: Request):
     except Exception as e:
         logger.error("Failed to delete overlay: %s", e, exc_info=True)
         raise HTTPException(500, f"Failed to delete overlay: {e}")
+
+
+@app.get("/api/download_overlay")
+async def api_download_overlay(overlay_id: str):
+    """
+    Download an overlay TIF file.
+    """
+    try:
+        overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+        if not overlay_dir.exists():
+            raise HTTPException(404, "Overlay not found")
+        
+        # Find the TIF file in the overlay directory
+        tif_files = list(overlay_dir.glob("*.tif")) + list(overlay_dir.glob("*.tiff"))
+        if not tif_files:
+            raise HTTPException(404, "No TIF file found in overlay")
+        
+        tif_path = tif_files[0]
+        
+        return Response(
+            content=open(tif_path, "rb").read(),
+            media_type="image/tiff",
+            headers={"Content-Disposition": f"attachment; filename={tif_path.name}"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to download overlay: %s", e, exc_info=True)
+        raise HTTPException(500, f"Failed to download overlay: {e}")
+
+
+@app.get("/api/download_ortho")
+async def api_download_ortho(session: str):
+    """
+    Download session orthophoto as GeoTIFF.
+    If multiple tiles exist, stitch them together.
+    """
+    try:
+        if not RIO_OK:
+            raise HTTPException(400, "rasterio not available for stitching")
+        
+        session_dir = MEDIA_DIR / "sessions" / session
+        if not session_dir.exists():
+            raise HTTPException(404, "Session not found")
+        
+        # Look for GeoTIFF files in session directory
+        tif_files = list(session_dir.glob("*.tif")) + list(session_dir.glob("*.tiff"))
+        if not tif_files:
+            raise HTTPException(404, "No GeoTIFF found in session")
+        
+        # If single file, serve it directly
+        if len(tif_files) == 1:
+            tif_path = tif_files[0]
+            return Response(
+                content=open(tif_path, "rb").read(),
+                media_type="image/tiff",
+                headers={"Content-Disposition": f"attachment; filename={tif_path.name}"}
+            )
+        
+        # Multiple files: need to stitch them
+        # Get tile layer defs to reconstruct bounds
+        layers = _build_tile_layer_defs(session, tif_files)
+        if not layers:
+            raise HTTPException(400, "Could not process tiles for stitching")
+        
+        # Stitch the tiles into a single GeoTIFF
+        output_path = session_dir / f"{session}_orthophoto.tif"
+        stitched = _stitch_tiles_to_tiff(tif_files, output_path)
+        
+        if not stitched or not output_path.exists():
+            raise HTTPException(500, "Failed to stitch tiles")
+        
+        return Response(
+            content=open(output_path, "rb").read(),
+            media_type="image/tiff",
+            headers={"Content-Disposition": f"attachment; filename={output_path.name}"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to download orthophoto: %s", e, exc_info=True)
+        raise HTTPException(500, f"Failed to download orthophoto: {e}")
 
 
 @app.post("/api/upload_tif_overlay")

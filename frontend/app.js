@@ -214,7 +214,7 @@ function renderImagesList(){
         <input type="checkbox" class="imgToggle" data-id="${escapeHtml(rec.id)}" ${rec.on ? 'checked' : ''}>
         <span>${escapeHtml(rec.name)}${rec.n ? ` <span style="color:#0a84ff; font-weight:bold;">(${rec.n})</span>` : ''}</span>
       </label>
-      <button class="iconDots openImg" data-id="${escapeHtml(rec.id)}" title="Open image">🔍</button>
+      <button class="iconDots imgMenu" data-id="${escapeHtml(rec.id)}" title="Options">⋮</button>
     </li>
   `).join('');
 }
@@ -1518,6 +1518,7 @@ function openLayerMenu(btn){
     <ul>
       <li data-action="zoom">Zoom to layer</li>
       ${styleItem}
+      <li data-action="download">Download</li>
       <li data-action="delete">Delete</li>
       <li style="border-top: 1px solid #ddd; padding-top: 8px; margin-top: 8px; padding-left: 12px; padding-right: 12px;">
         <div style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
@@ -1701,6 +1702,12 @@ document.addEventListener('click', (e)=>{
     return;
   }
 
+  if (action === 'download') {
+    downloadLayer(key, rec);
+    closeLayerMenu();
+    return;
+  }
+
   if (action === 'delete') {
     // Show confirmation dialog
     const layerName = key || 'this overlay';
@@ -1736,6 +1743,199 @@ document.addEventListener('click', (e)=>{
   }
 
 });
+
+function downloadLayer(key, rec){
+  if (!rec) return;
+  
+  let dataStr, filename, fileType, url;
+  
+  // Handle GeoJSON layers
+  if (rec.data && rec.data.features) {
+    dataStr = JSON.stringify(rec.data, null, 2);
+    filename = `${key}.geojson`;
+    fileType = 'application/json';
+    
+    // Create download link
+    const blob = new Blob([dataStr], { type: fileType });
+    url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } else if (rec.type === 'tif_overlay' || rec.type === 'raster') {
+    // For TIF overlays, request download from backend
+    // Use the overlay_id if available, otherwise use the key
+    const downloadUrl = rec.overlay_id 
+      ? `/api/download_overlay?overlay_id=${encodeURIComponent(rec.overlay_id)}`
+      : null;
+    
+    if (downloadUrl) {
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `${key}.tif`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  }
+}
+
+function openOrthoMenu(btn, sessionName, layerDefs){
+  const orthoMenuEl = document.getElementById('orthoMenu');
+  if (orthoMenuEl) orthoMenuEl.remove();
+  
+  const menu = document.createElement('div');
+  menu.id = 'orthoMenu';
+  menu.className = 'imageMenu';
+  
+  menu.innerHTML = `
+    <ul>
+      <li data-action="zoom">Zoom to layer</li>
+      <li data-action="download">Download</li>
+    </ul>
+  `;
+  
+  document.body.appendChild(menu);
+  
+  // Position the menu
+  const r = btn.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const pad = 8;
+  const mw = menu.offsetWidth || 150;
+  const mh = menu.offsetHeight || 80;
+  
+  let left = Math.round(r.left);
+  let top = Math.round(r.bottom + 4);
+  
+  if (left + mw > vw - pad) {
+    left = Math.round(r.right - mw);
+  }
+  
+  if (top + mh > window.innerHeight - pad) {
+    top = Math.round(r.top - mh - 4);
+  }
+  
+  menu.style.left = Math.max(pad, left) + 'px';
+  menu.style.top = Math.max(pad, top) + 'px';
+  
+  // Handle menu clicks
+  menu.addEventListener('click', (e) => {
+    const action = e.target.closest('li')?.dataset.action;
+    if (!action) return;
+    
+    if (action === 'zoom') {
+      if (TIF_TILE_BOUNDS && TIF_TILE_BOUNDS.isValid && TIF_TILE_BOUNDS.isValid()) {
+        MAP.fitBounds(TIF_TILE_BOUNDS.pad(0.2));
+      }
+    } else if (action === 'download') {
+      // Download ortho - request stitch from backend if multiple tiles
+      const downloadUrl = `/api/download_ortho?session=${encodeURIComponent(sessionName)}`;
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `${sessionName}_ortho.tif`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+    
+    menu.remove();
+  });
+  
+  // Close on outside click
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target) && !btn.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+function openImageMenu(btn){
+  const imageMenuEl = document.getElementById('imageMenu');
+  if (imageMenuEl) imageMenuEl.remove();
+  
+  const id = btn.getAttribute('data-id');
+  const rec = imageCatalog.find(x => x.id === id);
+  if (!rec) return;
+  
+  const menu = document.createElement('div');
+  menu.id = 'imageMenu';
+  menu.className = 'imageMenu';
+  menu.dataset.id = id;
+  
+  menu.innerHTML = `
+    <ul>
+      <li data-action="zoom">Zoom to layer</li>
+      <li data-action="download">Download</li>
+    </ul>
+  `;
+  
+  document.body.appendChild(menu);
+  
+  // Position the menu
+  const r = btn.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const pad = 8;
+  const mw = menu.offsetWidth || 150;
+  const mh = menu.offsetHeight || 80;
+  
+  let left = Math.round(r.left);
+  let top = Math.round(r.bottom + 4);
+  
+  if (left + mw > vw - pad) {
+    left = Math.round(r.right - mw);
+  }
+  
+  if (top + mh > window.innerHeight - pad) {
+    top = Math.round(r.top - mh - 4);
+  }
+  
+  menu.style.left = Math.max(pad, left) + 'px';
+  menu.style.top = Math.max(pad, top) + 'px';
+  
+  // Handle menu clicks
+  menu.addEventListener('click', (e) => {
+    const action = e.target.closest('li')?.dataset.action;
+    if (!action) return;
+    
+    if (action === 'zoom') {
+      if (rec.bounds && rec.bounds.isValid && rec.bounds.isValid()) {
+        MAP.fitBounds(rec.bounds.pad(0.2));
+      } else {
+        const ov = imageOverlays.get(rec.id);
+        if (ov && ov.getBounds) {
+          const b = ov.getBounds();
+          if (b.isValid()) MAP.fitBounds(b.pad(0.2));
+        }
+      }
+    } else if (action === 'download') {
+      // Download the image
+      if (rec.url) {
+        const link = document.createElement('a');
+        link.href = rec.url;
+        link.download = rec.name || rec.id;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    }
+    
+    imageMenuEl?.remove();
+  });
+  
+  // Close on outside click
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target) && !btn.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
 
 // Layer opacity slider in menu
 document.addEventListener('input', (e)=>{
@@ -3109,12 +3309,12 @@ function installTilesIntoImagesList(sessionName, layerDefs){
       <span>${escapeHtml(label)}</span>
     </label>
     <div style="margin-left:auto;display:flex;gap:.75rem;align-items:center;">
-      <button class="iconDots more" title="Zoom">🔍</button>
+      <button class="iconDots orthoMenu" data-session="${escapeHtml(sessionName)}" title="Options">⋮</button>
     </div>
   `;
 
   const chk   = row.querySelector('#chkTifTiles');
-  const zoomB = row.querySelector('.more');
+  const orthoBtn = row.querySelector('.orthoMenu');
 
   chk.addEventListener('change', ()=>{
     if (!TIF_TILE_GROUP) return;
@@ -3122,11 +3322,8 @@ function installTilesIntoImagesList(sessionName, layerDefs){
     else { try{ MAP.removeLayer(TIF_TILE_GROUP); }catch(_){} }
   });
 
-  zoomB.addEventListener('click', ()=>{
-    // zoom to orthophoto bounds
-    if (TIF_TILE_BOUNDS && TIF_TILE_BOUNDS.isValid && TIF_TILE_BOUNDS.isValid()) {
-      MAP.fitBounds(TIF_TILE_BOUNDS.pad(0.2));
-    }
+  orthoBtn.addEventListener('click', ()=>{
+    openOrthoMenu(orthoBtn, sessionName, layerDefs);
   });
 
   list.appendChild(row);
@@ -3373,31 +3570,9 @@ if (imagesListEl){
     }
   });
   imagesListEl.addEventListener('click', (e)=>{
-    const btn = e.target.closest('.openImg');
+    const btn = e.target.closest('.imgMenu');
     if (!btn) return;
-    const id = btn.getAttribute('data-id');
-    const rec = imageCatalog.find(x => x.id === id);
-    if (!rec) return;
-
-    // Zoom to image bounds if available
-    if (rec.bounds && rec.bounds.isValid && rec.bounds.isValid()) {
-      try {
-        MAP.fitBounds(rec.bounds.pad(0.2));
-        return;
-      } catch(_) {}
-    }
-
-    // Fallback: zoom to overlay bounds if present
-    const ov = imageOverlays.get(rec.id);
-    if (ov && ov.getBounds) {
-      try {
-        const b = ov.getBounds();
-        if (b.isValid()) {
-          MAP.fitBounds(b.pad(0.2));
-          return;
-        }
-      } catch(_) {}
-    }
+    openImageMenu(btn);
   });
 }
 
@@ -3995,6 +4170,7 @@ function setupUI(){
 
   updateAccurateUI();
   updateOptimizePanel(getColmapState(document.getElementById('selOptimizeDataset')?.value) || null);
+  renderLegend();
 }
 
 document.addEventListener("DOMContentLoaded", async ()=>{
