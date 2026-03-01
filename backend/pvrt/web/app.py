@@ -18,9 +18,11 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Response, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
@@ -51,6 +53,9 @@ from .bridge import train_entry, predict_entry
 from ..backends.detectron.backend import register as register_detectron
 from ..backends.yolo.backend import register as register_yolo
 
+# --- Project management ---
+from ..core.projects import ProjectManager, Project
+
 # --- SSE/logging bridge ---
 from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
 
@@ -60,6 +65,34 @@ from ..dataops.scan_decode_split import (
 )
 from ..core.io import has_thermal_for_images
 
+# -------- Path utilities --------
+def convert_windows_path_to_wsl(path_str: str) -> str:
+    r"""
+    Convert Windows paths to WSL paths if needed.
+    E.g., 'E:\Termatics' -> '/mnt/e/Termatics'
+    Also handles already-WSL paths and Unix paths.
+    """
+    if not path_str:
+        return path_str
+    
+    # Check if it looks like a Windows path (e.g., E:\, C:\)
+    import re
+    match = re.match(r'^([A-Za-z]):[\\\/](.*)$', path_str)
+    if match:
+        drive_letter = match.group(1).lower()
+        path_part = match.group(2).replace('\\', '/')
+        return f"/mnt/{drive_letter}/{path_part}"
+    
+    # Already a Unix/WSL path or a relative path
+    return path_str
+
+def looks_like_windows_path(path_str: str) -> bool:
+    r"""Check if a path looks like a Windows path (e.g., C:\, D:\Folder\etc)."""
+    if not path_str:
+        return False
+    import re
+    return bool(re.match(r'^[A-Za-z]:[\\\/]', path_str))
+
 # ---------------- Paths & constants ----------------
 ROOT = Path(__file__).resolve().parents[2]        # .../backend/pvrt
 PROJECT_ROOT = ROOT.parent                         # repo root
@@ -67,15 +100,11 @@ DATA_DIR = PROJECT_ROOT / "data"
 TRAIN_DIR = DATA_DIR / "train"
 VALID_DIR = DATA_DIR / "valid"
 TEST_DIR  = DATA_DIR / "test"
-
-OUTPUTS   = PROJECT_ROOT / "outputs" / "runs"      # per-run outputs (weights, meta, logs)
-OUTPUTS.mkdir(parents=True, exist_ok=True)
+DEFAULT_PROJECTS_ROOT = PROJECT_ROOT / "backend" / "projects"
+DEFAULT_PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
-MEDIA_DIR    = PROJECT_ROOT / "media"              # browsable artifacts (thumbs, overlays, geojson)
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-COLMAP_BASE  = MEDIA_DIR / "colmap"
-COLMAP_BASE.mkdir(parents=True, exist_ok=True)
+MEDIA_DIR    = PROJECT_ROOT                          # static root for /media URLs
 
 IMAGE_EXTS = {".jpg",".jpeg",".png",".tif",".tiff",".bmp",".webp",".JPG",".JPEG",".PNG",".TIF",".TIFF",".BMP",".WEBP"}
 
@@ -117,6 +146,105 @@ logger.addHandler(sse_handler)
 # --------------- Backend registration ----------------
 register_detectron(register_backend)  # Detectron now; add YOLO later by registering it here.
 register_yolo(register_backend)
+
+# --------------- Project management ----------------
+PROJECTS_REGISTRY = DEFAULT_PROJECTS_ROOT / "projects.json"
+project_manager = ProjectManager(PROJECTS_REGISTRY)
+
+# Get current active project (first one, or default)
+_active_project: Optional[Project] = None
+def get_active_project() -> Project:
+    """Get the currently active project. If none, return the only/first one."""
+    global _active_project
+    if _active_project is None:
+        projects = project_manager.list_projects()
+        if projects:
+            _active_project = projects[0]
+        else:
+            raise ValueError("No projects configured. Please create a project first.")
+    return _active_project
+
+def set_active_project(project_id: str) -> Project:
+    """Set the active project by ID."""
+    global _active_project
+    project = project_manager.get_project(project_id)
+    if not project:
+        raise ValueError(f"Project {project_id} not found")
+    _active_project = project
+    return project
+
+# ================== Project-aware path helpers ==================
+
+def get_project_data_dir(project: Optional[Project] = None) -> Path:
+    """Get train data directory for project (legacy - returns train/data/)."""
+    if project is None:
+        project = get_active_project()
+    return project.get_train_data_dir()
+
+def get_project_train_dir(project: Optional[Project] = None) -> Path:
+    """Get train/data/train directory for project (training images)."""
+    if project is None:
+        project = get_active_project()
+    return project.get_train_data_dir() / "train"
+
+def get_project_valid_dir(project: Optional[Project] = None) -> Path:
+    """Get train/data/valid directory for project (validation images)."""
+    if project is None:
+        project = get_active_project()
+    return project.get_train_data_dir() / "valid"
+
+def get_project_test_dir(project: Optional[Project] = None) -> Path:
+    """Get test/data directory for project (test images)."""
+    if project is None:
+        project = get_active_project()
+    return project.get_test_data_dir()
+
+def get_project_media_dir(project: Optional[Project] = None) -> Path:
+    """Legacy media directory for project (backward compatibility)."""
+    if project is None:
+        project = get_active_project()
+    return project.get_media_dir()
+
+def get_project_output_dir(project: Optional[Project] = None) -> Path:
+    """Model runs directory (train/outputs) for project."""
+    if project is None:
+        project = get_active_project()
+    return project.get_train_outputs_dir()
+
+def get_project_models_dir(project: Optional[Project] = None) -> Path:
+    """Legacy alias for model runs directory (train/outputs)."""
+    if project is None:
+        project = get_active_project()
+    return project.get_train_outputs_dir()
+
+def get_project_sessions_dir(project: Optional[Project] = None) -> Path:
+    """Test outputs directory (test/outputs) for project."""
+    if project is None:
+        project = get_active_project()
+    return project.get_test_outputs_dir()
+
+
+def get_project_overlays_dir(project: Optional[Project] = None) -> Path:
+    """Overlays directory for project."""
+    if project is None:
+        project = get_active_project()
+    return project.get_overlays_dir()
+
+
+def get_project_colmap_dir(project: Optional[Project] = None) -> Path:
+    """COLMAP workspace directory for project."""
+    if project is None:
+        project = get_active_project()
+    return project.get_colmap_dir()
+
+
+def _media_url(path: Path) -> str:
+    """Convert absolute path to /media URL path."""
+    try:
+        return f"/media/{path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()}"
+    except Exception:
+        return f"/media/{path.name}"
+
 
 # --------------- Cancel flag (best-effort) ----------------
 CANCEL_FLAGS: Dict[str, bool] = {"train": False}
@@ -173,8 +301,9 @@ def _read_model_meta(run_dir: Path) -> dict:
 
 def _list_models() -> List[str]:
     models = []
-    if OUTPUTS.exists():
-        for d in sorted(OUTPUTS.iterdir()):
+    output_dir = get_project_output_dir()
+    if output_dir.exists():
+        for d in sorted(output_dir.iterdir()):
             if d.is_dir() and (d / "model_meta.json").exists():
                 # out.append(p.name)
                 meta = _read_model_meta(d)
@@ -194,12 +323,13 @@ def _list_models() -> List[str]:
     return models
 
 def _unique_dataset_dir(base_name: str) -> Path:
-    d = TEST_DIR / base_name
+    test_dir = get_project_test_dir()
+    d = test_dir / base_name
     if not d.exists():
         return d
     i = 1
     while True:
-        cand = TEST_DIR / f"{base_name}-{i}"
+        cand = test_dir / f"{base_name}-{i}"
         if not cand.exists():
             return cand
         i += 1
@@ -211,16 +341,16 @@ from typing import Any
 def _as_session_dir(ses) -> Path:
     """
     Accept a session name like 'test_20250927_111404' or an absolute Path,
-    and return the media sessions/<name> directory.
+    and return the test outputs/<name> directory.
     """
     p = Path(ses)
     if p.exists():
         return p
-    return MEDIA_DIR / "sessions" / str(ses)
+    return get_project_sessions_dir() / str(ses)
 
 def _load_metrics(ses) -> Dict[str, Any]:
     """
-    Read MEDIA_DIR/sessions/<session>/metrics.json safely.
+    Read test_outputs/<session>/metrics.json safely.
     Returns {} if missing/invalid.
     """
     ses_dir = _as_session_dir(ses)
@@ -411,7 +541,7 @@ def _build_anomalies_geojson_from_tiles(
     tiles_dir,            # folder that contains the tile GeoTIFFs
     preds_dir,            # session results dir, contains "preds/*.json"
     tif_path,             # original source GeoTIFF
-    out_session,          # /media/sessions/<session>
+    out_session,          # /test_outputs/<session>
     class_names,          # list of class names
     score_thresh=0.0,
 ):
@@ -734,18 +864,19 @@ def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> 
 # --- Accurate location (COLMAP) helpers ---
 
 def _colmap_dataset_dir(dataset: str) -> Path:
-    ds_dir = TEST_DIR / dataset
+    test_dir = get_project_test_dir()
+    ds_dir = test_dir / dataset
     if not ds_dir.exists() or not ds_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
     return ds_dir
 
 
 def _colmap_meta_path(dataset: str) -> Path:
-    return COLMAP_BASE / dataset / "colmap_meta.json"
+    return get_project_colmap_dir() / dataset / "colmap_meta.json"
 
 
 def _colmap_ready_path(dataset: str) -> Path:
-    return COLMAP_BASE / dataset / "ready.json"
+    return get_project_colmap_dir() / dataset / "ready.json"
 
 
 def _load_colmap_meta(dataset: str) -> Dict[str, Any]:
@@ -1091,7 +1222,7 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
     job["progress_stage_weight"] = 0.0
 
     ds_dir = _colmap_dataset_dir(dataset)
-    base_dir = COLMAP_BASE / dataset
+    base_dir = get_project_colmap_dir() / dataset
     job_dir = base_dir / job["id"]
     job_dir.mkdir(parents=True, exist_ok=True)
     job["work_dir"] = str(job_dir)
@@ -1436,7 +1567,7 @@ async def api_colmap_start(dataset: str = Form(...), params: str = Form(default=
         raise HTTPException(status_code=409, detail="COLMAP optimization is already running for this dataset.")
 
     # Always clear previous results/cached state on each start; frontend handles user confirmation.
-    base_dir = COLMAP_BASE / dataset
+    base_dir = get_project_colmap_dir() / dataset
     if base_dir.exists():
         try:
             shutil.rmtree(base_dir)
@@ -1819,7 +1950,7 @@ async def _run_colmap_job(job: Dict[str, Any]):
     try:
         colmap_bin = _colmap_binary()
         ds_dir = _colmap_dataset_dir(dataset)
-        work_base = COLMAP_BASE / dataset / job["id"]
+        work_base = get_project_colmap_dir() / dataset / job["id"]
         work_base.mkdir(parents=True, exist_ok=True)
         db_path = work_base / "database.db"
         sparse_dir = work_base / "sparse"
@@ -2884,10 +3015,11 @@ def _list_datasets() -> list[dict]:
     Return detailed dataset info from data/test/.
     Shape: [{"name": "<folder>", "count": <n>, "mtime": <unix-ts>}, ...]
     """
-    if not TEST_DIR.exists():
+    test_dir = get_project_test_dir()
+    if not test_dir.exists():
         return []
     items = []
-    for p in sorted([x for x in TEST_DIR.iterdir() if x.is_dir()],
+    for p in sorted([x for x in test_dir.iterdir() if x.is_dir()],
                     key=lambda x: x.stat().st_mtime, reverse=True):
         items.append({
             "name": p.name,
@@ -2900,10 +3032,10 @@ def _list_datasets() -> list[dict]:
 
 def _list_sessions() -> list[dict]:
     """
-    Return detailed sessions from media/sessions/.
+    Return detailed sessions from test_outputs/.
     Shape: [{"name": "<session-id>", "mtime": <unix-ts>}, ...]
     """
-    base = MEDIA_DIR / "sessions"
+    base = get_project_sessions_dir()
     if not base.exists():
         return []
     items = []
@@ -2958,7 +3090,7 @@ def _session_assets(session_dir: Path) -> dict:
     rotated  = session_dir / "rotated_images"
     def _urls(d: Path):
         if not d.exists(): return []
-        return [f"/media/{d.relative_to(MEDIA_DIR)}/{p.name}" for p in sorted(d.glob("*")) if p.is_file()]
+        return [_media_url(p) for p in sorted(d.glob("*")) if p.is_file()]
     tifs = [u for u in _urls(imgs_dir) if u.lower().endswith((".tif", ".tiff"))]
     return {
         "images": _urls(imgs_dir),
@@ -2974,7 +3106,7 @@ def _session_assets(session_dir: Path) -> dict:
 async def _on_startup() -> None:
     loop = asyncio.get_running_loop()
     broker.set_loop(loop)              # <-- IMPORTANT for real-time streaming
-    _wire_logging_to_sse()  
+    _wire_logging_to_sse()
     logger.info("PVRT API started.")
 
 @app.get("/api/logs")
@@ -2986,6 +3118,205 @@ async def stream_logs():
 @app.get("/api/health")
 async def api_health():
     return {"ok": True, "time": _now_stamp()}
+
+# ================== projects CRUD ==================
+
+@app.get("/api/projects")
+async def list_projects():
+    """List all projects."""
+    projects = project_manager.list_projects()
+    return {"projects": [p.model_dump() for p in projects]}
+
+@app.get("/api/projects/default-root")
+async def get_default_projects_root():
+    """Get default root directory where new projects are created."""
+    return {"default_root": str(DEFAULT_PROJECTS_ROOT.resolve())}
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    """Get project by ID."""
+    project = project_manager.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project.model_dump()
+
+@app.post("/api/projects")
+async def create_project(
+    name: str = Form(...),
+    description: str = Form(default=""),
+    root_path: str = Form(default="")
+):
+    """Create a new project."""
+    import uuid as uuid_lib
+    project_id = str(uuid_lib.uuid4())[:8]
+
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Project name is required")
+
+    project_name = name.strip()
+    
+    if root_path and root_path.strip():
+        # User provided a parent directory path
+        parent_path = root_path.strip()
+        original_path = parent_path  # Keep original for logging
+        
+        # Auto-detect and convert Windows paths silently
+        if looks_like_windows_path(parent_path):
+            parent_path = convert_windows_path_to_wsl(parent_path)
+            logging.info(f"Converting Windows path: {original_path} -> {parent_path}")
+        
+        # Check if parent directory exists
+        parent_dir = Path(parent_path)
+        if not parent_dir.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Parent directory does not exist: '{parent_path}' (converted from: '{original_path}'). Please create the parent folder first or mount the drive if it's external."
+            )
+        
+        # Create project folder inside the parent directory
+        resolved_root_path = str((parent_dir / project_name).resolve())
+        logging.info(f"Parent directory: {parent_dir}")
+        logging.info(f"Project name: {project_name}")
+        logging.info(f"Creating project at: {resolved_root_path}")
+        
+        # Verify path has project name in it
+        if resolved_root_path.endswith(project_name.replace(" ", "\\ ")):
+            logging.info(f"Path validation OK: ends with project name")
+        else:
+            logging.warning(f"Path validation: path does NOT end with '{project_name}'")
+    else:
+        # Use default projects root
+        resolved_root_path = str((DEFAULT_PROJECTS_ROOT / project_name).resolve())
+        logging.info(f"Using default project path: {resolved_root_path}")
+
+    root = Path(resolved_root_path)
+    
+    # Create the directory if it doesn't exist
+    if not root.exists():
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            logging.info(f"Created directory: {resolved_root_path}")
+            
+            # Verify it was actually created
+            if not root.exists():
+                logging.error(f"Directory creation reported success but folder doesn't exist: {resolved_root_path}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Directory creation failed: Path '{resolved_root_path}' was not created. The parent directory may not be writable."
+                )
+            
+            # Try to create a test file to verify write access
+            test_file = root / ".test_write"
+            try:
+                test_file.write_text("test")
+                test_file.unlink()
+                logging.info(f"Write access verified for: {resolved_root_path}")
+            except Exception as write_err:
+                logging.error(f"Write access failed for {resolved_root_path}: {write_err}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No write permissions at '{resolved_root_path}': {str(write_err)}"
+                )
+                
+        except PermissionError as pe:
+            logging.error(f"Permission denied creating {resolved_root_path}: {pe}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Permission denied: Cannot create directory at '{resolved_root_path}'. Check if the drive/path is accessible and you have write permissions."
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.error(f"Failed to create directory {resolved_root_path}: {e}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Failed to create directory at '{resolved_root_path}': {str(e)}"
+            )
+    else:
+        logging.info(f"Directory already exists: {resolved_root_path}")
+    
+    project = Project(
+        id=project_id,
+        name=project_name,
+        description=description,
+        root_path=str(root.resolve())
+    )
+    
+    try:
+        created = project_manager.create_project(project)
+        # Return the created path with success message
+        result = created.model_dump()
+        result["created_path"] = str(root.resolve())
+        result["success_message"] = f"Project '{project_name}' created successfully at: {result['created_path']}"
+        logging.info(f"Project created successfully: {result['created_path']}")
+        return result
+    except ValueError as e:
+        logging.error(f"Failed to create project in registry: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/projects/{project_id}")
+async def update_project(
+    project_id: str,
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    thumbnail_path: Optional[str] = Form(None)
+):
+    """Update project metadata."""
+    updates = {}
+    if name is not None:
+        updates["name"] = name
+    if description is not None:
+        updates["description"] = description
+    if thumbnail_path is not None:
+        updates["thumbnail_path"] = thumbnail_path
+    
+    project = project_manager.update_project(project_id, updates)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project.model_dump()
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    """Delete project from registry and remove all associated files and folders."""
+    try:
+        # Get project before deleting to access root_path
+        project = project_manager.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Delete the project directory if it exists
+        project_root = Path(project.root_path)
+        if project_root.exists():
+            try:
+                shutil.rmtree(project_root)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to delete project folder: {str(e)}")
+        
+        # Delete from registry
+        if not project_manager.delete_project(project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/projects/{project_id}/activate")
+async def activate_project(project_id: str):
+    """Set the active project."""
+    try:
+        project = set_active_project(project_id)
+        return {"ok": True, "project": project.model_dump()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/api/active-project")
+async def get_active_project_endpoint():
+    """Get the currently active project."""
+    try:
+        project = get_active_project()
+        return project.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/cancel")
 async def api_cancel(job: str = Form(...)):
@@ -3015,7 +3346,9 @@ async def api_train(
     clear_existing: bool = Form(False),
 ):
     safe_name = _safe_name(model_name) or _now_stamp()
-    run_dir = OUTPUTS / safe_name
+    output_dir = get_project_output_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = output_dir / safe_name
     
     # Clear existing directory if requested
     if clear_existing and run_dir.exists():
@@ -3038,8 +3371,10 @@ async def api_train(
     # Prepare thermal pairs if requested
     if use_thermal:
         ensure_dirp_init()
-        scan_split_decode_thermal(TRAIN_DIR)
-        scan_split_decode_thermal(VALID_DIR)
+        train_dir = get_project_train_dir()
+        valid_dir = get_project_valid_dir()
+        scan_split_decode_thermal(train_dir)
+        scan_split_decode_thermal(valid_dir)
 
     # Offload the heavy training to a background thread so SSE can stream
     def _do_train():
@@ -3062,10 +3397,12 @@ async def api_train(
                 pvrt_logger = logging.getLogger("pvrt")
                 pvrt_logger.addHandler(fh)
                 root_logger.debug(f"Per-run logging started -> {train_log_path}")
+                train_dir = get_project_train_dir()
+                valid_dir = get_project_valid_dir()
                 return train_entry(
     backend=backend,
-    train_dir=TRAIN_DIR,
-    val_dir=VALID_DIR,
+    train_dir=train_dir,
+    val_dir=valid_dir,
     out_dir=run_dir,
     use_thermal_request=use_thermal,
     max_iter=max_iter,
@@ -3164,10 +3501,10 @@ async def api_dataset_bands(dataset: str):
     # resolve dataset path
     ds = None
     if dataset in ("train", "valid"):
-        base = PROJECT_ROOT / "data"
+        base = get_project_data_dir()
         ds = base / dataset
     else:
-        ds = TEST_DIR / dataset
+        ds = get_project_test_dir() / dataset
 
     if not ds or not ds.exists():
         return {"ok": False, "error": "dataset_not_found", "dataset": dataset}
@@ -3205,9 +3542,9 @@ async def api_decode_dataset(dataset: str = Form(...)):
     """Trigger thermal decoding for a dataset (images pipeline). Returns updated band list."""
     # resolve dataset path similarly to above
     if dataset in ("train", "valid"):
-        ds = PROJECT_ROOT / "data" / dataset
+        ds = get_project_data_dir() / dataset
     else:
-        ds = TEST_DIR / dataset
+        ds = get_project_test_dir() / dataset
 
     if not ds.exists():
         raise HTTPException(status_code=404, detail="dataset not found")
@@ -3338,23 +3675,24 @@ async def api_test_run(
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
-    ds_dir = TEST_DIR / dataset
+    test_dir = get_project_test_dir()
+    ds_dir = test_dir / dataset
     
     if not ds_dir.exists() or not ds_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
 
     if model:
-        model_dir = OUTPUTS / model
+        model_dir = get_project_output_dir() / model
         if not model_dir.exists():
             raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
     else:
         models = _list_models()
         if not models:
             raise HTTPException(status_code=404, detail="No trained models found.")
-        model_dir = OUTPUTS / models[-1]
+        model_dir = get_project_output_dir() / models[0]["name"]
 
     session = (_safe_name(result_name) or _now_stamp())
-    base = MEDIA_DIR / "sessions"
+    base = get_project_sessions_dir()
     ses = base / session
     
     # Clear existing session directory if requested
@@ -3366,7 +3704,7 @@ async def api_test_run(
         except Exception as e:
             logger.warning(f"[test] Failed to clear existing session: {e}")
 
-    out_root = MEDIA_DIR / "sessions" / session
+    out_root = get_project_sessions_dir() / session
     out_root.mkdir(parents=True, exist_ok=True)
 
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
@@ -3795,10 +4133,10 @@ async def api_test_run(
                         break
 
                 if orig_name:
-                    overlay_url = f"/media/{overlay_png.relative_to(MEDIA_DIR)}"
+                    overlay_url = _media_url(overlay_png)
                     thumb_path = thumbs_dir / f"{stem}.png"
                     thumb_url = (
-                        f"/media/{thumb_path.relative_to(MEDIA_DIR)}"
+                        _media_url(thumb_path)
                         if thumb_path.exists()
                         else overlay_url
                     )
@@ -3872,7 +4210,7 @@ async def api_test_run(
         pass
 
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
-    session_dir = MEDIA_DIR / "sessions" / session
+    session_dir = get_project_sessions_dir() / session
     if input_type == "tif":
         anom_gj, imgs_gj = _build_anomalies_geojson_from_tiles(
             tiles_dir=tiles_dir,
@@ -3915,8 +4253,8 @@ async def api_test_run(
             if mp.exists():
                 m = json.loads(mp.read_text(encoding="utf-8"))
             m[tif_src.name] = {
-                "overlay": f"/media/{overlay_png.relative_to(MEDIA_DIR)}",
-                "thumb":   f"/media/{thumb_png.relative_to(MEDIA_DIR)}",
+                "overlay": _media_url(overlay_png),
+                "thumb":   _media_url(thumb_png),
             }
             mp.write_text(json.dumps(m, indent=2), encoding="utf-8")
         except Exception as e:
@@ -3976,11 +4314,11 @@ async def api_test_run(
         "ok": True,
         "session": session,
         "geojson": str(anom_gj),  # backward-compat
-        "anomalies_geojson": f"/media/{anom_gj.relative_to(MEDIA_DIR)}",
-        "images_geojson":    f"/media/{imgs_gj.relative_to(MEDIA_DIR)}",
+        "anomalies_geojson": _media_url(anom_gj),
+        "images_geojson":    _media_url(imgs_gj),
         "results_dir": str(preds_dir),
-        "overlays": f"/media/{ov_dir.relative_to(MEDIA_DIR)}",
-        "thumbs":   f"/media/{th_dir.relative_to(MEDIA_DIR)}",
+        "overlays": _media_url(ov_dir),
+        "thumbs":   _media_url(th_dir),
         "manifest": manifest_items,
         "assets": assets,
         "backend": presp.get("used_backend"),
@@ -3988,7 +4326,7 @@ async def api_test_run(
         "used_thermal": bool(presp.get("used_thermal")),
         "used_channel_count": int(presp.get("used_channel_count") or 0),
         "final_mode": presp.get("final_mode"),
-        "media_root": f"/media/sessions/{out_root.name}",
+        "media_root": _media_url(out_root),
     }
 
 
@@ -4009,7 +4347,7 @@ async def api_sessions():
 
 @app.get("/api/session_summary")
 async def api_session_summary(session: str):
-    base = MEDIA_DIR / "sessions"
+    base = get_project_sessions_dir()
     ses = base / session
     if not ses.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -4019,11 +4357,40 @@ async def api_session_summary(session: str):
 
     manifest_path = ses / "manifest.json"
     manifest = []
+
+    def _normalize_session_asset_url(value: Any) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        try:
+            parsed = urlparse(value)
+            path = parsed.path or value
+        except Exception:
+            path = value
+
+        marker = f"/{session}/"
+        if marker in path:
+            rel = path.split(marker, 1)[1]
+            if rel and any(rel.startswith(prefix) for prefix in ("overlays/", "thumbs/", "images/", "rotated_images/", "anomalies.geojson", "images.geojson")):
+                target = ses / rel
+                if target.exists():
+                    return _media_url(target)
+        return value
+
     if manifest_path.exists():
         try:
             manifest_obj = json.loads(manifest_path.read_text())
             # Convert manifest object to array with file field
-            manifest = [{"file": fname, **entry} for fname, entry in manifest_obj.items()]
+            manifest = []
+            for fname, entry in manifest_obj.items():
+                if isinstance(entry, dict):
+                    normalized_entry = dict(entry)
+                    if "overlay" in normalized_entry:
+                        normalized_entry["overlay"] = _normalize_session_asset_url(normalized_entry.get("overlay"))
+                    if "thumb" in normalized_entry:
+                        normalized_entry["thumb"] = _normalize_session_asset_url(normalized_entry.get("thumb"))
+                    manifest.append({"file": fname, **normalized_entry})
+                else:
+                    manifest.append({"file": fname})
         except Exception:
             manifest = []
     # collect assets and optional camera_meta.json
@@ -4045,9 +4412,9 @@ async def api_session_summary(session: str):
         "ok": True,
         "session": session,
         # keep old key for backward compatibility (anomalies)
-        "geojson_url": f"/media/{gj.relative_to(MEDIA_DIR)}" if gj.exists() else None,
+        "geojson_url": _media_url(gj) if gj.exists() else None,
         # NEW: where image footprints live (if you created them)
-        "images_geojson_url": f"/media/{imgs_gj.relative_to(MEDIA_DIR)}" if imgs_gj.exists() else None,
+        "images_geojson_url": _media_url(imgs_gj) if imgs_gj.exists() else None,
         "assets": assets,
         "manifest": manifest,   # still the parsed JSON (not a path)
         "tiler": "ok" if RIO_OK else "unavailable",
@@ -4061,14 +4428,14 @@ async def api_session_summary(session: str):
 
 @app.get("/api/results/{session}/metrics")
 def api_metrics(session: str):
-    p = MEDIA_DIR / "sessions" / session / "metrics.json"
+    p = get_project_sessions_dir() / session / "metrics.json"
     if not p.exists():
         raise HTTPException(404, "metrics.json not found")
     return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
 
 @app.get("/api/runs/{run_name}/meta")
 def api_model_meta(run_name: str):
-    p = OUTPUTS / run_name / "model_meta.json"
+    p = get_project_output_dir() / run_name / "model_meta.json"
     if not p.exists():
         raise HTTPException(404, "model_meta.json not found")
     return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
@@ -4081,9 +4448,9 @@ _TILER_STATS: Dict[tuple, Dict[str, Any]] = {}   # per (session, idx) cached str
 def _session_tifs(session: str) -> List[Path]:
     """
     Prefer absolute source paths recorded in metrics.json under 'source_tifs'.
-    Fallback: look in media/sessions/<session>/images for *.tif.
+    Fallback: look in test_outputs/<session>/images for *.tif.
     """
-    ses_dir = MEDIA_DIR / "sessions" / session
+    ses_dir = get_project_sessions_dir() / session
     if not ses_dir.exists():
         return []
     tifs: List[Path] = []
@@ -4242,9 +4609,9 @@ async def api_session_tiles(session: str):
 def api_list_overlays():
     """
     List all saved overlay directories and their metadata.
-    Returns GeoJSON and GeoTIFF overlays from media/overlays/.
+    Returns GeoJSON and GeoTIFF overlays from project overlays directory.
     """
-    overlays_dir = MEDIA_DIR / "overlays"
+    overlays_dir = get_project_overlays_dir()
     if not overlays_dir.exists():
         return {"ok": True, "overlays": []}
     
@@ -4261,7 +4628,7 @@ def api_list_overlays():
                 "name": gj_file.stem,
                 "overlay_id": overlay_dir.name,
                 "file": gj_file.name,
-                "path": f"/media/overlays/{overlay_dir.name}/{gj_file.name}"
+                "path": _media_url(gj_file)
             })
         
         # Look for GeoTIFF files
@@ -4283,7 +4650,7 @@ async def api_upload_geojson_overlay(
     name: str | None = Form(None),
 ):
     """
-    Upload a GeoJSON file and save it under media/overlays/<overlay_id>/.
+    Upload a GeoJSON file and save it under project overlays/<overlay_id>/.
     """
     if not file or not file.filename:
         raise HTTPException(400, "No file uploaded")
@@ -4294,7 +4661,7 @@ async def api_upload_geojson_overlay(
 
     safe = _safe_name(name) or _safe_name(Path(file.filename).stem) or "overlay"
     overlay_id = f"overlay-{safe}-{_now_stamp()}-{uuid.uuid4().hex[:6]}"
-    overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+    overlay_dir = get_project_overlays_dir() / overlay_id
     overlay_dir.mkdir(parents=True, exist_ok=True)
 
     dest_name = f"{safe}.geojson"
@@ -4306,7 +4673,7 @@ async def api_upload_geojson_overlay(
     return {
         "ok": True,
         "overlay_id": overlay_id,
-        "path": f"/media/overlays/{overlay_id}/{dest_name}",
+        "path": _media_url(dest_path),
     }
 
 
@@ -4325,7 +4692,7 @@ async def api_delete_overlay(request: Request):
         
         logger.info("Attempting to delete overlay: %s", overlay_id)
         
-        overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+        overlay_dir = get_project_overlays_dir() / overlay_id
         if not overlay_dir.exists():
             logger.warning("Overlay directory not found: %s", overlay_dir)
             return {"ok": False, "error": "Overlay not found"}
@@ -4344,7 +4711,7 @@ async def api_download_overlay(overlay_id: str):
     Download an overlay TIF file.
     """
     try:
-        overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+        overlay_dir = get_project_overlays_dir() / overlay_id
         if not overlay_dir.exists():
             raise HTTPException(404, "Overlay not found")
         
@@ -4377,7 +4744,7 @@ async def api_download_ortho(session: str):
         if not RIO_OK:
             raise HTTPException(400, "rasterio not available for stitching")
         
-        session_dir = MEDIA_DIR / "sessions" / session
+        session_dir = get_project_sessions_dir() / session
         if not session_dir.exists():
             raise HTTPException(404, "Session not found")
         
@@ -4427,7 +4794,7 @@ async def api_upload_tif_overlay(
 ):
     """
     Upload a GeoTIFF and return tile layer descriptors for map overlays.
-    Stores the file under media/overlays/<overlay_id>/.
+    Stores the file under overlays/<overlay_id>/ in active project.
     """
     if not RIO_OK:
         return {"ok": False, "error": "rasterio_not_available"}
@@ -4441,7 +4808,7 @@ async def api_upload_tif_overlay(
 
     safe = _safe_name(name) or _safe_name(Path(file.filename).stem) or "overlay"
     overlay_id = f"overlay-{safe}-{_now_stamp()}-{uuid.uuid4().hex[:6]}"
-    overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+    overlay_dir = get_project_overlays_dir() / overlay_id
     overlay_dir.mkdir(parents=True, exist_ok=True)
 
     dest_name = f"{safe}{ext}"
@@ -4467,7 +4834,7 @@ def api_get_overlay_tiles(overlay_id: str):
     if not RIO_OK:
         return {"ok": False, "error": "rasterio_not_available"}
     
-    overlay_dir = MEDIA_DIR / "overlays" / overlay_id
+    overlay_dir = get_project_overlays_dir() / overlay_id
     if not overlay_dir.exists():
         raise HTTPException(404, "Overlay not found")
     
@@ -4619,6 +4986,5 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
 
 # -------------- Serve media & frontend --------------
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")
-app.mount("/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="web")

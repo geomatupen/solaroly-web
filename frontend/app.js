@@ -14,8 +14,200 @@ const api = {
   colmapState: "/api/colmap/state",
   colmapCameras: "/api/colmap/cameras",
   colmapStart: "/api/colmap/start",
-  colmapFinish: "/api/colmap/finish"
+  colmapFinish: "/api/colmap/finish",
+  projects: "/api/projects",
+  activeProject: "/api/active-project"
 };
+
+// Project management
+let allProjects = [];
+// ================= Project Selection Persistence =================
+function saveSelectedProject(projectId) {
+  /**
+   * Save selected project to localStorage
+   */
+  if (projectId) {
+    localStorage.setItem("selectedProjectId", projectId);
+  } else {
+    localStorage.removeItem("selectedProjectId");
+  }
+}
+
+function getSelectedProjectFromStorage() {
+  /**
+   * Retrieve selected project from localStorage
+   */
+  return localStorage.getItem("selectedProjectId");
+}
+function getProjectIdFromURL() {
+  /**
+   * Parse project ID from URL query parameter: ?projectId=<id>
+   * Also supports path format as fallback: /projects/<id>/
+   */
+  const params = new URLSearchParams(window.location.search);
+  const projectIdFromQuery = params.get('projectId');
+  if (projectIdFromQuery) return projectIdFromQuery;
+  
+  const pathname = window.location.pathname;
+  const match = pathname.match(/\/projects\/([a-f0-9-]+)\//i);
+  if (match) return match[1];
+  return null;
+}
+
+function navigateToProject(projectId) {
+  /**
+   * Navigate to project page: project.html?projectId=<id>
+   */
+  console.log("navigateToProject called with projectId:", projectId);
+  
+  if (!projectId) {
+    console.error("navigateToProject: No projectId provided");
+    return;
+  }
+  
+  const newUrl = `/project.html?projectId=${projectId}`;
+  console.log("Setting window.location.href to:", newUrl);
+  window.location.href = newUrl;
+  console.log("Navigation triggered (this may not log if page reloads)");
+}
+
+function addPopstateListener() {
+  /**
+   * Listen for browser back button (popstate event)
+   * Allows navigation between projects using browser back/forward
+   */
+  window.addEventListener('popstate', async (event) => {
+    const projectId = getProjectIdFromURL();
+    if (projectId && activeProject?.id !== projectId) {
+      // Switch to the project from URL
+      try {
+        await activateProject(projectId);
+        updateProjectUI();
+        switchToTab("tab-test");
+      } catch (err) {
+        console.error("Failed to switch project from URL:", err);
+      }
+    }
+  });
+}
+
+async function loadProjects() {
+  try {
+    const resp = await fetch(api.projects);
+    const data = await resp.json();
+    allProjects = data.projects || [];
+    allProjectsOriginal = [...allProjects];  // Keep a copy of the original list
+    return allProjects;
+  } catch (err) {
+    console.error("Failed to load projects:", err);
+    return [];
+  }
+}
+
+async function getActiveProject() {
+  try {
+    const resp = await fetch(api.activeProject);
+    if (resp.ok) {
+      activeProject = await resp.json();
+      return activeProject;
+    }
+  } catch (err) {
+    console.error("Failed to get active project:", err);
+  }
+  return null;
+}
+
+async function createProject(name, description, rootPath) {
+  const formData = new FormData();
+  formData.append("name", name);
+  formData.append("description", description);
+  formData.append("root_path", rootPath);
+  
+  try {
+    const resp = await fetch(api.projects, {
+      method: "POST",
+      body: formData
+    });
+    if (resp.ok) {
+      const project = await resp.json();
+      allProjects.push(project);
+      return project;
+    } else {
+      const err = await resp.json();
+      throw new Error(err.detail || "Failed to create project");
+    }
+  } catch (err) {
+    console.error("Failed to create project:", err);
+    throw err;
+  }
+}
+
+async function activateProject(projectId) {
+  try {
+    const resp = await fetch(`${api.projects}/${projectId}/activate`, {
+      method: "POST"
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      activeProject = data.project;
+      updateProjectUI();
+      return data.project;
+    } else {
+      throw new Error("Failed to activate project");
+    }
+  } catch (err) {
+    console.error("Failed to activate project:", err);
+    throw err;
+  }
+}
+
+async function deleteProject(projectId) {
+  try {
+    const resp = await fetch(`${api.projects}/${projectId}`, {
+      method: "DELETE"
+    });
+    if (resp.ok) {
+      allProjects = allProjects.filter(p => p.id !== projectId);
+      return true;
+    } else {
+      throw new Error("Failed to delete project");
+    }
+  } catch (err) {
+    console.error("Failed to delete project:", err);
+    throw err;
+  }
+}
+
+function updateProjectUI() {
+  const currentProjectInfo = $("#currentProjectInfo");
+  const currentProjectName = $("#currentProjectName");
+  
+  if (activeProject) {
+    if (currentProjectInfo) currentProjectInfo.style.display = "block";
+    if (currentProjectName) currentProjectName.textContent = activeProject.name;
+    
+    // Show project-specific tabs
+    $$(".tabs button[data-tab]").forEach(btn => {
+      if (btn.id === "btnProjectsHome") {
+        btn.style.display = "none";
+      } else {
+        btn.style.display = "inline-block";
+      }
+    });
+  } else {
+    if (currentProjectInfo) currentProjectInfo.style.display = "none";
+    // Hide project-specific tabs, show only Projects tab
+    $$(".tabs button[data-tab]").forEach(btn => {
+      if (btn.id === "btnProjectsHome") {
+        btn.style.display = "inline-block";
+      } else {
+        btn.style.display = "none";
+      }
+    });
+    // Make sure Projects tab is active
+    switchToTab("tab-projects");
+  }
+}
 
 let MAP, baseLayers, overlayRegistry = {};
 let imagesLayerGroup = null;           // holds all image markers/overlays
@@ -2249,12 +2441,42 @@ function toggleBaseStyleDisabled(disabled){
 
 
 // ---------- upload modal ----------
-function openUploadModal(){ $("#uploadModal").classList.remove("hidden"); }
-function closeUploadModal(){ $("#uploadModal").classList.add("hidden"); }
+function openUploadModal(){
+  const modal = $("#uploadModal");
+  if(!modal) return;
+  modal.classList.add("show");
+  modal.classList.remove("hidden");
+}
+function closeUploadModal(){
+  const modal = $("#uploadModal");
+  if(!modal) return;
+  modal.classList.remove("show");
+  modal.classList.add("hidden");
+}
+function updateFileCount(){
+  const input = $("#filesTest");
+  const countDisplay = document.getElementById("fileCountDisplay");
+  if(!countDisplay) return;
+  
+  const count = input.files ? input.files.length : 0;
+  if(count === 0){
+    countDisplay.textContent = "";
+  } else {
+    countDisplay.textContent = `(${count} file${count !== 1 ? 's' : ''})`;
+  }
+}
+
 function resetUploadProgress(){
   $("#testUploadBar").style.width = "0%";
   setText("#testUploadText","Uploading… 0%");
   setHidden($("#testUploadProgress"), true);
+  // Reset file input and count display
+  const filesInput = $("#filesTest");
+  if(filesInput) filesInput.value = "";
+  const countDisplay = document.getElementById("fileCountDisplay");
+  if(countDisplay) countDisplay.textContent = "";
+  const nameInput = document.getElementById("inpUploadName");
+  if(nameInput) nameInput.value = "";
 }
 
 async function startUpload(){
@@ -2264,6 +2486,7 @@ async function startUpload(){
     return;
   }
   clearAlerts("test");
+  closeUploadModal();  // Close modal immediately to show full progress bar
   setHidden($("#testUploadProgress"), false);
   $("#testUploadBar").style.width = "0%";
   setText("#testUploadText","Uploading… 0%");
@@ -2291,7 +2514,7 @@ async function startUpload(){
           ok("test", `Upload complete. Created: ${js.created.join(", ")}`);
           setHidden($("#testUploadProgress"), true);
           loadDatasets();
-          closeUploadModal();
+          resetUploadProgress();
           resolve();
         }else{
           err("test","Upload failed.");
@@ -3201,9 +3424,28 @@ async function applySessionToMap(sessionName){
   lastLoadedSessionSummary = sum || null;
   rotatedImagesLookup = null;
 
-  const sessRoot   = `/media/sessions/${encodeURIComponent(sessionName)}/`;
-  const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot + 'anomalies.geojson');
-  const imagesUrl    = sum.images_geojson    || sum.images      || sum.images_gj || (sessRoot + 'images.geojson');
+  const _sessionRootFromSummary = () => {
+    const candidates = [
+      sum?.images_geojson_url,
+      sum?.images_geojson,
+      sum?.images,
+      sum?.images_gj,
+      sum?.geojson_url,
+      sum?.anomalies_geojson,
+      sum?.geojson,
+    ];
+    for (const url of candidates) {
+      if (!url || typeof url !== 'string') continue;
+      const clean = url.split('?')[0];
+      const idx = clean.lastIndexOf('/');
+      if (idx > 0) return clean.slice(0, idx + 1);
+    }
+    return null;
+  };
+
+  const sessRoot = _sessionRootFromSummary();
+  const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot ? (sessRoot + 'anomalies.geojson') : null);
+  const imagesUrl = sum.images_geojson_url || sum.images_geojson || sum.images || sum.images_gj || (sessRoot ? (sessRoot + 'images.geojson') : null);
 
   // 2) anomalies polygons (load regardless)
   if (anomaliesUrl){
@@ -3473,6 +3715,28 @@ async function loadImagesCatalog(sessionName, imagesUrl){
 
     // 2b) build imageCatalog for actual image overlays (use modifiedGJ)
     imageCatalog = [];
+    const overlaysFromSummary = Array.isArray(lastLoadedSessionSummary?.assets?.overlays)
+      ? lastLoadedSessionSummary.assets.overlays
+      : [];
+    const overlayByName = new Map();
+    for (const overlayUrl of overlaysFromSummary) {
+      if (typeof overlayUrl !== 'string' || !overlayUrl) continue;
+      const fileName = (()=>{
+        try { return decodeURIComponent(String(overlayUrl).split('?')[0].split('/').pop() || ''); }
+        catch(_) { return String(overlayUrl).split('?')[0].split('/').pop() || ''; }
+      })();
+      if (fileName) overlayByName.set(fileName, overlayUrl);
+    }
+
+    const sessionRoot = (() => {
+      const seed = lastLoadedSessionSummary?.images_geojson_url
+        || lastLoadedSessionSummary?.geojson_url
+        || imagesUrl;
+      if (!seed || typeof seed !== 'string') return null;
+      const clean = seed.split('?')[0];
+      const idx = clean.lastIndexOf('/');
+      return idx > 0 ? clean.slice(0, idx + 1) : null;
+    })();
     const feats = Array.isArray(modifiedGJ?.features) ? modifiedGJ.features : [];
     for (const f of feats){
       if (f?.geometry?.type !== 'Point') continue;
@@ -3487,8 +3751,10 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       // Use overlay PNG path (contains annotations/predictions)
       // Do not use rotated_images (those are for inference only)
       const stem = file.replace(/\.[^.]+$/, '');
-      const defaultOverlay = `/media/sessions/${encodeURIComponent(sessionName)}/overlays/${encodeURIComponent(stem)}.png`;
-      const url = defaultOverlay;
+      const overlayName = `${stem}.png`;
+      const defaultOverlay = sessionRoot ? `${sessionRoot}overlays/${encodeURIComponent(overlayName)}` : null;
+      const url = overlayByName.get(overlayName) || defaultOverlay;
+      if (!url) continue;
 
       // If the backend provided true footprint corners, use them (and rotation)
       let bounds = null;
@@ -3940,13 +4206,16 @@ function setupUI(){
   if(btnCancelUpload) btnCancelUpload.addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
   const btnStartUpload = $("#btnStartUpload");
   if(btnStartUpload) btnStartUpload.addEventListener("click", startUpload);
+  
+  const filesTestInput = $("#filesTest");
+  if(filesTestInput) filesTestInput.addEventListener("change", updateFileCount);
 
-  const btnTrain = $("#btnTrain");
+  const btnTrain = $("#btnStartTraining");
   if(btnTrain) btnTrain.addEventListener("click", startTraining);
   const btnCancelTrain = $("#btnCancelTrain");
   if(btnCancelTrain) btnCancelTrain.addEventListener("click", cancelTraining);
 
-  const btnTest = $("#btnTest");
+  const btnTest = $("#btnRunTest");
   if(btnTest) btnTest.addEventListener("click", runTest);
   const btnCancelTest = $("#btnCancelTest");
   if(btnCancelTest) btnCancelTest.addEventListener("click", cancelTest);
@@ -4174,6 +4443,33 @@ function setupUI(){
 }
 
 document.addEventListener("DOMContentLoaded", async ()=>{
+  // Check if there's a project ID in the URL query parameter (REQUIRED for project.html)
+  const projectIdFromURL = getProjectIdFromURL();
+  
+  if (!projectIdFromURL) {
+    // No projectId in URL - show error and redirect to home
+    console.warn("project.html opened without projectId in URL");
+    const container = document.querySelector("main") || document.body;
+    container.innerHTML = `
+      <div style="padding: 2rem; text-align: center; color: var(--error);">
+        <h2>No Project Selected</h2>
+        <p>Please select a project from the <a href="/index.html">home page</a></p>
+      </div>
+    `;
+    return;
+  }
+  
+  // ProjectId found in URL - activate it
+  try {
+    console.log("Activating project from URL:", projectIdFromURL);
+    await activateProject(projectIdFromURL);
+    // Save to localStorage for persistence
+    saveSelectedProject(projectIdFromURL);
+  } catch (err) {
+    console.warn("Failed to activate project from URL:", projectIdFromURL, err);
+    saveSelectedProject(null);
+  }
+  
   setupUI();
   initMap();
   if (typeof initMapOverlayUI === 'function') {
@@ -4220,6 +4516,389 @@ function startAutoStamping() {
   }, msToNextMinute);
 }
 document.addEventListener("DOMContentLoaded", startAutoStamping);
+
+// ================= Projects UI =================
+
+async function initializeProjectsUI() {
+  // Setup popstate listener for back button
+  addPopstateListener();
+  
+  // Load projects
+  await loadProjects();
+  
+  // Check if project ID is in URL (priority 1)
+  const projectIdFromURL = getProjectIdFromURL();
+  
+  // Check if project ID is saved in localStorage (priority 2)
+  const projectIdFromStorage = getSelectedProjectFromStorage();
+  
+  let project = null;
+  let projectIdToLoad = projectIdFromURL || projectIdFromStorage;
+  
+  if (projectIdToLoad) {
+    // Try to load project (from URL or localStorage)
+    try {
+      await activateProject(projectIdToLoad);
+      project = activeProject;
+      // Save to localStorage and URL so it persists across reloads
+      saveSelectedProject(projectIdToLoad);
+      // Update URL if projectId is not already there
+      if (!projectIdFromURL && projectIdFromStorage) {
+        window.history.replaceState({}, '', `/project.html?projectId=${projectIdToLoad}`);
+      }
+    } catch (err) {
+      console.warn("Project not found:", projectIdToLoad, err);
+      // Clear storage if project no longer exists
+      saveSelectedProject(null);
+    }
+  }
+  
+  if (project) {
+    activeProject = project;
+    updateProjectUI();
+    // Load the test tab by default when a project is active
+    switchToTab("tab-test");
+  } else {
+    // No project selected - show projects page (homepage)
+    activeProject = null;
+    updateProjectUI();
+  }
+  
+  // Render project cards
+  renderProjectCards();
+  
+  // Setup event listeners
+  setupProjectEventListeners();
+}
+
+function renderProjectCards() {
+  const grid = $("#projectsGrid");
+  const noMsg = $("#noProjectsMsg");
+  
+  if (!grid || !noMsg) return;
+  
+  // Reset search and sort to show all projects
+  const searchInput = $("#projectSearch");
+  if (searchInput) searchInput.value = "";
+  
+  if (allProjects.length === 0) {
+    grid.innerHTML = "";
+    noMsg.style.display = "block";
+    return;
+  }
+  
+  // Update original list in case it was modified
+  allProjectsOriginal = [...allProjects];
+  
+  noMsg.style.display = "none";
+  grid.innerHTML = allProjects.map(project => `
+    <div class="projectCard ${activeProject?.id === project.id ? 'active' : ''}" data-project-id="${project.id}">
+      <div class="projectThumbnail">📁</div>
+      <div class="projectCardContent">
+        <h3>${escapeHtml(project.name)}</h3>
+        <div class="description">${escapeHtml(project.description || "No description")}</div>
+        <div class="projectCardMeta">
+          <span>${new Date(project.modified_at).toLocaleDateString()}</span>
+        </div>
+        <div class="projectCardActions">
+          <a href="/project.html?projectId=${project.id}" class="open" style="display: inline-block; padding: 0.5rem 1rem; text-decoration: none; border-radius: 8px; background: var(--primary); color: white; cursor: pointer; border: none; font-size: 0.95rem;">Open</a>
+          <button type="button" id="btnEditProject_${project.id}" class="secondary tiny">Edit</button>
+          <button type="button" id="btnDeleteProject_${project.id}" class="secondary tiny" style="color:var(--err);">Delete</button>
+        </div>
+      </div>
+    </div>
+  `).join("");
+  
+  // Attach event listeners to cards
+  $$(".projectCard").forEach(card => {
+    card.addEventListener("click", (e) => {
+      // Don't intercept clicks on buttons or links - let them handle themselves
+      if (!e.target.closest("button") && !e.target.closest("a")) {
+        const projectId = card.dataset.projectId;
+        activateProjectAndSwitch(projectId);
+      }
+    });
+  });
+  
+  allProjects.forEach(project => {
+    const editBtn = $(`#btnEditProject_${project.id}`);
+    const deleteBtn = $(`#btnDeleteProject_${project.id}`);
+    
+    if (editBtn) {
+      editBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showProjectModal(project);
+      });
+    }
+    
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete project "${project.name}"? (Files will not be deleted.)`)) {
+          deleteProject(project.id).then(() => {
+            renderProjectCards();
+          }).catch(err => {
+            alert("Error deleting project: " + err.message);
+          });
+        }
+      });
+    }
+  });
+}
+
+function setupProjectEventListeners() {
+  const newProjectBtn = $("#btnNewProject");
+  const createFirstLink = $("#createFirstProject");
+  const modalCancel = $("#projectModalCancel");
+  const modalSave = $("#projectModalSave");
+  const projectSearch = $("#projectSearch");
+  const projectSort = $("#projectSort");
+  
+  if (newProjectBtn) {
+    newProjectBtn.addEventListener("click", () => {
+      showProjectModal(null);
+    });
+  }
+  
+  if (createFirstLink) {
+    createFirstLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      showProjectModal(null);
+    });
+  }
+  
+  if (modalCancel) {
+    modalCancel.addEventListener("click", closeProjectModal);
+  }
+  
+  if (modalSave) {
+    modalSave.addEventListener("click", saveProject);
+  }
+  
+  if (projectSearch) {
+    projectSearch.addEventListener("input", () => {
+      applyProjectFilters();
+    });
+  }
+  
+  if (projectSort) {
+    projectSort.addEventListener("change", () => {
+      applyProjectFilters();
+    });
+  }
+}
+
+function showProjectModal(project = null) {
+  const modal = $("#projectModal");
+  const title = $("#projectModalTitle");
+  const nameInput = $("#projectName");
+  const descInput = $("#projectDescription");
+  const pathInput = $("#projectPath");
+  const saveBtn = $("#projectModalSave");
+  
+  if (!modal) return;
+  
+  if (project) {
+    title.textContent = "Edit Project";
+    nameInput.value = project.name;
+    descInput.value = project.description || "";
+    pathInput.value = project.root_path;
+    pathInput.disabled = true;
+    saveBtn.textContent = "Save Changes";
+  } else {
+    title.textContent = "New Project";
+    nameInput.value = "";
+    descInput.value = "";
+    pathInput.value = "";
+    pathInput.disabled = false;
+    saveBtn.textContent = "Create Project";
+  }
+  
+  modal.classList.add("show");
+  nameInput.focus();
+  
+  // Store project ID for editing
+  modal.dataset.projectId = project?.id || "";
+}
+
+function closeProjectModal() {
+  const modal = $("#projectModal");
+  if (modal) {
+    modal.classList.remove("show");
+    delete modal.dataset.projectId;
+  }
+}
+
+async function saveProject() {
+  const nameInput = $("#projectName");
+  const descInput = $("#projectDescription");
+  const pathInput = $("#projectPath");
+  const modal = $("#projectModal");
+  
+  const name = nameInput.value.trim();
+  const desc = descInput.value.trim();
+  const path = pathInput.value.trim();
+  
+  if (!name) {
+    alert("Please enter a project name");
+    return;
+  }
+  
+  const projectId = modal.dataset.projectId;
+  
+  try {
+    if (projectId) {
+      // Edit mode - update project
+      const formData = new FormData();
+      formData.append("name", name);
+      formData.append("description", desc);
+      
+      const resp = await fetch(`${api.projects}/${projectId}`, {
+        method: "PUT",
+        body: formData
+      });
+      if (!resp.ok) throw new Error("Failed to update project");
+    } else {
+      // Create mode
+      if (!path) {
+        alert("Please specify a project directory");
+        return;
+      }
+      await createProject(name, desc, path);
+    }
+    closeProjectModal();
+    await loadProjects();
+    renderProjectCards();
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
+
+// Keep full list for filtering
+let allProjectsOriginal = [];
+
+function applyProjectFilters() {
+  const searchTerm = ($("#projectSearch")?.value || "").toLowerCase();
+  const sortBy = $("#projectSort")?.value || "modified";
+  
+  let filtered = allProjectsOriginal.filter(p =>
+    p.name.toLowerCase().includes(searchTerm) ||
+    p.description?.toLowerCase().includes(searchTerm)
+  );
+  
+  // Sort
+  filtered.sort((a, b) => {
+    switch (sortBy) {
+      case "name":
+        return a.name.localeCompare(b.name);
+      case "created":
+        return new Date(b.created_at) - new Date(a.created_at);
+      case "modified":
+      default:
+        return new Date(b.modified_at) - new Date(a.modified_at);
+    }
+  });
+  
+  // Render filtered list without modifying allProjects
+  const grid = $("#projectsGrid");
+  const noMsg = $("#noProjectsMsg");
+  
+  if (!grid || !noMsg) return;
+  
+  if (filtered.length === 0) {
+    grid.innerHTML = "";
+    noMsg.style.display = "block";
+    return;
+  }
+  
+  noMsg.style.display = "none";
+  grid.innerHTML = filtered.map(project => `
+    <div class="projectCard ${activeProject?.id === project.id ? 'active' : ''}" data-project-id="${project.id}">
+      <div class="projectThumbnail">📁</div>
+      <div class="projectCardContent">
+        <h3>${escapeHtml(project.name)}</h3>
+        <div class="description">${escapeHtml(project.description || "No description")}</div>
+        <div class="projectCardMeta">
+          <span>${new Date(project.modified_at).toLocaleDateString()}</span>
+        </div>
+        <div class="projectCardActions">
+          <a href="/project.html?projectId=${project.id}" class="open" style="display: inline-block; padding: 0.5rem 1rem; text-decoration: none; border-radius: 8px; background: var(--primary); color: white; cursor: pointer; border: none; font-size: 0.95rem;">Open</a>
+          <button type="button" id="btnEditProject_${project.id}" class="secondary tiny">Edit</button>
+          <button type="button" id="btnDeleteProject_${project.id}" class="secondary tiny" style="color:var(--err);">Delete</button>
+        </div>
+      </div>
+    </div>
+  `).join("");
+  
+  // Attach event listeners (duplicated from renderProjectCards for filtered display)
+  $$(".projectCard").forEach(card => {
+    card.addEventListener("click", (e) => {
+      // Don't intercept clicks on buttons or links - let them handle themselves
+      if (!e.target.closest("button") && !e.target.closest("a")) {
+        const projectId = card.dataset.projectId;
+        activateProjectAndSwitch(projectId);
+      }
+    });
+  });
+  
+  // Only attach listeners to Edit and Delete buttons
+  filtered.forEach(project => {
+    const editBtn = $(`#btnEditProject_${project.id}`);
+    const deleteBtn = $(`#btnDeleteProject_${project.id}`);
+    
+    if (editBtn) {
+      editBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showProjectModal(project);
+      });
+    }
+    
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete project "${project.name}"? (Files will not be deleted.)`)) {
+          deleteProject(project.id).then(() => {
+            applyProjectFilters();  // Refresh the filtered display
+          }).catch(err => {
+            alert("Error deleting project: " + err.message);
+          });
+        }
+      });
+    }
+  });
+}
+
+async function activateProjectAndSwitch(projectId) {
+  if (!projectId) {
+    console.warn("No project ID provided");
+    return;
+  }
+  
+  console.log("activateProjectAndSwitch called with projectId:", projectId);
+  
+  // Save to localStorage immediately
+  saveSelectedProject(projectId);
+  
+  // Try to activate on backend (but don't block if it fails)
+  try {
+    await activateProject(projectId);
+    console.log("Project activated on backend");
+  } catch (err) {
+    console.warn("Failed to activate project on backend, but continuing:", err);
+  }
+  
+  // ALWAYS navigate to the project page, even if backend activation failed
+  console.log("Navigating to project.html?projectId=" + projectId);
+  navigateToProject(projectId);
+}
+
+// Initialize projects on page load (only on index.html, not project.html)
+document.addEventListener("DOMContentLoaded", () => {
+  // Check if projects grid exists (means we're on index.html)
+  if (document.getElementById("projectsGrid")) {
+    initializeProjectsUI();
+  }
+});
 
 
 

@@ -1,13 +1,11 @@
 venv/
-data/
-data/test/
-data/train/
-data/train-3-band/
-data/train_whole_panel_annotated/
-data/valid/
-data/valid-3-band/
-data/valid_whole_panel_annotated/
-data/test_orig/
+backend/projects/*/train/
+backend/projects/*/test/
+backend/projects/*/overlays/
+backend/projects/*/colmap/
+backend/projects/*/media/
+backend/projects/*/output/
+backend/projects/*/models/
 outputs/
 media/
 .serena/
@@ -50,9 +48,5 @@ build/
 # Ignore compiled Python artifacts (ensure any remaining tracked are cleaned from index)
 *.pyc
 __pycache__/
-
-# Media session artifacts (already covered by media/, keep explicit)
-media/sessions/
-
 
 colmap/

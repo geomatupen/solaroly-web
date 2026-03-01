@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SolarOly</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+</head>
+<body>
+  <header>
+    <div class="tabs">
+      <div class="brand">
+        <img id="siteLogo" src="logo.svg" alt="SolarOly logo" />
+      </div>
+      <a href="index.html" style="display: flex; align-items: center; gap: 4px; padding: 8px 16px; text-decoration: none; color: inherit; font-weight: 500; cursor: pointer;">← Projects</a>
+      <button id="btnTest" class="active" data-tab="tab-test">Test</button>
+      <button id="btnTrain" data-tab="tab-train">Train</button>
+      <button id="btnOptimize" data-tab="tab-optimize">Optimize</button>
+      <button id="btnResults" data-tab="tab-results">Results</button>
+      <button id="btnMap" data-tab="tab-map">Map</button>
+      <button id="btnLogs" data-tab="tab-logs">Logs</button>
+      <div style="flex:1;"></div>
+      <div id="currentProjectInfo" style="margin-right:16px; color:#cdd6df; font-size:12px;">
+        <span id="currentProjectName"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- TEST TAB -->
+    <section id="tab-test" class="tabPanel active">
+      <div class="card">
+        <h2>Test / Inference</h2>
+        <p class="muted">
+          Choose a dataset folder to test. Use <b>Upload data</b> to add a new folder (zip or images).
+          Folders are created inside <code>test/data/</code> and named from the zip or first image.
+        </p>
+
+        <div class="formGrid">
+          <div class="row">
+            <button id="btnOpenUploadModal" type="button" class="push-right" onclick="var m=document.getElementById('uploadModal'); if(m){m.classList.add('show');m.classList.remove('hidden');} return false;">Upload data…</button>
+          </div>
+
+          <div id="testUploadProgress" class="progressWrap" hidden>
+            <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
+            <div class="progressText" id="testUploadText">Uploading… 0%</div>
+          </div>
+          <div class="row">
+            <label for="selBackendTest">Backend</label>
+            <select id="selBackendTest">
+              <option value="detectron">Detectron</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </div>
+          
+
+          <div class="row">
+            <label for="selModelFolder">Model run</label>
+            <select id="selModelFolder"></select>
+            <button id="btnRefreshModels" class="secondary">Refresh</button>
+          </div>
+
+          <div class="row">
+            <label for="selTestFolder">Dataset folder</label>
+            <select id="selTestFolder"></select>
+            <button id="btnRefreshFolders" class="secondary">Refresh</button>
+          </div>
+
+          <div class="row wrap" id="accurateControls">
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkAccurateLocations" />
+              <span>
+                Accurate poses
+                <span id="accurateHint" class="muted tiny hintLine">Requires optimized poses</span>
+              </span>
+            </label>
+            <span id="accurateStatusBadge" class="pill pill-muted">No dataset</span>
+            <button id="btnGoOptimize" class="secondary tiny">Optimize…</button>
+          </div>
+
+          <div class="row" id="accurateModeRow" hidden>
+            <div style="margin-left: 2em;">
+              <div style="margin-bottom: 0.5em;">
+                <label>
+                  <input type="radio" name="accurateMode" id="radAccurateColmap" value="colmap" />
+                  <span>Accurate locations (COLMAP)</span>
+                </label>
+              </div>
+              <div>
+                <label>
+                  <input type="radio" name="accurateMode" id="radAccurateOptical" value="optical" />
+                  <span>Use optimization from (thermal/optical sync)</span>
+                </label>
+                <div id="useOptimizationFromRow" hidden style="margin-left: 2em; margin-top: 0.5em;">
+                  <select id="selUseOptimizationFrom" style="width: 100%; max-width: 400px;">
+                    <option value="">-- Select optimized dataset --</option>
+                  </select>
+                  <div class="muted tiny" style="margin-top: 0.25em;">Uses calibrated poses from optical images. Images matched by name (e.g., IMG_001_V.jpg ↔ IMG_001_T.jpg).</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row wrap" id="mosaicControls" hidden>
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkMosaicImages" />
+              <span>
+                Mosaic rotated images before inference
+                <span id="mosaicHint" class="muted tiny hintLine">Stitch rotated images into single orthophoto</span>
+              </span>
+            </label>
+          </div>
+
+          <div class="row">
+            <label for="inpResultName">Result Name</label>
+            <input id="inpResultName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
+          </div>
+        </div>
+
+        <div class="row">
+            <label for="testThreshold">Testing Threshold</label>
+            <input id="testThreshold" type="number" value="0.5" min="0" max ="1" />
+          </div>
+
+        <!-- Removed: frontend option to convert decoded thermal to 3-channel JPG (not needed for tests) -->
+
+        <div class="actions">
+          <button id="btnRunTest">Run Test</button>
+          <button id="btnCancelTest" class="secondary">Cancel</button>
+          <span class="spinner" id="spinTest" hidden></span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="statusLine" id="testStatus"></div>
+        <pre id="testMiniLog" class="logPane small"></pre>
+
+        <div class="alert warn" id="testWarn" hidden></div>
+        <div class="alert err"  id="testErr"  hidden></div>
+        <div class="alert ok"   id="testOk"   hidden></div>
+
+        <p class="muted tiny">
+          <a href="#" id="lnkToLogsFromTest">See full logs</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- TRAIN TAB -->
+    <section id="tab-train" class="tabPanel">
+      <div class="card">
+        <h2>Train</h2>
+        <p class="muted">Kicks off training using your configured dataset. Thermal channel support is preserved. Each run saves to <code>train/outputs/&lt;timestamp&gt;/</code>.</p>
+
+        <!-- Keep advanced hyperparams -->
+         <div class="row">
+            <label for="selBackendTrain">Backend</label>
+            <select id="selBackendTrain">
+              <option value="detectron">Detectron</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </div>
+        
+
+          <div class="formGrid">
+          <div class="row" id="yoloOptions" style="display:none;">
+            <label for="selYoloFamily">YOLO Family</label>
+            <select id="selYoloFamily">
+              <option value="v8">YOLOv8</option>
+              <option value="v9">YOLOv9</option>
+              <option value="v10">YOLOv10</option>
+            </select>
+          </div>
+          <div class="row" id="yoloSizeOption" style="display:none;">
+            <label for="selYoloSize">YOLO Size</label>
+            <select id="selYoloSize">
+              <option value="n">nano (n)</option>
+              <option value="s" selected>small (s)</option>
+              <option value="m">medium (m)</option>
+              <option value="l">large (l)</option>
+              <option value="x">xlarge (x)</option>
+            </select>
+          </div>
+          <label class="switchRow">
+            <input type="checkbox" id="chkUseThermalTrain" />
+            <span>Use thermal band</span>
+            <button type="button" class="infoBtn" title="Decode DJI thermal images and extract the thermal band as 3-channel grayscale for training.">i</button>
+          </label>
+          <div class="row">
+            <label for="inpIters">Iterations</label>
+            <input id="inpIters" type="number" value="500" min="1" />
+          </div>
+          <div class="row">
+            <label for="inpLR">Learning rate</label>
+            <input id="inpLR" type="number" value="0.002" step="0.0001" />
+          </div>
+          <div class="row">
+            <label for="inpBatch">Batch size</label>
+            <input id="inpBatch" type="number" value="2" min="1" />
+          </div>
+          <div class="row">
+            <label for="inpModelName">Model Name</label>
+            <input id="inpModelName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btnStartTraining">Start Training</button>
+          <button id="btnCancelTrain" class="secondary">Cancel</button>
+          <span class="spinner" id="spinTrain" hidden></span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="statusLine" id="trainStatus"></div>
+        <pre id="trainMiniLog" class="logPane small"></pre>
+
+        <div class="alert err" id="trainErr" hidden></div>
+        <div class="alert ok"  id="trainOk"  hidden></div>
+
+        <p class="muted tiny">
+          <a href="#" id="lnkToLogsFromTrain">See full logs</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- OPTIMIZE TAB -->
+    <section id="tab-optimize" class="tabPanel">
+      <div class="card">
+        <div class="row between">
+          <div>
+            <h2>Optimize Locations</h2>
+            <p class="muted">Run COLMAP alignment to upgrade GPS before testing with accurate overlays.</p>
+          </div>
+          <span id="optimizeReadyPill" class="pill pill-muted">Select dataset</span>
+        </div>
+
+        <div class="optGrid">
+          <div class="row">
+            <label for="selOptimizeDataset">Dataset</label>
+            <select id="selOptimizeDataset"></select>
+            <button id="btnSyncOptimizeDataset" class="secondary tiny">Use test selection</button>
+            <button id="btnRefreshColmap" class="secondary tiny">Refresh</button>
+          </div>
+          <div class="optParamsHead">
+            <span class="muted tiny">Parameters</span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button id="btnColmapConfig" class="secondary tiny" type="button">Advanced config</button>
+              <button id="btnColmapInfo" class="infoBtn" type="button" aria-label="About COLMAP parameters">i</button>
+            </div>
+          </div>
+          <div class="optParams">
+            <div>
+              <label for="selColmapMatcher">Matcher</label>
+              <select id="selColmapMatcher">
+                <option value="sequential" selected>Sequential</option>
+                <option value="exhaustive">Exhaustive</option>
+              </select>
+            </div>
+            <div>
+              <label for="inpColmapSeqOverlap">Sequential overlap</label>
+              <input id="inpColmapSeqOverlap" type="number" min="1" step="1" value="4" />
+              <small class="muted tiny">Used only with sequential matching.</small>
+            </div>
+            <div>
+              <label for="inpColmapMaxImage">Max feature image size</label>
+              <input id="inpColmapMaxImage" type="number" min="256" step="64" value="1400" />
+            </div>
+            <div class="switchRow" style="align-items:center;">
+              <input type="checkbox" id="chkColmapUseGpu" checked />
+              <span>Use GPU for SIFT</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions actionsColmap">
+          <div class="buttonCluster">
+            <button id="btnStartColmap">Start optimization</button>
+            <button id="btnFinishColmap" class="secondary" disabled>Mark finished</button>
+          </div>
+          <div class="progressWrap mini" id="colmapProgressWrap" hidden>
+            <div class="progressBar"><span id="colmapProgressBar" style="width:0%"></span></div>
+            <div class="progressText tiny" id="colmapProgressText">Idle</div>
+          </div>
+        </div>
+
+        <div id="colmapStatusLine" class="statusLine"></div>
+
+        <div class="optLayout">
+          <div class="optCard">
+            <div class="optCardHeader">
+              <h3>Job status</h3>
+              <div class="muted tiny" id="colmapJobId">—</div>
+            </div>
+            <dl class="jobInfo">
+              <div><dt>Status</dt><dd id="colmapJobStatus">–</dd></div>
+              <div><dt>Step</dt><dd id="colmapJobStep">–</dd></div>
+              <div><dt>Metadata</dt><dd id="colmapMetaLink">–</dd></div>
+            </dl>
+            <pre id="colmapLogs" class="logPane tinyLog"></pre>
+          </div>
+          <div class="optCard">
+            <div class="optCardHeader">
+              <h3>Cameras</h3>
+              <div id="colmapCameraSummary" class="muted tiny">–</div>
+            </div>
+            <div id="colmapCameraList" class="cameraList"></div>
+          </div>
+          <div class="optCard optMapCard">
+            <div class="optCardHeader">
+              <h3>Camera map</h3>
+              <div id="colmapMapSummary" class="muted tiny">No dataset</div>
+            </div>
+            <div id="optimizeMap" class="optimizeMap" aria-label="Optimized camera map"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS TAB -->
+    <section id="tab-results" class="tabPanel">
+      <div class="card">
+        <div class="row between">
+          <h2>Results</h2>
+          <div class="row">
+            <label for="selResults">Session</label>
+            <select id="selResults"></select>
+            <button id="btnRefreshSessions" class="secondary">Refresh</button>
+          </div>
+        </div>
+        <div id="resultsInfo" class="results-info"></div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+          <h4 id="predictionsTitle" style="margin: 0;">Predictions</h4>
+          <label style="display: flex; align-items: center; gap: 8px; margin: 0;">
+            <input type="checkbox" id="chkShowOnlyDetections" />
+            <span>Show only detected</span>
+          </label>
+        </div>
+        <div id="resultsGrid" class="grid"></div>
+      </div>
+    </section>
+
+    <!-- MAP TAB -->
+    <section id="tab-map" class="tabPanel">
+      <div class="card mapCard">
+        <div class="row between">
+          <h2>Preview Map</h2>
+          <div class="row">
+            <label for="selMapSession">Session</label>
+            <select id="selMapSession"></select>
+            <button id="btnRefreshMapSessions" class="secondary">Refresh</button>
+          </div>
+        </div>
+
+        <div class="mapWrap">
+          <div id="map"></div>
+
+          <!-- Right layers panel -->
+          <aside id="layersPanel">
+            <div class="panelHeader">
+              <span>Layers</span>
+              <button id="btnAddMapFile" class="fileDrop tiny" style="border: none; background: none; padding: 0; cursor: pointer; font-size: 0.875rem;">
+                <span>+ Add File</span>
+              </button>
+            </div>
+
+            <!-- NEW: list where we toggle anomalies / tiles -->
+            <ul id="layersList" class="layersList"></ul>
+
+            <div class="panelHeader" style="margin-top:6px;">
+              <h3>Images</h3>
+              <div class="row">
+                <button id="btnShowAllImages" class="iconBtn tiny">Show all</button>
+                <button id="btnHideAllImages" class="iconBtn tiny">Hide all</button>
+              </div>
+            </div>
+            <div style="padding: 6px 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; font-size: 12px;">
+              <label for="imagesOpacitySlider" style="min-width: 60px; margin: 0;">Opacity:</label>
+              <input type="range" id="imagesOpacitySlider" min="0" max="100" value="100" style="flex: 1; max-width: 100px;">
+              <span id="imagesOpacityValue" style="min-width: 30px;">100%</span>
+            </div>
+            <div id="mapDetectionsFilter" style="padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 14px;">
+              <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
+                <input type="checkbox" id="chkMapFilterAnomalies" />
+                <span>Filter anomalies</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
+                <input type="checkbox" id="chkMapShowOnlyDetections" />
+                <span>Show only detected</span>
+              </label>
+            </div>
+            <div class="listScroll">
+              <ul id="imagesList" class="layersList"></ul>
+            </div>
+
+            <!-- Camera positions upload (WebODM) -->
+            <div style="margin-top:8px; padding:8px; border-top:1px solid var(--border);">
+              <label class="fileDrop tiny">
+                <input id="fileCameraPositions" type="file" accept=".json,.geojson" />
+                <span>+ Camera positions (WebODM JSON)</span>
+              </label>
+              <div id="cameraPositionsInfo" style="margin-top:6px; font-size:0.9rem; color:var(--muted)"></div>
+              <div style="margin-top:6px; display:flex; gap:.5rem;">
+                <button id="btnClearCameraPositions" class="secondary tiny">Clear overrides</button>
+              </div>
+            </div>
+
+            <div id="legend" class="legend"></div>
+          </aside>
+
+
+        </div>
+      </div>
+    </section>
+
+    <!-- LOGS TAB -->
+    <section id="tab-logs" class="tabPanel">
+      <div class="card">
+        <div class="row between">
+          <h2>Logs</h2>
+          <div class="muted">SSE: <span id="logConn">disconnected</span></div>
+        </div>
+        <div class="actions">
+          <button id="btnLogsConnect">Connect</button>
+          <button id="btnLogsClear" class="secondary">Clear</button>
+        </div>
+        <pre id="logStream" class="logPane"></pre>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Upload Modal -->
+  <div id="uploadModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>Upload test data</h3>
+        <button class="iconBtn" id="btnCloseUploadModal" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p>
+          Select a .zip or multiple images. A unique folder will be created under <code>test/data/</code>
+          using the zip name or the first image name.
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <label for="filesTest" style="display: block; margin-bottom: 0.5rem;">
+              Choose files
+              <span id="fileCountDisplay" style="color: var(--muted-text); font-size: 0.9rem; margin-left: 0.5rem;"></span>
+            </label>
+            <label class="fileDrop" style="margin: 0; padding: 2rem; min-height: 120px; flex-direction: column; justify-content: center; align-items: center;">
+              <input id="filesTest" type="file" multiple
+                     accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.JPG,.JPEG,.PNG,.TIF,.TIFF" />
+              <span style="text-align: center; line-height: 1.5;">Choose files… (or drag &amp; drop)</span>
+            </label>
+          </div>
+          <div>
+            <label for="inpUploadName" style="display: block; margin-bottom: 0.5rem;">Name</label>
+            <input id="inpUploadName" type="text" value="" placeholder="test_YYYYMMDD_HHMMSS" style="width: 100%; box-sizing: border-box;" />
+          </div>
+        </div>
+
+      </div>
+      <div class="modalFooter">
+        <button id="btnStartUpload">Start upload</button>
+        <button id="btnCancelUpload" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Map File Overlay Modal -->
+  <div id="addMapFileModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>Add map overlay</h3>
+        <button class="iconBtn" id="btnCloseAddFileModal" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p style="margin-bottom: 1rem;">Select overlay type:</p>
+
+        <!-- Radio button selection -->
+        <div style="margin-bottom: 1.5rem; display: flex; flex-direction: row; gap: 1.5rem;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="radio" name="overlayType" id="rdoGeoJSON" value="geojson" />
+            <span>GeoJSON</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="radio" name="overlayType" id="rdoTIF" value="tif" />
+            <span>GeoTIFF</span>
+          </label>
+        </div>
+
+        <!-- GeoJSON Form -->
+        <div id="geoJsonForm" style="display:none; border-top: 1px solid var(--border); padding-top: 1rem;">
+          <p class="muted" style="margin-bottom: 1rem;">Upload a GeoJSON file to display as an overlay</p>
+          <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <div>
+              <label for="geoJsonName" style="display: block; margin-bottom: 0.5rem;">Display name</label>
+              <input id="geoJsonName" type="text" value="overlay_geojson" placeholder="My GeoJSON layer" style="width: 100%; box-sizing: border-box;" />
+            </div>
+            <div>
+              <label for="geoJsonFile" style="display: block; margin-bottom: 0.5rem;">GeoJSON file</label>
+              <input id="geoJsonFile" type="file" accept=".geojson,.json" />
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 8px;">
+                <input id="geoJsonTemporary" type="checkbox" />
+                <span>Temporary (not saved to backend)</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- TIF Form -->
+        <div id="tifForm" style="display:none; border-top: 1px solid var(--border); padding-top: 1rem;">
+          <p class="muted" style="margin-bottom: 1rem;">Upload a GeoTIFF file for orthophoto tiling and display</p>
+          <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <div>
+              <label for="tifName" style="display: block; margin-bottom: 0.5rem;">Display name</label>
+              <input id="tifName" type="text" value="overlay_ortho" placeholder="My orthophoto layer" style="width: 100%; box-sizing: border-box;" />
+            </div>
+            <div>
+              <label for="tifFile" style="display: block; margin-bottom: 0.5rem;">GeoTIFF file</label>
+              <input id="tifFile" type="file" accept=".tif,.tiff" />
+            </div>
+          </div>
+          <div id="tifUploadProgress" class="progressWrap" style="display:none; margin-top: 1rem;">
+            <div class="progressBar"><span id="tifUploadBar" style="width:0%"></span></div>
+            <div class="progressText" id="tifUploadText">Uploading… 0%</div>
+          </div>
+        </div>
+
+        <!-- Upload Form (shown after selecting file type) -->
+        <div id="addFileForm" style="display:none; border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1rem;">
+          <div style="display: flex; gap: 0.5rem;">
+            <button id="btnUploadGeoJson" class="primary" style="display:none;">Upload GeoJSON</button>
+            <button id="btnUploadTIF" class="primary" style="display:none;">Upload & Tile</button>
+            <button id="btnCancelAddFile" class="secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COLMAP Info Modal -->
+  <div id="colmapInfoModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>COLMAP parameters</h3>
+        <button class="iconBtn" id="btnCloseColmapInfo" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody">
+        <p>These controls tune how COLMAP estimates camera poses:</p>
+        <ul>
+          <li><b>Matcher</b>: <i>Sequential</i> links neighboring images (ideal for drone flights). <i>Exhaustive</i> compares every pair (slower but can recover unordered sets).</li>
+          <li><b>Sequential overlap</b>: Number of neighboring frames to compare when using sequential matching. Increase to strengthen weak overlaps.</li>
+          <li><b>Min triangulation angle</b>: Rejects points with small viewing angle. Higher values improve accuracy but may drop matches. Default 5° works for most flights.</li>
+          <li><b>Min model size</b>: Smallest number of registered images required before COLMAP keeps a reconstruction. Raise this to ignore tiny, fragmented models.</li>
+          <li><b>Max feature image size</b>: Downsamples large frames before feature extraction. Helpful for noisy thermal sensors; leave blank to use the original size.</li>
+          <li><b>Use GPU for SIFT</b>: Disable if the GPU driver causes instability; COLMAP will fall back to CPU features.</li>
+          <li><b>Camera model</b>: Choose the projection model COLMAP assumes when reading EXIF. Thermal DJI frames usually work with <i>SIMPLE_RADIAL</i>.</li>
+          <li><b>Min matches / inliers</b>: Tune the minimum matches per image plus the inlier thresholds COLMAP uses when seeding models or registering new views.</li>
+          <li><b>Model overlap / count</b>: Limit how many reconstructions COLMAP keeps and how much overlap they can share so it stays focused on your main flight.</li>
+        </ul>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" id="btnColmapInfoDone">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- COLMAP Config Modal -->
+  <div id="colmapConfigModal" class="modal hidden">
+    <div class="modalContent" style="max-width:720px; max-height:80vh; display:flex; flex-direction:column;">
+      <div class="modalHeader">
+        <h3>Advanced COLMAP config</h3>
+        <button class="iconBtn" id="btnCloseColmapConfig" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody" style="display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start;overflow-y:auto;max-height:calc(80vh - 140px);">
+        <div class="formGrid" style="grid-template-columns:1fr 1fr;gap:14px;">
+          <div>
+            <label for="selColmapCameraModel">Camera model</label>
+            <select id="selColmapCameraModel">
+              <option value="SIMPLE_RADIAL" selected>Simple radial (default)</option>
+              <option value="RADIAL">Radial (wide FOV)</option>
+              <option value="SIMPLE_PINHOLE">Simple pinhole</option>
+              <option value="PINHOLE">Pinhole</option>
+            </select>
+          </div>
+          <div>
+            <label for="inpColmapTriangulation">Min triangulation angle</label>
+            <input id="inpColmapTriangulation" type="number" min="0" max="60" step="1" value="5" />
+          </div>
+          <div>
+            <label for="inpColmapMinMatches">Min matches per image</label>
+            <input id="inpColmapMinMatches" type="number" min="3" step="1" value="15" />
+          </div>
+          <div>
+            <label for="inpColmapMinSize">Min model size</label>
+            <input id="inpColmapMinSize" type="number" min="50" step="50" value="500" />
+          </div>
+          <div>
+            <label for="inpColmapInitInliers">Init min inliers</label>
+            <input id="inpColmapInitInliers" type="number" min="10" step="5" value="60" />
+          </div>
+          <div>
+            <label for="inpColmapAbsInliers">Abs pose min inliers</label>
+            <input id="inpColmapAbsInliers" type="number" min="5" step="5" value="20" />
+          </div>
+          <div>
+            <label for="inpColmapMaxOverlap">Max model overlap</label>
+            <input id="inpColmapMaxOverlap" type="number" min="0" step="5" value="20" />
+          </div>
+          <div>
+            <label for="inpColmapMaxModels">Max number of models</label>
+            <input id="inpColmapMaxModels" type="number" min="1" step="1" value="10" />
+          </div>
+          <div>
+            <label for="inpColmapPeakThresh">SIFT peak threshold</label>
+            <input id="inpColmapPeakThresh" type="number" min="0.0005" step="0.0005" value="0.004" />
+          </div>
+          <div>
+            <label for="inpColmapEdgeThresh">SIFT edge threshold</label>
+            <input id="inpColmapEdgeThresh" type="number" min="1" step="1" value="8" />
+          </div>
+          <div>
+            <label for="inpColmapMaxFeatures">Max SIFT features</label>
+            <input id="inpColmapMaxFeatures" type="number" min="512" step="512" value="12000" />
+          </div>
+          <div>
+            <label for="inpColmapThreads">SIFT threads</label>
+            <input id="inpColmapThreads" type="number" min="1" step="1" placeholder="auto" />
+          </div>
+          <div>
+            <label for="inpColmapExhBlock">Exhaustive block size</label>
+            <input id="inpColmapExhBlock" type="number" min="10" step="10" placeholder="e.g. 200" />
+            <small class="muted tiny">Only for exhaustive matcher.</small>
+          </div>
+          <div class="switchRow" style="align-items:center;">
+            <input type="checkbox" id="chkColmapBaFocal" checked />
+            <span>Refine focal length (BA)</span>
+          </div>
+          <div class="switchRow" style="align-items:center;">
+            <input type="checkbox" id="chkColmapBaPpoint" checked />
+            <span>Refine principal point (BA)</span>
+          </div>
+          <div class="switchRow" style="align-items:center;">
+            <input type="checkbox" id="chkColmapBaExtra" checked />
+            <span>Refine extra params (BA)</span>
+          </div>
+          <div>
+            <label for="inpColmapMaxReprojError">Max reproj error (thermal)</label>
+            <input id="inpColmapMaxReprojError" type="number" min="4" step="1" placeholder="12 for thermal, blank for default" />
+            <small class="muted tiny">Set 12+ for thermal to prevent de-registration.</small>
+          </div>
+          <div>
+            <label for="inpColmapBaGlobalIter">BA global max iterations</label>
+            <input id="inpColmapBaGlobalIter" type="number" min="5" step="5" placeholder="15 for thermal, blank for default" />
+          </div>
+          <div>
+            <label for="inpColmapBaLocalIter">BA local max iterations</label>
+            <input id="inpColmapBaLocalIter" type="number" min="5" step="5" placeholder="10 for thermal, blank for default" />
+          </div>
+        </div>
+        <div class="muted tiny" style="line-height:1.5;">
+          <strong>Parameter notes</strong>
+          <ul style="padding-left:16px; margin:6px 0;">
+            <li><b>Camera model</b>: SIMPLE_RADIAL for most thermal DJI flights.</li>
+            <li><b>Triangulation</b>: Higher prunes weak geometry; lower accepts more points.</li>
+            <li><b>Matches / inliers</b>: Tighten to reject weak registrations; loosen for low-texture.</li>
+            <li><b>SIFT thresholds</b>: Lower peak → more features; edge≈8 suits thermal.</li>
+            <li><b>Block size</b>: Exhaustive only; smaller reduces RAM at cost of more steps.</li>
+            <li><b>BA refine</b>: Keep ON unless you have strong prior intrinsics.</li>
+            <li><b>Thermal BA</b>: Set max reproj error 12+, BA iters 15/10 to prevent crash.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" id="btnColmapConfigDone">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Style Modal -->
+  <div id="styleModal" class="modal hidden">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3>Layer style</h3>
+        <button class="iconBtn" id="btnCloseStyle">&times;</button>
+      </div>
+      <div class="modalBody">
+        <!-- inside #styleModal .body (keep your existing color/opacity inputs) -->
+        <div id="stColorByBlock" class="hidden">
+          <label for="stColorBy">Color by</label>
+          <select id="stColorBy"></select>
+        </div>
+
+        <div id="stCatList" class="hidden">
+          <!-- per-category color rows injected here -->
+        </div>
+        <!-- <div class="formGrid">
+          <div class="row">
+            <label>Stroke</label>
+            <input type="color" id="stColor" value="#ff5722" />
+            <label>Width</label>
+            <input type="number" id="stWidth" value="1" min="0" max="10"/>
+            <label>Opacity</label>
+            <input type="number" id="stOpacity" value="1" min="0" max="1" step="0.05"/>
+          </div>
+          <div class="row">
+            <label>Fill</label>
+            <input type="color" id="fiColor" value="#ff5722" />
+            <label>Opacity</label>
+            <input type="number" id="fiOpacity" value="0.25" min="0" max="1" step="0.05"/>
+          </div>
+        </div> -->
+      </div>
+      <div class="modalFooter">
+        <button id="btnApplyStyle">Apply</button>
+        <button class="secondary" id="btnCancelStyle">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Layer action menu (⋮) -->
+  <div id="layerMenu" class="menu hidden">
+    <button data-act="zoom">Zoom to layer</button>
+    <button data-act="style">Style…</button>
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="modal hidden">
+    <div class="modalContent wide">
+      <div class="modalHeader">
+        <h3 id="lightboxTitle">Overlay</h3>
+        <button class="iconBtn" id="btnCloseLightbox">&times;</button>
+      </div>
+      <div class="modalBody">
+        <img id="lightboxImg" alt="overlay" />
+      </div>
+      <!-- Zoom controls -->
+      <button id="imgZoomIn" class="img-zoom img-zoom-in" aria-label="Zoom in">+</button>
+      <button id="imgZoomOut" class="img-zoom img-zoom-out" aria-label="Zoom out">−</button>
+      <button id="imgResetZoom" class="img-zoom img-zoom-reset" aria-label="Reset zoom">⟲</button>
+
+      <button id="imgPrev" class="img-nav img-nav-prev" aria-label="Previous image">‹</button>
+      <button id="imgNext" class="img-nav img-nav-next" aria-label="Next image">›</button>
+      <div id="imgCounter" class="img-counter"></div>
+    </div>
+  </div>
+
+  <!-- New/Edit Project Modal -->
+  <div id="projectModal" class="modal hidden">
+    <div class="modalContent">
+      <h2 id="projectModalTitle">New Project</h2>
+      <div class="modalContentField">
+        <label for="projectName">Project Name</label>
+        <input id="projectName" type="text" placeholder="e.g., Solar Panels Near Vienna" />
+      </div>
+      <div class="modalContentField">
+        <label for="projectDescription">Description</label>
+        <textarea id="projectDescription" placeholder="Optional project description..."></textarea>
+      </div>
+      <div class="modalContentField">
+        <label for="projectPath">Project Root Directory</label>
+        <div style="display: flex; gap: 8px;">
+          <input id="projectPath" type="text" placeholder="/path/to/project" style="flex:1;" />
+          <button id="projectBrowseBtn" class="secondary" style="flex:0;">Browse</button>
+        </div>
+        <div class="muted" style="font-size:11px; margin-top:4px;">
+          Where to store train/, test/, overlays/, and colmap/ folders for this project
+        </div>
+      </div>
+      <div class="modalActions">
+        <button id="projectModalCancel" class="secondary">Cancel</button>
+        <button id="projectModalSave">Create Project</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=20260301b"></script>
+  <script>
+    // Hard fallback: wire upload button directly on this page, independent of app.js initialization.
+    document.addEventListener("DOMContentLoaded", () => {
+      const openBtn = document.getElementById("btnOpenUploadModal");
+      const modal = document.getElementById("uploadModal");
+      if (openBtn && modal) {
+        openBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          modal.classList.add("show");
+          modal.classList.remove("hidden");
+        });
+      }
+    });
+
+    // Display active project name in header
+    async function initProjectHeader() {
+      try {
+        const resp = await fetch("/api/active-project");
+        if (resp.ok) {
+          const project = await resp.json();
+          const nameEl = document.getElementById("currentProjectName");
+          if (nameEl) {
+            nameEl.textContent = project.name || "Project";
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load active project:", err);
+      }
+    }
+    
+    document.addEventListener("DOMContentLoaded", initProjectHeader);
+  </script>
+  <script src="map-overlay.js?v=20260301b"></script>
+</body>
+</html>

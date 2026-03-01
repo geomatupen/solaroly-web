@@ -184,11 +184,11 @@ For camera pose optimization and 3D reconstruction:
 
 ### Backend & Model Selection
 
-Configuration is managed in `output/config.yaml` or set via the web UI:
+Configuration is managed in `outputs/config.yaml` or set via the web UI:
 
 ```yaml
 backend: "yolo"              # Options: "detectron" or "yolo"
-model_folder: "models/yolo"  # Directory containing model weights
+model_folder: "weights/yolo"  # Directory containing pretrained weights
 channel_config: "rgb+thermal" # Options: "rgb", "thermal", "rgb+thermal"
 ```
 
@@ -347,10 +347,10 @@ After inference, regenerate GeoJSON and rotated images:
 python backend/pvrt/dataops/regenerate_geojson_from_preds.py <session_id> <source_images_dir>
 ```
 
-This creates:
-- `media/sessions/<session_id>/rotated_images/` - north-up image copies
-- `media/sessions/<session_id>/images.geojson` - image footprints with lat/lon
-- `media/sessions/<session_id>/anomalies.geojson` - detection boxes as geo-polygons
+This creates (inside the active project):
+- `test/outputs/<session_id>/rotated_images/` - north-up image copies
+- `test/outputs/<session_id>/images.geojson` - image footprints with lat/lon
+- `test/outputs/<session_id>/anomalies.geojson` - detection boxes as geo-polygons
 
 ## Creating Thermal Mosaics
 
@@ -361,8 +361,8 @@ from backend.pvrt.dataops.mosaic_from_colmap import create_mosaic_from_rotated_i
 from pathlib import Path
 
 create_mosaic_from_rotated_images(
-    rotated_images_dir=Path("media/sessions/session_id/rotated_images"),
-    out_mosaic_path=Path("output/session_id/mosaic.tif"),
+  rotated_images_dir=Path("backend/projects/<project_id>/test/outputs/session_id/rotated_images"),
+  out_mosaic_path=Path("backend/projects/<project_id>/test/outputs/session_id/mosaic.tif"),
     plane_z=0.0,
     resolution=0.1,  # meters per pixel
     camera_meta={...}  # from camera_meta.json
@@ -395,10 +395,18 @@ solaroly-web/
 │   ├── app.js                       # Main JavaScript
 │   ├── index.html                   # Web interface
 │   └── styles.css                   # Styling
-├── data/                            # Training/validation datasets
-├── media/sessions/                  # Session outputs
-├── output/                          # Inference results
-├── models/                          # Model weights
+├── backend/projects/<project-id>/
+│   ├── train/
+│   │   ├── data/
+│   │   │   ├── train/
+│   │   │   └── valid/
+│   │   └── outputs/                 # Training runs
+│   ├── test/
+│   │   ├── data/
+│   │   │   └── test/
+│   │   └── outputs/                 # Test/inference sessions
+│   ├── overlays/
+│   └── colmap/
 └── third_party/                     # DJI Thermal SDK
 ```
 
@@ -408,3 +416,50 @@ solaroly-web/
 
 
 https://github.com/mcp?utm_source=vscode-website&utm_campaign=mcp-registry-server-launch-2025 
+
+
+
+
+Note: 
+To mount E: (or any external) drive on WSL with full support for directory creation:
+
+1. Open a new WSL terminal and run:
+```bash
+sudo mount -t drvfs E: /mnt/e -o metadata,uid=1000,gid=1000,case=off
+```
+It will ask for your WSL password - enter it
+
+2. After it mounts, verify it worked:
+```bash
+ls -la /mnt/e/Termatics
+```
+
+3. Also verify Python can create directories:
+```bash
+python3 -c "from pathlib import Path; p = Path('/mnt/e/test'); p.mkdir(exist_ok=True); print('Success!' if p.exists() else 'Failed')"
+```
+It should print: `Success!`
+
+4. Then restart uvicorn
+
+For **auto-mounting** on every WSL startup, edit `/etc/wsl.conf`:
+```bash
+sudo nano /etc/wsl.conf
+```
+
+Add or modify:
+```ini
+[interop]
+appendWindowsPath = true
+
+[automount]
+enabled = true
+options = "metadata,uid=1000,gid=1000,case=off"
+```
+
+Save (Ctrl+X → Y → Enter), then restart WSL:
+```bash
+wsl --shutdown
+```
+
+Next time you open WSL, E: will auto-mount with proper options.
