@@ -2835,9 +2835,74 @@ function pairThumbs(assets){
 
 function normalizeImageStem(name){
   if(!name) return null;
-  const base = String(name).split("/").pop();
+  const base = extractAssetBasename(name);
   if(!base) return null;
   return base.replace(/\.[^.]+$/, "").toLowerCase();
+}
+
+function decodeUrlComponentSafe(value){
+  try { return decodeURIComponent(String(value)); }
+  catch(_) { return String(value); }
+}
+
+function decodeUrlComponentDeep(value, maxRounds = 3){
+  let out = String(value ?? '');
+  for (let i = 0; i < maxRounds; i++){
+    const dec = decodeUrlComponentSafe(out);
+    if (dec === out) break;
+    out = dec;
+  }
+  return out;
+}
+
+function toProjectFileUrlFromValue(value){
+  if (!value) return null;
+  const raw = String(value).split('?')[0];
+  const decoded = decodeUrlComponentDeep(raw);
+  if (decoded.startsWith('/')) {
+    return `/api/project_file/${encodeURIComponent(decoded)}`;
+  }
+  return null;
+}
+
+function extractAssetBasename(value){
+  if (!value) return "";
+  let raw = String(value).split('?')[0];
+
+  if (raw.includes('/api/project_file/')) {
+    const marker = '/api/project_file/';
+    const idx = raw.indexOf(marker);
+    const encodedAbs = idx >= 0 ? raw.slice(idx + marker.length) : raw;
+    const absPath = decodeUrlComponentSafe(encodedAbs);
+    const base = absPath.split(/[\\/]/).pop();
+    if (base) return base;
+  }
+
+  raw = decodeUrlComponentDeep(raw);
+  const tail = raw.split('/').pop() || raw;
+  const base = tail.split(/[\\/]/).pop() || tail;
+  return base;
+}
+
+function resolveFeatureOverlayUrl(featureProps, overlayByName, sessionRoot){
+  const overlayProp = featureProps?.overlay;
+  if (typeof overlayProp === 'string' && overlayProp) {
+    if (overlayProp.startsWith('/api/project_file/')) return overlayProp;
+    const projected = toProjectFileUrlFromValue(overlayProp);
+    if (projected) return projected;
+  }
+
+  const srcRaw = featureProps?.src || featureProps?.image || featureProps?.file || featureProps?.name;
+  const srcFile = extractAssetBasename(srcRaw);
+  if (!srcFile) return null;
+
+  const stem = srcFile.replace(/\.[^.]+$/, '');
+  const overlayName = `${stem}.png`;
+  const fromSummary = overlayByName.get(overlayName);
+  if (fromSummary) return fromSummary;
+
+  const canUseSessionRoot = sessionRoot && !sessionRoot.includes('/api/project_file/');
+  return canUseSessionRoot ? `${sessionRoot}overlays/${encodeURIComponent(overlayName)}` : null;
 }
 
 function ensureRotatedLookup(){
@@ -3780,10 +3845,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
     const overlayByName = new Map();
     for (const overlayUrl of overlaysFromSummary) {
       if (typeof overlayUrl !== 'string' || !overlayUrl) continue;
-      const fileName = (()=>{
-        try { return decodeURIComponent(String(overlayUrl).split('?')[0].split('/').pop() || ''); }
-        catch(_) { return String(overlayUrl).split('?')[0].split('/').pop() || ''; }
-      })();
+      const fileName = extractAssetBasename(overlayUrl);
       if (fileName) overlayByName.set(fileName, overlayUrl);
     }
 
@@ -3804,15 +3866,11 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       if (typeof lat !== 'number' || typeof lng !== 'number') continue;
 
       // filename is in properties.image (per your sample)
-      const file = f?.properties?.image || f?.properties?.file || f?.properties?.name;
+      const fileRaw = f?.properties?.src || f?.properties?.image || f?.properties?.file || f?.properties?.name;
+      const file = extractAssetBasename(fileRaw);
       if (!file) continue;
 
-      // Use overlay PNG path (contains annotations/predictions)
-      // Do not use rotated_images (those are for inference only)
-      const stem = file.replace(/\.[^.]+$/, '');
-      const overlayName = `${stem}.png`;
-      const defaultOverlay = sessionRoot ? `${sessionRoot}overlays/${encodeURIComponent(overlayName)}` : null;
-      const url = overlayByName.get(overlayName) || defaultOverlay;
+      const url = resolveFeatureOverlayUrl(f?.properties || {}, overlayByName, sessionRoot);
       if (!url) continue;
 
       // If the backend provided true footprint corners, use them (and rotation)

@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response as FastAPIResponse
 
 from PIL import Image, ExifTags
 from PIL.ExifTags import TAGS, GPSTAGS
@@ -96,15 +96,12 @@ def looks_like_windows_path(path_str: str) -> bool:
 # ---------------- Paths & constants ----------------
 ROOT = Path(__file__).resolve().parents[2]        # .../backend/pvrt
 PROJECT_ROOT = ROOT.parent                         # repo root
-DATA_DIR = PROJECT_ROOT / "data"
-TRAIN_DIR = DATA_DIR / "train"
-VALID_DIR = DATA_DIR / "valid"
-TEST_DIR  = DATA_DIR / "test"
 DEFAULT_PROJECTS_ROOT = PROJECT_ROOT / "backend" / "projects"
 DEFAULT_PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
-MEDIA_DIR    = PROJECT_ROOT                          # static root for /media URLs
+# MEDIA_DIR serves project files via /media/* URLs (e.g., /media/backend/projects/.../test/outputs/...)
+MEDIA_DIR    = PROJECT_ROOT
 
 IMAGE_EXTS = {".jpg",".jpeg",".png",".tif",".tiff",".bmp",".webp",".JPG",".JPEG",".PNG",".TIF",".TIFF",".BMP",".WEBP"}
 
@@ -176,7 +173,7 @@ def set_active_project(project_id: str) -> Project:
 # ================== Project-aware path helpers ==================
 
 def get_project_data_dir(project: Optional[Project] = None) -> Path:
-    """Get train data directory for project (legacy - returns train/data/)."""
+    """Get train data directory for project (contains train/ and valid/ subfolders)."""
     if project is None:
         project = get_active_project()
     return project.get_train_data_dir()
@@ -199,20 +196,8 @@ def get_project_test_dir(project: Optional[Project] = None) -> Path:
         project = get_active_project()
     return project.get_test_data_dir()
 
-def get_project_media_dir(project: Optional[Project] = None) -> Path:
-    """Legacy media directory for project (backward compatibility)."""
-    if project is None:
-        project = get_active_project()
-    return project.get_media_dir()
-
 def get_project_output_dir(project: Optional[Project] = None) -> Path:
     """Model runs directory (train/outputs) for project."""
-    if project is None:
-        project = get_active_project()
-    return project.get_train_outputs_dir()
-
-def get_project_models_dir(project: Optional[Project] = None) -> Path:
-    """Legacy alias for model runs directory (train/outputs)."""
     if project is None:
         project = get_active_project()
     return project.get_train_outputs_dir()
@@ -239,9 +224,20 @@ def get_project_colmap_dir(project: Optional[Project] = None) -> Path:
 
 
 def _media_url(path: Path) -> str:
-    """Convert absolute path to /media URL path."""
+    """Convert absolute path to /media URL path.
+    For project files, use /api/project_file endpoint to support external drives.
+    """
     try:
-        return f"/media/{path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()}"
+        abs_path = path.resolve()
+        # Try to make it relative to PROJECT_ROOT (for files in workspace)
+        try:
+            rel = abs_path.relative_to(PROJECT_ROOT.resolve())
+            return f"/media/{rel.as_posix()}"
+        except ValueError:
+            # Path is outside PROJECT_ROOT (e.g., external drive project)
+            # Use the project file endpoint with URL-encoded absolute path
+            from urllib.parse import quote
+            return f"/api/project_file/{quote(str(abs_path), safe='')}"
     except Exception:
         return f"/media/{path.name}"
 
@@ -2733,7 +2729,8 @@ def _preds_to_geojson(
         if isinstance(manifest_map.get(fname), dict):
             entry = manifest_map[fname]
             if "overlay" in entry:
-                props["image"] = Path(entry["overlay"]).name
+                props["overlay"] = entry["overlay"]
+                props["image"] = fname
             if "thumb" in entry:
                 props["thumb"] = entry["thumb"]
 
@@ -3976,15 +3973,16 @@ async def api_test_run(
             logging.getLogger("pvrt.test").info(f"UI:INFO:test: session_dir before rotation: {session_contents_before}")
             
             # Call regenerate script to create rotated_images from camera_meta
-            # Pass source images directory (ds_dir) so script can access original images
+            # Pass FULL session directory path (not just name) for project structure compatibility
             # Also pass --use-thermal flag if model is thermal-trained
             import subprocess, sys, time
             script = PROJECT_ROOT / "backend" / "pvrt" / "dataops" / "regenerate_geojson_from_preds.py"
             if script.exists():
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for rotation (session={session}, src_images={ds_dir}, thermal={model_is_thermal})")
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Running regenerate script for rotation (session_dir={session_dir}, src_images={ds_dir}, thermal={model_is_thermal})")
                 
                 # Build command with optional --use-thermal flag
-                cmd = [sys.executable, str(script), session, str(ds_dir)]
+                # Pass full session_dir path instead of just session name for project structure
+                cmd = [sys.executable, str(script), str(session_dir), str(ds_dir)]
                 if model_is_thermal:
                     cmd.append("--use-thermal")
                 
@@ -4985,6 +4983,55 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
 
 
 # -------------- Serve media & frontend --------------
+# Custom endpoint for serving project files (supports external drives)
+@app.get("/api/project_file/{file_path:path}")
+async def serve_project_file(file_path: str):
+    """Serve files from project directories (including external drives)."""
+    from urllib.parse import unquote
+    
+    try:
+        # Decode the URL-encoded path
+        decoded_path = unquote(file_path)
+        file_path_obj = Path(decoded_path)
+        
+        # Security: ensure the path exists and is a file
+        if not file_path_obj.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        if not file_path_obj.is_file():
+            raise HTTPException(status_code=400, detail="Not a file")
+        
+        # Security: ensure the path belongs to a registered project
+        is_valid = False
+        for project in project_manager.list_projects():
+            project_root = Path(project.root_path)
+            try:
+                file_path_obj.resolve().relative_to(project_root.resolve())
+                is_valid = True
+                break
+            except ValueError:
+                continue
+        
+        if not is_valid:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Determine media type
+        import mimetypes
+        media_type, _ = mimetypes.guess_type(str(file_path_obj))
+        if media_type is None:
+            media_type = "application/octet-stream"
+        
+        # Read and return file
+        return FileResponse(
+            path=str(file_path_obj),
+            media_type=media_type,
+            filename=file_path_obj.name
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving project file: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="web")

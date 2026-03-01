@@ -60,27 +60,6 @@ class Project(BaseModel):
         """Get project's test outputs directory (detection results)."""
         return self.get_test_dir() / "outputs"
     
-    # --- Legacy aliases for backward compatibility ---
-    def get_data_dir(self) -> Path:
-        """Legacy: Get training data directory."""
-        return self.get_train_data_dir()
-    
-    def get_media_dir(self) -> Path:
-        """Legacy media path (kept for backward compatibility)."""
-        return Path(self.root_path) / "media"
-    
-    def get_models_dir(self) -> Path:
-        """Legacy alias for training outputs directory."""
-        return self.get_train_outputs_dir()
-    
-    def get_output_dir(self) -> Path:
-        """Legacy alias for training outputs directory."""
-        return self.get_train_outputs_dir()
-    
-    def get_sessions_dir(self) -> Path:
-        """Legacy alias for test outputs directory."""
-        return self.get_test_outputs_dir()
-    
     def ensure_dirs(self) -> None:
         """Create all necessary project directories."""
         # Create top-level folders

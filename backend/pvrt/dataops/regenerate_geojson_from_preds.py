@@ -58,11 +58,19 @@ def _camera_heading_from_entry(cam_entry, session_meta):
         heading = _normalize_heading_deg(heading + offset)
     return heading
 
-# allow passing session id as first CLI arg, source images dir as second arg
-SESSION = sys.argv[1] if len(sys.argv) > 1 else 'test_20251125_223205'
+# allow passing session directory path as first CLI arg, source images dir as second arg
+# First arg must be the full path to the session directory (project structure)
+if len(sys.argv) < 2:
+    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal]")
+    print("[ERROR] session_dir_path: Full path to test/outputs/<session-id>/")
+    sys.exit(1)
+
+SESSION_DIR_PATH = sys.argv[1]
 SRC_IMAGES_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else None  # optional source images directory
 USE_THERMAL = '--use-thermal' in sys.argv  # flag to use thermal images if available
-BASE = Path('media') / 'sessions' / SESSION
+
+# Use the full session directory path (new project structure)
+BASE = Path(SESSION_DIR_PATH)
 IMAGES_DIR = BASE / 'rotated_images'
 # If rotated_images doesn't exist yet but camera_meta is available, we'll
 # attempt to materialize rotated copies from the original `images/` so the

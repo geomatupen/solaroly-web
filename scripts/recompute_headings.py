@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Recompute camera headings in media/colmap/<dataset>/colmap_meta.json
+Recompute camera headings in <project>/colmap/<dataset>/colmap_meta.json
 from stored quaternions (qw,qx,qy,qz) using updated orientation logic.
 
 Usage:
@@ -15,7 +15,21 @@ import math
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MEDIA_COLMAP = PROJECT_ROOT / "media" / "colmap"
+
+# Load active project
+projects_file = PROJECT_ROOT / "backend" / "projects" / "projects.json"
+if not projects_file.exists():
+    print("ERROR: projects.json not found. Run the app first to create a project.")
+    sys.exit(1)
+
+projects_data = json.loads(projects_file.read_text())
+active_project_id = projects_data.get("active_project")
+if not active_project_id:
+    print("ERROR: No active project set in projects.json")
+    sys.exit(1)
+
+project_root = PROJECT_ROOT / "backend" / "projects" / active_project_id
+MEDIA_COLMAP = project_root / "colmap"
 
 
 def _quaternion_to_matrix(qw: float, qx: float, qy: float, qz: float) -> np.ndarray:
@@ -67,6 +81,7 @@ def main():
         sys.exit(1)
     dataset = sys.argv[1]
     meta_path = MEDIA_COLMAP / dataset / "colmap_meta.json"
+    print(f"Looking for colmap metadata at: {meta_path}")
     if not meta_path.exists():
         print(f"Missing metadata: {meta_path}")
         sys.exit(2)

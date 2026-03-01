@@ -5,10 +5,25 @@ import subprocess
 import sys
 import os
 import time
+import json
 
 PROJECT_ROOT = Path(__file__).parent
-session_id = "test_20260126_132902"
-session_dir = PROJECT_ROOT / "media" / "sessions" / session_id
+
+# Load active project
+projects_file = PROJECT_ROOT / "backend" / "projects" / "projects.json"
+if not projects_file.exists():
+    print("ERROR: projects.json not found. Run the app first to create a project.")
+    sys.exit(1)
+
+projects_data = json.loads(projects_file.read_text())
+active_project_id = projects_data.get("active_project")
+if not active_project_id:
+    print("ERROR: No active project set in projects.json")
+    sys.exit(1)
+
+session_id = "test_20260126_132902"  # Update this to an existing session
+project_root = PROJECT_ROOT / "backend" / "projects" / active_project_id
+session_dir = project_root / "test" / "outputs" / session_id
 
 print(f"Testing mosaic workflow for session: {session_id}")
 print(f"Session dir: {session_dir}")
