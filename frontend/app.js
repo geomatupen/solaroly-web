@@ -2340,28 +2340,47 @@ function getYoloOptions(){
 function setupTabs(){
   $$(".tabs button").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      $$(".tabs button").forEach(b=>b.classList.remove("active"));
-      btn.classList.add("active");
       const id = btn.dataset.tab;
-      $$(".tabPanel").forEach(p=>p.classList.remove("active"));
-      $(`#${id}`).classList.add("active");
-      if(id === "tab-map" && MAP){ 
-        setTimeout(()=>{
-          MAP.invalidateSize();
-          if(pendingMapBounds){
-            MAP.fitBounds(pendingMapBounds.bounds, pendingMapBounds.options);
-            pendingMapBounds = null;
-          }
-        }, 30);
-      }
-      if(id === "tab-optimize"){ invalidateOptimizeMap(); }
-      if(id === "tab-logs"){
-        const pane = $("#logStream");
-        pane.scrollTop = pane.scrollHeight;
-      }
+      switchToTab(id);
     });
   });
 }
+
+let _resultsTabLoaded = false;
+let _resultsTabLoading = null;
+let _mapTabLoaded = false;
+let _mapTabLoading = null;
+
+async function ensureResultsTabLoaded(force = false){
+  if(!force && _resultsTabLoaded) return;
+  if(!force && _resultsTabLoading) return _resultsTabLoading;
+
+  _resultsTabLoading = (async ()=>{
+    await loadSessions(true);
+    if($("#selResults").value){
+      await showResultsForSelected();
+    }
+    _resultsTabLoaded = true;
+  })().finally(()=>{ _resultsTabLoading = null; });
+
+  return _resultsTabLoading;
+}
+
+async function ensureMapTabLoaded(force = false){
+  if(!force && _mapTabLoaded) return;
+  if(!force && _mapTabLoading) return _mapTabLoading;
+
+  _mapTabLoading = (async ()=>{
+    await loadSessions(true);
+    if($("#selMapSession").value){
+      await refreshMapSessionSelected();
+    }
+    _mapTabLoaded = true;
+  })().finally(()=>{ _mapTabLoading = null; });
+
+  return _mapTabLoading;
+}
+
 function switchToTab(tabId){
   $$(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab === tabId));
   $$(".tabPanel").forEach(p=>p.classList.toggle("active", p.id === tabId));
@@ -2375,12 +2394,56 @@ function switchToTab(tabId){
     }, 30);
   }
   if(tabId === "tab-optimize"){ invalidateOptimizeMap(); }
+  if(tabId === "tab-logs"){
+    const pane = $("#logStream");
+    if (pane) pane.scrollTop = pane.scrollHeight;
+  }
+  if(tabId === "tab-results"){
+    ensureResultsTabLoaded();
+  }
+  if(tabId === "tab-map"){
+    ensureMapTabLoaded();
+  }
 }
 
 // ---------- datasets/models/sessions ----------
+const _inFlightApi = new Map();
+
+function _dedupeRequest(key, requestFn){
+  if (_inFlightApi.has(key)) return _inFlightApi.get(key);
+  const p = Promise.resolve()
+    .then(requestFn)
+    .finally(() => _inFlightApi.delete(key));
+  _inFlightApi.set(key, p);
+  return p;
+}
+
+async function _fetchDatasetsOnce(){
+  return _dedupeRequest("datasets", async () => {
+    const res = await fetch(api.datasets);
+    return res.json();
+  });
+}
+
+async function _fetchModelsOnce(backend){
+  const key = `models:${backend || ''}`;
+  return _dedupeRequest(key, async () => {
+    let url = api.models;
+    if(backend) url = `${api.models}?backend=${encodeURIComponent(backend)}`;
+    const res = await fetch(url);
+    return res.json();
+  });
+}
+
+async function _fetchSessionsOnce(){
+  return _dedupeRequest("sessions", async () => {
+    const res = await fetch(api.sessions);
+    return res.json();
+  });
+}
+
 async function loadDatasets(){
-  const res = await fetch(api.datasets);
-  const js = await res.json();
+  const js = await _fetchDatasetsOnce();
   if(js.ok){
     datasetsCache = js.datasets || [];
     populateFolders(js.datasets);
@@ -2392,10 +2455,7 @@ async function loadDatasets(){
 // targetSel - optional selector string for which <select> to populate (defaults to '#selModelFolder')
 async function loadModels(backend, targetSel = '#selModelFolder'){
   try{
-    let url = api.models;
-    if(backend) url = `${api.models}?backend=${encodeURIComponent(backend)}`;
-    const res = await fetch(url);
-    const js = await res.json();
+    const js = await _fetchModelsOnce(backend);
     if(js.ok){
       let models = js.models || [];
       // Server may not honor backend query; do client-side filtering as a safe fallback
@@ -2407,8 +2467,7 @@ async function loadModels(backend, targetSel = '#selModelFolder'){
   }catch(e){ console.warn('loadModels failed', e); }
 }
 async function loadSessions(selectLatest=true){
-  const res = await fetch(api.sessions);
-  const js = await res.json();
+  const js = await _fetchSessionsOnce();
   if(!js.ok) return;
   const sel1 = $("#selResults");
   const sel2 = $("#selMapSession");
@@ -4271,16 +4330,14 @@ function setupUI(){
 
   const btnRefreshSessions = $("#btnRefreshSessions");
   if(btnRefreshSessions) btnRefreshSessions.addEventListener("click", async ()=>{
-    await loadSessions(true);
-    await showResultsForSelected();
+    await ensureResultsTabLoaded(true);
   });
   const selResults = $("#selResults");
   if(selResults) selResults.addEventListener("change", showResultsForSelected);
 
   const btnRefreshMapSessions = $("#btnRefreshMapSessions");
   if(btnRefreshMapSessions) btnRefreshMapSessions.addEventListener("click", async ()=>{
-    await loadSessions(true);
-    await refreshMapSessionSelected();
+    await ensureMapTabLoaded(true);
   });
   const selMapSession = $("#selMapSession");
   if(selMapSession) selMapSession.addEventListener("change", refreshMapSessionSelected);
@@ -4480,9 +4537,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
     initMapOverlayUI();
   }
   connectLogs();
-  await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder'), loadSessions(true)]);
-  if($("#selResults").value){ await showResultsForSelected(); }
-  if($("#selMapSession").value){ await refreshMapSessionSelected(); }
+  await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder')]);
 });
 
 // ensure these helpers exist (from earlier step)
