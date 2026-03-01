@@ -4174,13 +4174,17 @@ function _setLightbox(idx){
 function _openLightboxWithGallery(items, startIdx){
   _gallery = items.map(it => ({ src: it.overlay, file: it.file }));
   _gIdx = Math.max(0, Math.min(startIdx || 0, _gallery.length - 1));
-  document.getElementById("lightbox").classList.remove("hidden");
+  const lightbox = document.getElementById("lightbox");
+  lightbox?.classList.add("show");
+  lightbox?.classList.remove("hidden");
   _lightboxOpen = true;
   _setLightbox(_gIdx);
 }
 
 function _closeLightbox(){
-  document.getElementById("lightbox").classList.add("hidden");
+  const lightbox = document.getElementById("lightbox");
+  lightbox?.classList.remove("show");
+  lightbox?.classList.add("hidden");
   _lightboxOpen = false;
 }
 
