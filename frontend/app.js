@@ -4282,6 +4282,19 @@ function setupUI(){
   if(btnTest) btnTest.addEventListener("click", runTest);
   const btnCancelTest = $("#btnCancelTest");
   if(btnCancelTest) btnCancelTest.addEventListener("click", cancelTest);
+
+  const btnToggleTestAdvanced = document.getElementById('btnToggleTestAdvanced');
+  const testAdvancedOptions = document.getElementById('testAdvancedOptions');
+  if (btnToggleTestAdvanced && testAdvancedOptions) {
+    testAdvancedOptions.hidden = true;
+    btnToggleTestAdvanced.textContent = 'Advanced ▸';
+    btnToggleTestAdvanced.addEventListener('click', (e) => {
+      e.preventDefault();
+      const isOpen = !testAdvancedOptions.hidden;
+      testAdvancedOptions.hidden = isOpen;
+      btnToggleTestAdvanced.textContent = isOpen ? 'Advanced ▸' : 'Advanced ▾';
+    });
+  }
   
   // Detection filter toggles
   const chkShowOnlyDetections = document.getElementById('chkShowOnlyDetections');

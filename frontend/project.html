@@ -72,6 +72,22 @@
             <button id="btnRefreshFolders" class="secondary">Refresh</button>
           </div>
 
+          <div class="row">
+            <label for="inpResultName">Result Name</label>
+            <input id="inpResultName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
+          </div>
+        </div>
+
+        <div class="row">
+            <label for="testThreshold">Testing Threshold</label>
+            <input id="testThreshold" type="number" value="0.5" min="0" max ="1" />
+          </div>
+
+        <div class="row" style="justify-content: flex-start;">
+          <button id="btnToggleTestAdvanced" type="button" class="secondary tiny" style="background: transparent; border: none; color: var(--muted); text-decoration: underline; padding: 0;">Advanced ▸</button>
+        </div>
+
+        <div id="testAdvancedOptions" hidden>
           <div class="row wrap" id="accurateControls">
             <label class="switchRow wide">
               <input type="checkbox" id="chkAccurateLocations" />
@@ -116,17 +132,7 @@
               </span>
             </label>
           </div>
-
-          <div class="row">
-            <label for="inpResultName">Result Name</label>
-            <input id="inpResultName" type="text" value="" placeholder="YYYYMMDD_HHMMSS" />
-          </div>
         </div>
-
-        <div class="row">
-            <label for="testThreshold">Testing Threshold</label>
-            <input id="testThreshold" type="number" value="0.5" min="0" max ="1" />
-          </div>
 
         <!-- Removed: frontend option to convert decoded thermal to 3-channel JPG (not needed for tests) -->
 
