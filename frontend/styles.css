@@ -192,7 +192,8 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 }
 .modalFooter{ padding:10px 12px; border-top:1px solid var(--border); display:flex; gap:8px; justify-content:flex-end; }
 
-.fileDrop{ position:relative; display:inline-flex; align-items:center; gap:8px; border:1px dashed var(--border); padding:6px 10px; border-radius:8px; cursor:pointer; }
+.fileDrop{ position:relative; display:inline-flex; align-items:center; gap:8px; border:2px dotted var(--border); padding:6px 10px; border-radius:8px; cursor:pointer; background:rgba(76, 175, 80, 0.05); transition:all 0.2s ease; }
+.fileDrop:hover{ background:rgba(76, 175, 80, 0.1); border-color:var(--border); }
 .fileDrop input{ position:absolute; inset:0; opacity:0; cursor:pointer; }
 .fileDrop.tiny{ padding:4px 6px; font-size:12px; }
 
