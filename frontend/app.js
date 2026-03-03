@@ -2929,6 +2929,35 @@ function extractAssetBasename(value){
   return base;
 }
 
+function buildNameVariantSet(...values){
+  const tokens = new Set();
+  const addVariant = (val) => {
+    if (!val && val !== 0) return;
+    const norm = String(val).trim().toLowerCase();
+    if (norm) tokens.add(norm);
+  };
+  const stripExt = (val) => (typeof val === 'string') ? val.replace(/\.[^.]+$/, '') : '';
+
+  for (const value of values){
+    if (value == null) continue;
+    let raw = String(value);
+    if (!raw) continue;
+    raw = raw.split('?')[0];
+    addVariant(raw);
+    const decoded = decodeUrlComponentDeep(raw);
+    addVariant(decoded);
+    const base = extractAssetBasename(raw);
+    addVariant(base);
+    const decodedBase = decodeUrlComponentDeep(base);
+    addVariant(decodedBase);
+    addVariant(stripExt(base));
+    addVariant(stripExt(decodedBase));
+  }
+
+  tokens.delete('');
+  return tokens;
+}
+
 function resolveFeatureOverlayUrl(featureProps, overlayByName, sessionRoot){
   const overlayProp = featureProps?.overlay;
   if (typeof overlayProp === 'string' && overlayProp) {
@@ -3284,18 +3313,49 @@ function propsTable(props = {}) {
 
 function featurePopupHTML(f) {
   const props = f?.properties || {};
-  // optional preview if overlay/thumb URL exists
   const previewURL = props.overlay || props.thumb || props.url;
   const title = props.image || props.file || props.name || "Feature";
+  const toggleBtn = popupImageToggleButtonHTML(props);
   return `
     <div class="popupWrap">
       <div class="popupTitle"><b>${escapeHtml(title)}</b></div>
       ${previewURL ? `<div class="popupPreview" style="margin:.5rem 0">
         <img src="${previewURL}" style="max-width:240px;max-height:180px;border:1px solid var(--border);border-radius:6px;">
       </div>` : ``}
+      ${toggleBtn ? `<div class="popupActions" style="margin:0.25rem 0 0.5rem;">
+        ${toggleBtn}
+      </div>` : ``}
       ${propsTable(props)}
     </div>
   `;
+}
+
+function popupImageToggleButtonHTML(props){
+  const rec = findImageRecordForFeature(props);
+  if (!rec) return "";
+  const label = rec.on ? "Hide image overlay" : "Show image overlay";
+  const state = rec.on ? "on" : "off";
+  const eyeSvg = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <path d="M2 12s4-8 10-8 10 8 10 8-4 8-10 8S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+  </svg>`;
+  return `<button type="button" class="popupImageToggle ${state}" data-image-id="${escapeHtml(rec.id)}" data-state="${state}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${eyeSvg}</button>`;
+}
+
+function findImageRecordForFeature(props){
+  if (!props) return null;
+  const targetTokens = buildNameVariantSet(props.image, props.file, props.name, props.src);
+  if (!targetTokens.size) return null;
+  for (const rec of imageCatalog){
+    if (!rec) continue;
+    if (!rec.matchTokens || !(rec.matchTokens instanceof Set)){
+      rec.matchTokens = buildNameVariantSet(rec.id, rec.name);
+    }
+    for (const token of rec.matchTokens){
+      if (targetTokens.has(token)) return rec;
+    }
+  }
+  return null;
 }
 
 
@@ -4029,7 +4089,8 @@ async function loadImagesCatalog(sessionName, imagesUrl){
         0
       );
 
-      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null, n: detectionCount });
+      const matchTokens = buildNameVariantSet(file);
+      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null, n: detectionCount, matchTokens });
     }
 
     applyMapDetectionFilter();
@@ -4064,6 +4125,31 @@ const btnShowAll = document.getElementById('btnShowAllImages');
 const btnHideAll = document.getElementById('btnHideAllImages');
 if (btnShowAll) btnShowAll.addEventListener('click', ()=> setAllImageOverlays(true));
 if (btnHideAll) btnHideAll.addEventListener('click', ()=> setAllImageOverlays(false));
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.popupImageToggle');
+  if (!btn) return;
+  const imageId = btn.dataset.imageId;
+  if (!imageId) return;
+  const rec = imageCatalog.find(r => r.id === imageId);
+  if (!rec) return;
+  const nextState = !rec.on;
+  toggleImageOverlay(imageId, nextState);
+  const checkbox = document.querySelector(`.imgToggle[data-id="${CSS.escape(imageId)}"]`);
+  if (checkbox){
+    checkbox.checked = nextState;
+    const row = checkbox.closest('li');
+    if (row){
+      try{ row.scrollIntoView({ behavior:'smooth', block:'center' }); }catch(_){ }
+    }
+  }
+  btn.dataset.state = nextState ? 'on' : 'off';
+  btn.classList.toggle('on', nextState);
+  btn.classList.toggle('off', !nextState);
+  const label = nextState ? 'Hide image overlay' : 'Show image overlay';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+});
 
 
 
