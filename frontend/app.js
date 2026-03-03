@@ -222,6 +222,7 @@ let testAbort = null;
 let currentManifest = null;            // store current manifest for filtering
 let mapDetectionFilterActive = false;
 let anomaliesFilterActive = false;
+let prevMapDetectionStates = null;
 
 const colmapStates = {};
 let colmapPollHandle = null;
@@ -417,12 +418,24 @@ function applyMapDetectionFilter(){
   mapDetectionFilterActive = on;
 
   if (on){
-    // Only turn OFF non-detection images; keep current states for detected images
+    prevMapDetectionStates = new Map();
     for (const rec of imageCatalog){
-      if (!(rec.n && rec.n > 0) && rec.on){
+      prevMapDetectionStates.set(rec.id, !!rec.on);
+      const hasDetections = !!(rec.n && rec.n > 0);
+      if (hasDetections && !rec.on){
+        toggleImageOverlay(rec.id, true);
+      } else if (!hasDetections && rec.on){
         toggleImageOverlay(rec.id, false);
       }
     }
+  } else if (prevMapDetectionStates){
+    for (const rec of imageCatalog){
+      const desired = prevMapDetectionStates.has(rec.id) ? prevMapDetectionStates.get(rec.id) : true;
+      if (rec.on !== desired){
+        toggleImageOverlay(rec.id, desired);
+      }
+    }
+    prevMapDetectionStates = null;
   }
 
   renderImagesList();
@@ -433,25 +446,47 @@ function applyAnomaliesFilter(){
   const on = chk?.checked || false;
   anomaliesFilterActive = on;
 
-  const rec = overlayRegistry["Anomalies"];
-  if (!rec || !rec.data) return;
+  const layerDefs = [
+    {
+      key: "Anomalies",
+      fallback: { color: "#ff5722", weight: 1, opacity: 1, fillColor: "#ff5722", fillOpacity: 0.25 },
+      pointRadius: 4,
+      pointFill: 0.8,
+    },
+    {
+      key: "Anomalies (high-confidence)",
+      fallback: { color: "#00cc00", weight: 1.5, opacity: 0.8, fillColor: "#00cc00", fillOpacity: 0.15 },
+      pointRadius: 5,
+      pointFill: 0.6,
+    },
+  ];
 
-  const base = rec.style || {
-    color: "#ff5722", weight: 1, opacity: 1,
-    fillColor: "#ff5722", fillOpacity: 0.25
-  };
-
-  const wasVisible = rec.layer ? MAP.hasLayer(rec.layer) : false;
-
-  // Build list of active image stems
   const activeStems = new Set(
     imageCatalog
       .filter(r => r.on)
       .map(r => String(r.id).replace(/\.[^.]+$/, ''))
   );
 
+  let legendNeedsRefresh = false;
+  for (const def of layerDefs) {
+    const refreshed = filterAnomalyLayer(def, activeStems, on);
+    legendNeedsRefresh = legendNeedsRefresh || refreshed;
+  }
+
+  if (legendNeedsRefresh) {
+    renderLegend();
+  }
+}
+
+function filterAnomalyLayer(def, activeStems, filterActive){
+  const rec = overlayRegistry[def.key];
+  if (!rec || !rec.data) return false;
+
+  const base = rec.style || def.fallback;
+  const wasVisible = rec.layer ? MAP.hasLayer(rec.layer) : false;
+
   const full = rec.data;
-  const filtered = on ? {
+  const filtered = filterActive ? {
     ...full,
     features: (full.features || []).filter(f => {
       const img = f?.properties?.image || f?.properties?.file || f?.properties?.name;
@@ -461,12 +496,16 @@ function applyAnomaliesFilter(){
     })
   } : full;
 
-  // Remove existing layer
-  try{ if (rec.layer){ MAP.removeLayer(rec.layer); } }catch(_){ }
+  try { if (rec.layer) { MAP.removeLayer(rec.layer); } } catch(_){ }
 
   const layer = L.geoJSON(filtered, {
     style: (f)=> styleForAnomalyFeature(f, base),
-    pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
+    pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+      radius: def.pointRadius,
+      color: base.color,
+      fillColor: base.fillColor,
+      fillOpacity: def.pointFill,
+    }),
     onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
   });
 
@@ -474,10 +513,8 @@ function applyAnomaliesFilter(){
     layer.addTo(MAP);
   }
 
-  overlayRegistry["Anomalies"] = { ...rec, layer };
-  if (wasVisible) {
-    renderLegend();
-  }
+  overlayRegistry[def.key] = { ...rec, layer };
+  return wasVisible;
 }
 
 function updateMapDetectionFilterVisibility(hasTifTiles){
@@ -2996,12 +3033,26 @@ function applyMapDetectionFilter() {
   mapDetectionFilterActive = on;
 
   if (on) {
-    // Only turn OFF non-detection images; keep current states for detected images
+    prevMapDetectionStates = new Map();
     for (const rec of imageCatalog) {
-      if (!(rec.n && rec.n > 0) && rec.on) {
+      prevMapDetectionStates.set(rec.id, !!rec.on);
+      const hasDetections = !!(rec.n && rec.n > 0);
+      if (hasDetections && !rec.on) {
+        toggleImageOverlay(rec.id, true);
+      } else if (!hasDetections && rec.on) {
         toggleImageOverlay(rec.id, false);
       }
     }
+  } else if (prevMapDetectionStates) {
+    for (const rec of imageCatalog) {
+      const desired = prevMapDetectionStates.has(rec.id)
+        ? prevMapDetectionStates.get(rec.id)
+        : true;
+      if (rec.on !== desired) {
+        toggleImageOverlay(rec.id, desired);
+      }
+    }
+    prevMapDetectionStates = null;
   }
 
   renderImagesList();
