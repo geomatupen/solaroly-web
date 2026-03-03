@@ -441,6 +441,8 @@ function applyAnomaliesFilter(){
     fillColor: "#ff5722", fillOpacity: 0.25
   };
 
+  const wasVisible = rec.layer ? MAP.hasLayer(rec.layer) : false;
+
   // Build list of active image stems
   const activeStems = new Set(
     imageCatalog
@@ -466,10 +468,16 @@ function applyAnomaliesFilter(){
     style: (f)=> styleForAnomalyFeature(f, base),
     pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
     onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
-  }).addTo(MAP);
+  });
+
+  if (wasVisible) {
+    layer.addTo(MAP);
+  }
 
   overlayRegistry["Anomalies"] = { ...rec, layer };
-  renderLegend();
+  if (wasVisible) {
+    renderLegend();
+  }
 }
 
 function updateMapDetectionFilterVisibility(hasTifTiles){
@@ -3262,11 +3270,46 @@ async function loadGeoJSON(url){
     style: (f)=> styleForAnomalyFeature(f, base),
     pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
     onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
-  }).addTo(MAP);
+  });
 
   overlayRegistry["Anomalies"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Anomalies"]?.categorical || null };
+  refreshLayersPanel();
   renderLegend();
   // Don't auto-fit bounds here - let applySessionToMap handle it after all layers loaded
+}
+
+async function loadFinalAnomalies(url){
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.debug('final_anomalies.geojson not found (expected if just generated)');
+      return;
+    }
+    const gj = await res.json();
+
+    const base = overlayRegistry["Anomalies (high-confidence)"]?.style || {
+      color: "#00cc00", weight: 1.5, opacity: 0.8,
+      fillColor: "#00cc00", fillOpacity: 0.15
+    };
+
+    // remove previous layer (if any)
+    try{
+      const prev = overlayRegistry["Anomalies (high-confidence)"];
+      if (prev && prev.layer){ try { MAP.removeLayer(prev.layer); } catch(_){} }
+    }catch(_){ }
+
+    const layer = L.geoJSON(gj, {
+      style: (f)=> styleForAnomalyFeature(f, base),
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: base.color, fillColor: base.fillColor, fillOpacity: 0.6 }),
+      onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
+    }).addTo(MAP);
+
+    overlayRegistry["Anomalies (high-confidence)"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Anomalies (high-confidence)"]?.categorical || null };
+    refreshLayersPanel();
+    renderLegend();
+  } catch(e) {
+    console.debug('loadFinalAnomalies error:', e);
+  }
 }
 
 
@@ -3569,12 +3612,19 @@ async function applySessionToMap(sessionName){
 
   const sessRoot = _sessionRootFromSummary();
   const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot ? (sessRoot + 'anomalies.geojson') : null);
+  const finalAnomaliesUrl = sum.final_anomalies_geojson || (sessRoot ? (sessRoot + 'final_anomalies.geojson') : null);
   const imagesUrl = sum.images_geojson_url || sum.images_geojson || sum.images || sum.images_gj || (sessRoot ? (sessRoot + 'images.geojson') : null);
 
   // 2) anomalies polygons (load regardless)
   if (anomaliesUrl){
     try { await loadGeoJSON(anomaliesUrl); }
     catch(e){ console.warn('anomalies fetch failed:', e); }
+  }
+
+  // 2b) final anomalies polygons (high-confidence filtered)
+  if (finalAnomaliesUrl){
+    try { await loadFinalAnomalies(finalAnomaliesUrl); }
+    catch(e){ console.debug('final_anomalies fetch failed:', e); }
   }
 
   // 3) Try ORIGINAL GeoTIFF tiles

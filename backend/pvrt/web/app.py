@@ -2999,6 +2999,142 @@ def _preds_to_geojson(
 
 
 
+def _merge_anomalies_geojson(anomalies_path: Path, overlap_threshold: float = 0.20) -> Path:
+    """
+    Filter overlapping anomaly features by keeping highest-confidence detections.
+    
+    Algorithm:
+      1. Group features by class (classname property)
+      2. For each class, iteratively remove lower-confidence polygons when overlap >threshold% of larger polygon
+      3. Iterative: removing one polygon might reveal other overlaps
+      4. Write final_anomalies.geojson in same session directory
+    
+    Args:
+      anomalies_path: Path to anomalies.geojson
+      overlap_threshold: Remove lower-confidence if overlap > threshold * larger_polygon_area (default 20%)
+    
+    Returns:
+      Path to final_anomalies.geojson
+    """
+    from shapely.geometry import shape as geom_shape
+    from shapely.geometry import mapping
+    
+    anomalies_path = Path(anomalies_path)
+    
+    # Load anomalies.geojson
+    try:
+        anom_data = json.loads(anomalies_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"Failed to load anomalies.geojson: {e}, skipping filter")
+        return anomalies_path
+    
+    # Group features by classname
+    features_by_class: Dict[str, list] = {}
+    for feature in anom_data.get("features", []):
+        classname = feature.get("properties", {}).get("classname", "unknown")
+        if classname not in features_by_class:
+            features_by_class[classname] = []
+        features_by_class[classname].append(feature)
+    
+    # Filter features within each class
+    filtered_features = []
+    
+    for classname, features in features_by_class.items():
+        # Convert features to (shapely_geom, properties_dict, score, index) tuples
+        geoms_with_props = []
+        for idx, feature in enumerate(features):
+            try:
+                geom = geom_shape(feature.get("geometry", {}))
+                props = feature.get("properties", {})
+                score = float(props.get("score", 0))
+                geoms_with_props.append((geom, props, score, idx))
+            except Exception:
+                # Skip invalid geometries
+                pass
+        
+        # Iteratively remove lower-confidence overlapping polygons
+        removed = True
+        while removed:
+            removed = False
+            indices_to_remove = set()
+            
+            for i in range(len(geoms_with_props)):
+                if i in indices_to_remove:
+                    continue
+                
+                geom1, props1, score1, idx1 = geoms_with_props[i]
+                
+                # Check against all other polygons
+                for j in range(i + 1, len(geoms_with_props)):
+                    if j in indices_to_remove:
+                        continue
+                    
+                    geom2, props2, score2, idx2 = geoms_with_props[j]
+                    
+                    # Calculate overlap
+                    try:
+                        intersection = geom1.intersection(geom2)
+                        intersection_area = intersection.area
+                        larger_area = max(geom1.area, geom2.area)
+                        
+                        if larger_area > 0:
+                            overlap_ratio = intersection_area / larger_area
+                            
+                            # If overlap exceeds threshold, remove the one with lower score
+                            if overlap_ratio > overlap_threshold:
+                                if score1 > score2:
+                                    # Remove polygon j (lower confidence)
+                                    indices_to_remove.add(j)
+                                    removed = True
+                                elif score2 > score1:
+                                    # Remove polygon i (lower confidence)
+                                    indices_to_remove.add(i)
+                                    removed = True
+                                    break  # i is removed, no need to check further
+                                else:
+                                    # Equal scores: keep the one with larger area
+                                    if geom1.area >= geom2.area:
+                                        indices_to_remove.add(j)
+                                    else:
+                                        indices_to_remove.add(i)
+                                        break
+                                    removed = True
+                    except Exception:
+                        # Skip on geometry operations that fail
+                        pass
+            
+            # Remove marked indices
+            if indices_to_remove:
+                geoms_with_props = [
+                    item for idx, item in enumerate(geoms_with_props)
+                    if idx not in indices_to_remove
+                ]
+        
+        # Convert back to GeoJSON features
+        for geom, props, score, _ in geoms_with_props:
+            try:
+                filtered_features.append({
+                    "type": "Feature",
+                    "geometry": mapping(geom),
+                    "properties": props
+                })
+            except Exception:
+                pass
+    
+    # Write final_anomalies.geojson
+    final_fc = {
+        "type": "FeatureCollection",
+        "features": filtered_features
+    }
+    
+    final_path = anomalies_path.parent / "final_anomalies.geojson"
+    final_path.write_text(json.dumps(final_fc, indent=2), encoding="utf-8")
+    
+    logger.info(f"Generated final_anomalies.geojson: {len(filtered_features)} filtered features from {len(anom_data.get('features', []))} original")
+    return final_path
+
+
+
 # ---------- tiny list helpers (datasets/models/sessions) ----------
 
 def _count_top_level_images(d: Path) -> int:
@@ -4209,6 +4345,8 @@ async def api_test_run(
 
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
     session_dir = get_project_sessions_dir() / session
+    final_anom_gj = None  # Will be set by filtering step below
+    
     if input_type == "tif":
         anom_gj, imgs_gj = _build_anomalies_geojson_from_tiles(
             tiles_dir=tiles_dir,
@@ -4268,9 +4406,16 @@ async def api_test_run(
             exif_index=exif_from_manifest,
             camera_meta=camera_meta,
         )
+        # Filter overlapping anomalies: keep highest-confidence when overlap >20%
+        final_anom_gj = _merge_anomalies_geojson(anom_gj, overlap_threshold=0.20)
+        
         # For images branch, overlays/thumbs are in session dir
         ov_dir = out_root / "overlays"
         th_dir = out_root / "thumbs"
+
+    # Filter anomalies for TIF branch as well (if not already done)
+    if final_anom_gj is None and anom_gj:
+        final_anom_gj = _merge_anomalies_geojson(anom_gj, overlap_threshold=0.20)
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):
@@ -4313,6 +4458,7 @@ async def api_test_run(
         "session": session,
         "geojson": str(anom_gj),  # backward-compat
         "anomalies_geojson": _media_url(anom_gj),
+        "final_anomalies_geojson": _media_url(final_anom_gj) if final_anom_gj else None,
         "images_geojson":    _media_url(imgs_gj),
         "results_dir": str(preds_dir),
         "overlays": _media_url(ov_dir),
@@ -4406,11 +4552,15 @@ async def api_session_summary(session: str):
 
     rotated_images_available = bool(assets.get("rotated_images")) or (camera_meta is not None and bool(camera_meta))
 
+    final_gj = ses / "final_anomalies.geojson"
+
     return {
         "ok": True,
         "session": session,
         # keep old key for backward compatibility (anomalies)
         "geojson_url": _media_url(gj) if gj.exists() else None,
+        "anomalies_geojson": _media_url(gj) if gj.exists() else None,
+        "final_anomalies_geojson": _media_url(final_gj) if final_gj.exists() else None,
         # NEW: where image footprints live (if you created them)
         "images_geojson_url": _media_url(imgs_gj) if imgs_gj.exists() else None,
         "assets": assets,
