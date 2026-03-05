@@ -55,7 +55,7 @@ The committed `requirements.txt` lists *all* integrations. Comment out the lines
 | Detectron2-based training/testing | `detectron2 @ git+...`, `fvcore`, `iopath`, `hydra-core`, `omegaconf`, `yacs`, `pycocotools`, `tensorboard`, `tabulate`, `matplotlib` | Comment the entire block if you only plan to run YOLO. | `PVRT_ENABLE_DETECTRON=0/1` |
 | YOLOv8 pipeline | `ultralytics>=8.3.0,<9.0.0` plus the shared OpenCV/numpy stack already present | Comment `ultralytics` if Detectron2 is the only backend you ship. | `PVRT_ENABLE_YOLO=0/1` |
 | CUDA accelerators | All `nvidia-*` wheels plus CUDA-specific Torch builds | Comment GPU wheels and install CPU Torch (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) when no CUDA-capable device exists. | Not flag-controlled; match your hardware |
-| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | `PVRT_ENABLE_THERMAL=0/1` + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
+| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | `PVRT_ENABLE_THERMAL=0/1` (drives the shared `thermal_data_extraction` flag; when 0 the UI hides "Use thermal" toggles and the backend rejects decode/train/test requests that require DJI payloads) + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
 | COLMAP-assisted alignment | Installed separately via `conda install -c conda-forge colmap` or system packages | Skip entirely if you only need per-frame inference. | `PVRT_ENABLE_COLMAP=0/1` |
 
 **Comment example:**
@@ -122,6 +122,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
   ```
 - **Configuration file:** Each project writes an `outputs/config.yaml` capturing the last-used backend, weights folder, score thresholds, and thermal extraction preferences. The UI overwrites this file whenever you submit the Training or Testing forms.
 - **Feature flags:** `backend/pvrt/web/settings.py` reads `PVRT_ENABLE_DETECTRON`, `PVRT_ENABLE_YOLO`, `PVRT_ENABLE_COLMAP`, and `PVRT_ENABLE_THERMAL`. Export them before launching uvicorn or set them inside Docker. Disabled integrations disappear from the UI and the backend guards routes accordingly.
+   - The thermal flag surfaces to the SPA as `thermal`/`thermal_data_extraction`. When off, the frontend disables "Use thermal" checkboxes automatically and the API refuses dataset decodes, thermal-aware training, and thermal-only inference to prevent accidental DJI SDK calls.
 - **Camera metadata:** `camera_meta.json` stores alignment hints (heading offsets, reference elevations) and is used by the rotation/mosaic pipeline plus the orthophoto tiler.
 
 ---
@@ -152,7 +153,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 
 ### 7.1 Single DJI Frame Inference
 1. **Upload** JPG/R-JPEG bundles under *Test → Uploads*. The server unpacks them into `test/data/uploads` for the active project.
-2. **Thermal extraction / fallback:** With the DJI SDK installed and `PVRT_ENABLE_THERMAL=1`, the platform decodes DJI R-JPEG files into 16-bit grayscale rasters and exposes temperature metadata. If you skipped the SDK (non-DJI thermal cameras or RGB-only workflows) and set `PVRT_ENABLE_THERMAL=0`, keep the "Use thermal" checkbox disabled—the system will operate on RGB imagery or any pre-rendered thermal PNG/JPEG files you provide, but grayscale extraction and temperature readouts remain unavailable.
+2. **Thermal extraction / fallback:** With the DJI SDK installed and `PVRT_ENABLE_THERMAL=1`, the platform decodes DJI R-JPEG files into 16-bit grayscale rasters and exposes temperature metadata. If you skipped the SDK (non-DJI thermal cameras or RGB-only workflows) and set `PVRT_ENABLE_THERMAL=0`, the UI auto-disables the "Use thermal" checkbox and the API blocks decode/train/test calls that would require DJI libraries. RGB imagery or pre-rendered thermal PNG/JPEG files still run normally, but grayscale extraction and temperature readouts remain unavailable.
 3. **Rotation & normalization:** Metadata-driven heading correction rotates each frame north-up. If rotation scripts fail or metadata is missing, the system continues with the original orientation but flags the session in the log.
 4. **Inference:**
    - Detectron2: loads the configured `model_final.pth` under `train/outputs/<run>/weights/` and respects batch size/thresholds from the UI.
