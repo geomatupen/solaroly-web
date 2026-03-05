@@ -224,18 +224,41 @@ window.headingToRadians = function headingToRadians(headingDeg, negate = true){
   return rad;
 };
 
-window.appendLog = function appendLog(line){
-  const pane = $("#logStream");
+const LOG_DEDUP_WINDOW_MS = 3000;
+
+function appendLineToPane(pane, rawLine){
   if(!pane) return;
+  if(rawLine == null) return;
+  const line = String(rawLine);
+  if(!line.trim()) return;
+  const now = Date.now();
+  const lastLine = pane.dataset.lastLogLine || "";
+  const lastStamp = Number(pane.dataset.lastLogStamp || 0);
+  if(line === lastLine && now - lastStamp < LOG_DEDUP_WINDOW_MS){
+    return; // skip rapid duplicate log entries
+  }
+  pane.dataset.lastLogLine = line;
+  pane.dataset.lastLogStamp = String(now);
   pane.textContent += (pane.textContent ? "\n" : "") + line;
   pane.scrollTop = pane.scrollHeight;
+}
+
+window.appendLog = function appendLog(line){
+  const pane = $("#logStream");
+  appendLineToPane(pane, line);
 };
 
 window.appendMiniLog = function appendMiniLog(sel, line){
   const pane = $(sel);
+  appendLineToPane(pane, line);
+};
+
+window.resetLogPane = function resetLogPane(sel){
+  const pane = typeof sel === "string" ? $(sel) : sel;
   if(!pane) return;
-  pane.textContent += (pane.textContent ? "\n" : "") + line;
-  pane.scrollTop = pane.scrollHeight;
+  pane.textContent = "";
+  delete pane.dataset.lastLogLine;
+  delete pane.dataset.lastLogStamp;
 };
 
 window.clearAlerts = function clearAlerts(prefix){

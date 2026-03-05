@@ -4480,16 +4480,23 @@ function connectLogs(){
     const line = e.data;
     appendLog(line);
 
-    // Route detectron2 progress lines into mini-train log (epochs/iters)
-    const isTrainLine = (
+    // Identify test-tagged lines first so they do not bleed into the train pane
+    const isTestLine = (
+      line.includes("[test]") ||
+      line.includes("UI:INFO:test") ||
+      line.includes("UI:OK:test") ||
+      line.includes("UI:ERR:test")
+    );
+    if(isTestLine){ appendMiniLog("#testMiniLog", line); }
+
+    // Route detectron2 progress lines into mini-train log (epochs/iters) while
+    // keeping test-tagged entries out of the train panel.
+    const isTrainLine = !isTestLine && (
       line.includes("[train]") ||
       line.includes("UI:INFO:train") || line.includes("UI:OK:train") || line.includes("UI:ERR:train") ||
       /\biter[: ]/i.test(line) || /\bloss[: ]/i.test(line) || /\beta[: ]/i.test(line)
     );
     if(isTrainLine){ appendMiniLog("#trainMiniLog", line); }
-
-    const isTestLine = (line.includes("[test]") || line.includes("UI:INFO:test") || line.includes("UI:OK:test") || line.includes("UI:ERR:test"));
-    if(isTestLine){ appendMiniLog("#testMiniLog", line); }
 
     // Surface server-side warnings to the frontend warning panels so users
     // see when thermal was requested but data is missing (or other test warnings).

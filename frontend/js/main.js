@@ -606,7 +606,7 @@ async function startUpload(){
 // ---------- training ----------
 async function startTraining(){
   clearAlerts("train"); wireAlertClose();
-  $("#trainMiniLog").textContent = "";
+  resetLogPane("#trainMiniLog");
   const chkThermalTrain = document.getElementById("chkUseThermalTrain");
   const thermalEnabled = (typeof window.isThermalExtractionEnabled === "function")
     ? window.isThermalExtractionEnabled()
@@ -678,7 +678,7 @@ async function cancelTraining(){
 // ---------- test run ----------
 async function runTest(){
   clearAlerts("test"); wireAlertClose();
-  $("#testMiniLog").textContent = "";
+  resetLogPane("#testMiniLog");
   const ds = getSelectedDataset();
   if(!ds){
     warn("test","Please select a dataset.");
@@ -2510,7 +2510,7 @@ function setupUI(){
   const btnLogsConnect = $("#btnLogsConnect");
   if(btnLogsConnect) btnLogsConnect.addEventListener("click", connectLogs);
   const btnLogsClear = $("#btnLogsClear");
-  if(btnLogsClear) btnLogsClear.addEventListener("click", ()=>{ const ls=$("#logStream"); if(ls) ls.textContent=""; });
+  if(btnLogsClear) btnLogsClear.addEventListener("click", ()=> resetLogPane("#logStream"));
 
   const btnRefreshSessions = $("#btnRefreshSessions");
   if(btnRefreshSessions) btnRefreshSessions.addEventListener("click", async ()=>{
