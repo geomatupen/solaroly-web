@@ -8,6 +8,7 @@ backend/projects/*/output/
 backend/projects/*/models/
 outputs/
 media/
+scripts/
 .serena/
 .playwright/
 **/__pycache__/
