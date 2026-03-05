@@ -30,7 +30,7 @@ This repository packages the FastAPI backend that drives thermal decoding, Detec
    source venv/bin/activate
    python -m pip install --upgrade pip wheel
    ```
-2. Decide which heavy integrations you need (Detectron2, or YOLO, COLMAP helpers). Use Section 3 to comment blocks in `requirements.txt` **before** installing.
+2. Decide which heavy integrations you need (Detectron2 or YOLO, COLMAP helpers). Use Section 3 to comment blocks in `requirements.txt` **before** installing.
 3. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
