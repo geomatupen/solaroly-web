@@ -51,12 +51,13 @@ The committed `requirements.txt` lists *all* integrations. Comment out the lines
 
 | Feature | Keep these requirements | Comment when unused | Runtime toggle |
 | --- | --- | --- | --- |
-| Shared PyTorch runtime (Detectron2 & YOLO) | `torch==2.5.1+cu121`, `torchvision==0.20.1+cu121`, `torchaudio==2.5.1+cu121`, `triton==3.1.0` (swap in CPU wheels if you do not ship CUDA) | Only comment if you disable **both** backends entirely. | Required whenever either `PVRT_ENABLE_DETECTRON` or `PVRT_ENABLE_YOLO` is 1 |
 | Detectron2-based training/testing | `detectron2 @ git+...`, `fvcore`, `iopath`, `hydra-core`, `omegaconf`, `yacs`, `pycocotools`, `tensorboard`, `tabulate`, `matplotlib` | Comment the entire block if you only plan to run YOLO. | `PVRT_ENABLE_DETECTRON=0/1` |
 | YOLOv8 pipeline | `ultralytics>=8.3.0,<9.0.0` plus the shared OpenCV/numpy stack already present | Comment `ultralytics` if Detectron2 is the only backend you ship. | `PVRT_ENABLE_YOLO=0/1` |
 | CUDA accelerators | All `nvidia-*` wheels plus CUDA-specific Torch builds | Comment GPU wheels and install CPU Torch (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) when no CUDA-capable device exists. | Not flag-controlled; match your hardware |
 | DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | `PVRT_ENABLE_THERMAL=0/1` (drives the shared `thermal_data_extraction` flag; when 0 the UI hides "Use thermal" toggles and the backend rejects decode/train/test requests that require DJI payloads) + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
 | COLMAP-assisted alignment | Installed separately via `conda install -c conda-forge colmap` or system packages | Skip entirely if you only need per-frame inference. | `PVRT_ENABLE_COLMAP=0/1` |
+
+**Base requirement:** PyTorch (`torch`, `torchvision`, `torchaudio`, `triton`) is always needed because both Detectron2 and YOLO sit on top of it. Install the CUDA wheels shown in `requirements.txt` or swap in the CPU-only wheels before enabling either backend.
 
 **Comment example:**
 ```text
