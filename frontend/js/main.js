@@ -294,9 +294,15 @@ function populateModelsInto(list, selSelector){
       Number(m.channel_count) === 3 && (!!(m && m.thermal_only) || !!(m && m.thermal_used))
     ) : false;
     const chkTest = document.getElementById('chkUseThermalTest');
-    // only override the checkbox if the user hasn't manually toggled it
-    if (chkTest && !userToggledThermalTest){
-      try { chkTest.checked = !!defaultRequiresThermal; } catch(_){}
+    const thermalEnabled = (typeof window.isThermalExtractionEnabled === 'function')
+      ? window.isThermalExtractionEnabled()
+      : true;
+    if (chkTest){
+      if (!thermalEnabled){
+        try { chkTest.checked = false; } catch(_){ }
+      } else if (!userToggledThermalTest){
+        try { chkTest.checked = !!defaultRequiresThermal; } catch(_){ }
+      }
     }
   }
 }
@@ -601,7 +607,15 @@ async function startUpload(){
 async function startTraining(){
   clearAlerts("train"); wireAlertClose();
   $("#trainMiniLog").textContent = "";
-  const useThermal = $("#chkUseThermalTrain").checked;
+  const chkThermalTrain = document.getElementById("chkUseThermalTrain");
+  const thermalEnabled = (typeof window.isThermalExtractionEnabled === "function")
+    ? window.isThermalExtractionEnabled()
+    : true;
+  if (!thermalEnabled && chkThermalTrain && chkThermalTrain.checked){
+    warn("train","Thermal data extraction is disabled on this server. Set PVRT_ENABLE_THERMAL=1 to train with thermal inputs.");
+    return;
+  }
+  const useThermal = thermalEnabled && chkThermalTrain ? chkThermalTrain.checked : false;
   const iters = parseInt($("#inpIters").value || "500", 10);
   const lr = parseFloat($("#inpLR").value || "0.002");
   const batch = parseInt($("#inpBatch").value || "4", 10);
@@ -712,7 +726,16 @@ async function runTest(){
   if (modelChannelCount !== 3) modelChannelCount = 3;
   // use_thermal true when a 3-channel model was trained with thermal
   // (thermal_only or thermal_used flags set).
-  const useThermal = (modelChannelCount === 3 && (!!(mmeta && mmeta.thermal_only) || !!(mmeta && mmeta.thermal_used)));
+  const modelRequiresThermal = (modelChannelCount === 3 && (!!(mmeta && mmeta.thermal_only) || !!(mmeta && mmeta.thermal_used)));
+  const thermalEnabled = (typeof window.isThermalExtractionEnabled === "function")
+    ? window.isThermalExtractionEnabled()
+    : true;
+  if (!thermalEnabled && modelRequiresThermal){
+    warn("test","Thermal data extraction is disabled on this server. Select an RGB-only model or set PVRT_ENABLE_THERMAL=1 to run thermal workflows.");
+    setHidden($("#spinTest"), true);
+    return;
+  }
+  const useThermal = thermalEnabled && modelRequiresThermal;
   const resultName = (document.getElementById("inpResultName")?.value || "").trim() || makeStamp();
   
   // Check if result name already exists

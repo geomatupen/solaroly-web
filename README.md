@@ -55,7 +55,7 @@ The committed `requirements.txt` lists *all* integrations. Comment out the lines
 | Detectron2-based training/testing | `detectron2 @ git+...`, `fvcore`, `iopath`, `hydra-core`, `omegaconf`, `yacs`, `pycocotools`, `tensorboard`, `tabulate`, `matplotlib` | Comment the entire block if you only plan to run YOLO. | `PVRT_ENABLE_DETECTRON=0/1` |
 | YOLOv8 pipeline | `ultralytics>=8.3.0,<9.0.0` plus the shared OpenCV/numpy stack already present | Comment `ultralytics` if Detectron2 is the only backend you ship. | `PVRT_ENABLE_YOLO=0/1` |
 | CUDA accelerators | All `nvidia-*` wheels plus CUDA-specific Torch builds | Comment GPU wheels and install CPU Torch (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) when no CUDA-capable device exists. | Not flag-controlled; match your hardware |
-| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | Export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` whenever installed |
+| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | `PVRT_ENABLE_THERMAL=0/1` + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
 | COLMAP-assisted alignment | Installed separately via `conda install -c conda-forge colmap` or system packages | Skip entirely if you only need per-frame inference. | `PVRT_ENABLE_COLMAP=0/1` |
 
 **Comment example:**
@@ -101,7 +101,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
    ```
 5. Reactivate the environment or restart Docker containers whenever you change the library paths.
 
-> **When you can skip this:** If your datasets only contain RGB imagery or thermal renders from non-DJI drones (i.e., no DJI R-JPEG radiometric frames), you may comment the DJI SDK dependencies, skip this section, and simply leave the "Use thermal" checkbox unchecked in the UI. The backend will operate on RGB or externally supplied thermal PNG/JPEG files but will not attempt grayscale extraction or temperature calculations.
+> **When you can skip this:** If your datasets only contain RGB imagery or thermal renders from non-DJI drones (i.e., no DJI R-JPEG radiometric frames), you may comment the DJI SDK dependencies, skip this section, **and set `PVRT_ENABLE_THERMAL=0`**. Leave the "Use thermal" checkbox unchecked in the UI. The backend will operate on RGB or externally supplied thermal PNG/JPEG files but will not attempt grayscale extraction or temperature calculations.
 
 ---
 
@@ -121,7 +121,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
   └── logs/
   ```
 - **Configuration file:** Each project writes an `outputs/config.yaml` capturing the last-used backend, weights folder, score thresholds, and thermal extraction preferences. The UI overwrites this file whenever you submit the Training or Testing forms.
-- **Feature flags:** `backend/pvrt/web/settings.py` reads `PVRT_ENABLE_DETECTRON`, `PVRT_ENABLE_YOLO`, and `PVRT_ENABLE_COLMAP`. Export them before launching uvicorn or set them inside Docker. Disabled integrations disappear from the UI and the backend guards routes accordingly.
+- **Feature flags:** `backend/pvrt/web/settings.py` reads `PVRT_ENABLE_DETECTRON`, `PVRT_ENABLE_YOLO`, `PVRT_ENABLE_COLMAP`, and `PVRT_ENABLE_THERMAL`. Export them before launching uvicorn or set them inside Docker. Disabled integrations disappear from the UI and the backend guards routes accordingly.
 - **Camera metadata:** `camera_meta.json` stores alignment hints (heading offsets, reference elevations) and is used by the rotation/mosaic pipeline plus the orthophoto tiler.
 
 ---
@@ -133,6 +133,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
    export PVRT_ENABLE_DETECTRON=1
    export PVRT_ENABLE_YOLO=1
    export PVRT_ENABLE_COLMAP=0
+   export PVRT_ENABLE_THERMAL=1
    ```
 2. Start FastAPI:
    ```bash
@@ -151,7 +152,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 
 ### 7.1 Single DJI Frame Inference
 1. **Upload** JPG/R-JPEG bundles under *Test → Uploads*. The server unpacks them into `test/data/uploads` for the active project.
-2. **Thermal extraction / fallback:** With the DJI SDK installed, the platform can decode DJI R-JPEG files into 16-bit grayscale rasters and expose temperature metadata. If you skipped the SDK (non-DJI thermal cameras or RGB-only workflows), keep the "Use thermal" checkbox disabled in frontend when you train —the system will operate on RGB imagery or any pre-rendered thermal PNG/JPEG files you provide, but thermal data extraction, create grayscale and temperature readouts will be unavailable.
+2. **Thermal extraction / fallback:** With the DJI SDK installed and `PVRT_ENABLE_THERMAL=1`, the platform decodes DJI R-JPEG files into 16-bit grayscale rasters and exposes temperature metadata. If you skipped the SDK (non-DJI thermal cameras or RGB-only workflows) and set `PVRT_ENABLE_THERMAL=0`, keep the "Use thermal" checkbox disabled—the system will operate on RGB imagery or any pre-rendered thermal PNG/JPEG files you provide, but grayscale extraction and temperature readouts remain unavailable.
 3. **Rotation & normalization:** Metadata-driven heading correction rotates each frame north-up. If rotation scripts fail or metadata is missing, the system continues with the original orientation but flags the session in the log.
 4. **Inference:**
    - Detectron2: loads the configured `model_final.pth` under `train/outputs/<run>/weights/` and respects batch size/thresholds from the UI.
@@ -180,7 +181,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 
 #### 7.4.2 Thermal Mosaic Builder
 - `backend/pvrt/dataops/mosaic_from_colmap.py` can optionally re-project raw thermal frames onto a flat plane using the COLMAP poses you uploaded, producing radiometrically faithful mosaics (`mosaic.tif`).
-- The resulting mosaic tiles plus `images.geojson` entries allow you to review COLMAP-derived mosaics separately from the orthophoto pipeline (which never calls COLMAP). This workflow assumes you have the DJI SDK installed so radiometric frames can be decoded.
+- The resulting mosaic tiles plus `images.geojson` entries allow you to review COLMAP-derived mosaics separately from the orthophoto pipeline (which never calls COLMAP). This workflow assumes you have the DJI SDK installed and `PVRT_ENABLE_THERMAL=1` so radiometric frames can be decoded.
 - If you only need per-frame inference, skip this workflow entirely—nothing else in the system depends on the mosaic artifacts.
 
 ### 7.5 Frontend Highlights

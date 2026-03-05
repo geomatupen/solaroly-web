@@ -199,6 +199,19 @@ def set_active_project(project_id: str) -> Project:
     _active_project = project
     return project
 
+
+def _require_thermal_enabled(action: str) -> None:
+    """Raise a helpful error when thermal workflows are disabled."""
+    if settings.enable_thermal_data_extraction:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Thermal data extraction is disabled on this server. "
+            f"Set PVRT_ENABLE_THERMAL=1 to {action}."
+        ),
+    )
+
 # ================== Project-aware path helpers ==================
 
 def get_project_data_dir(project: Optional[Project] = None) -> Path:
@@ -2350,6 +2363,9 @@ async def api_train(
     if backend not in settings.enabled_backends:
         raise HTTPException(status_code=400, detail=f"Backend '{backend}' is not available on this server.")
 
+    if use_thermal:
+        _require_thermal_enabled("train models that rely on thermal decoding")
+
     safe_name = _safe_name(model_name) or _now_stamp()
     output_dir = get_project_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2545,6 +2561,7 @@ async def api_dataset_bands(dataset: str):
 @app.post("/api/decode_dataset")
 async def api_decode_dataset(dataset: str = Form(...)):
     """Trigger thermal decoding for a dataset (images pipeline). Returns updated band list."""
+    _require_thermal_enabled("decode thermal datasets")
     # resolve dataset path similarly to above
     if dataset in ("train", "valid"):
         ds = get_project_data_dir() / dataset
@@ -2693,6 +2710,8 @@ async def api_test_run(
     if not ds_dir.exists() or not ds_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
 
+    thermal_enabled = settings.enable_thermal_data_extraction
+
     if model:
         model_dir = get_project_output_dir() / model
         if not model_dir.exists():
@@ -2770,6 +2789,9 @@ async def api_test_run(
     meta = _read_model_meta(model_dir)
     model_mode = (meta.get("input_mode") or "rgb").strip().lower()
     model_is_thermal = model_mode == "thermal" or bool(meta.get("thermal_used"))
+
+    if model_is_thermal and not thermal_enabled:
+        _require_thermal_enabled("run inference with thermal-trained models")
 
     # Determine model's declared channel count (always 3 for supported models)
     try:

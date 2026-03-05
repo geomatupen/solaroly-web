@@ -24,6 +24,7 @@ const featureDefaults = {
   colmap: false,
   detectron: true,
   yolo: false,
+  thermal_data_extraction: true,
   backends: ["detectron"],
 };
 
@@ -41,13 +42,31 @@ window.getEnabledBackends = function getEnabledBackends(){
   return list;
 };
 
+window.isThermalExtractionEnabled = function isThermalExtractionEnabled(){
+  const flags = window.featureFlags || {};
+  if(typeof flags.thermal_data_extraction === "boolean"){
+    return flags.thermal_data_extraction;
+  }
+  if(typeof flags.thermal === "boolean"){
+    return flags.thermal;
+  }
+  return true;
+};
+
 window.loadFeatureFlags = async function loadFeatureFlags(){
   try{
     const resp = await fetch(window.api.features, { cache: "no-store" });
     if(resp.ok){
       const data = await resp.json().catch(()=>({}));
       if(data && data.features){
-        window.featureFlags = { ...featureDefaults, ...data.features };
+        const merged = { ...featureDefaults, ...data.features };
+        if(typeof merged.thermal_data_extraction !== "boolean" && typeof merged.thermal === "boolean"){
+          merged.thermal_data_extraction = merged.thermal;
+        }
+        if(typeof merged.thermal !== "boolean" && typeof merged.thermal_data_extraction === "boolean"){
+          merged.thermal = merged.thermal_data_extraction;
+        }
+        window.featureFlags = merged;
       }
     }
   }catch(err){
@@ -147,6 +166,21 @@ window.applyFeatureFlags = function applyFeatureFlags(){
       window.clearColmapPoll();
     }
   }
+  const thermalEnabled = window.isThermalExtractionEnabled ? window.isThermalExtractionEnabled() : true;
+  const toggleThermalInput = (inputId) => {
+    const input = document.getElementById(inputId);
+    if(!input) return;
+    if(!thermalEnabled){
+      input.checked = false;
+    }
+    input.disabled = !thermalEnabled;
+    const wrapper = input.closest('.switchRow') || input.parentElement;
+    if(wrapper && wrapper.style){
+      wrapper.style.display = thermalEnabled ? '' : 'none';
+    }
+  };
+  toggleThermalInput('chkUseThermalTrain');
+  toggleThermalInput('chkUseThermalTest');
   if(typeof window.updateAccurateUI === 'function'){
     window.updateAccurateUI();
   }
