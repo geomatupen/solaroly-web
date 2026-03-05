@@ -1,6 +1,14 @@
 # SolarOly Project
 
-SolarOly turns DJI thermal flights and orthophotos into actionable solar anomaly reports. A FastAPI backend orchestrates thermal decoding, Detectron2/YOLO inference, COLMAP-assisted alignment, and data prep utilities, while a lightweight JS frontend handles uploads, training orchestration, and geospatial visualization.
+SolarOly is an end-to-end inspection console for Solar PV. It ingests DJI thermal flights, orthophotos, then turns them into actionable anomaly reports that can be reviewed, exported, or pushed into downstream GIS tools.
+
+This repository packages the FastAPI backend that drives thermal decoding, Detectron2/YOLO inference, COLMAP-assisted alignment, and batch utilities, plus the single-page frontend that manages uploads, project workspaces, training knobs, and map reviews. Feature flags (`PVRT_ENABLE_*`) keep heavy integrations opt-in so the same codebase runs on a laptop or a GPU workstation without code changes.
+
+**Use SolarOly to:**
+- Create isolated projects for different sites and keep train/test data, outputs, overlays, and logs neatly partitioned.
+- Decode DJI radiometric frames, fine-tune Detectron2 or YOLO models, and launch inference or orthophoto tiling jobs from the browser.
+- Align imagery with COLMAP or metadata-based rotations, regenerate GeoJSON overlays, and stream results into Leaflet maps for QA before exporting.
+- Monitor every job via Server-Sent Events, download artifacts (weights, logs, overlays), and hand off the deliverables to ops teams without leaving the app.
 
 ---
 
