@@ -24,8 +24,8 @@ class WebSettings:
 
     def __init__(self) -> None:
         self.enable_detectron = _env_flag("PVRT_ENABLE_DETECTRON", True)  # Change this to turn on or off Detectron
-        self.enable_yolo = _env_flag("PVRT_ENABLE_YOLO", True)  # Change this to turn on or off YOLO
-        self.enable_colmap = _env_flag("PVRT_ENABLE_COLMAP", True) # Change this to turn on or off COLMAP (for location and orientation optimization for individual images)
+        self.enable_yolo = _env_flag("PVRT_ENABLE_YOLO", False)  # Change this to turn on or off YOLO
+        self.enable_colmap = _env_flag("PVRT_ENABLE_COLMAP", False) # Change this to turn on or off COLMAP (for location and orientation optimization for individual images)
         self.enable_thermal_data_extraction = _env_flag(
             "PVRT_ENABLE_THERMAL",
             True,
