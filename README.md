@@ -51,19 +51,16 @@ The committed `requirements.txt` lists *all* integrations. Comment out the lines
 
 | Feature | Keep these requirements | Comment when unused | Runtime toggle |
 | --- | --- | --- | --- |
-| Detectron2-based training/testing | `torch==2.5.1+cu121`, `torchvision==0.20.1+cu121`, `torchaudio==...`, `triton==3.1.0`, `detectron2 @ git+...`, `fvcore`, `iopath`, `hydra-core`, `omegaconf`, `yacs`, `pycocotools`, `tensorboard`, `tabulate`, `matplotlib` | Comment the entire block if you only plan to run YOLO. | `PVRT_ENABLE_DETECTRON=0/1` |
+| Shared PyTorch runtime (Detectron2 & YOLO) | `torch==2.5.1+cu121`, `torchvision==0.20.1+cu121`, `torchaudio==2.5.1+cu121`, `triton==3.1.0` (swap in CPU wheels if you do not ship CUDA) | Only comment if you disable **both** backends entirely. | Required whenever either `PVRT_ENABLE_DETECTRON` or `PVRT_ENABLE_YOLO` is 1 |
+| Detectron2-based training/testing | `detectron2 @ git+...`, `fvcore`, `iopath`, `hydra-core`, `omegaconf`, `yacs`, `pycocotools`, `tensorboard`, `tabulate`, `matplotlib` | Comment the entire block if you only plan to run YOLO. | `PVRT_ENABLE_DETECTRON=0/1` |
 | YOLOv8 pipeline | `ultralytics>=8.3.0,<9.0.0` plus the shared OpenCV/numpy stack already present | Comment `ultralytics` if Detectron2 is the only backend you ship. | `PVRT_ENABLE_YOLO=0/1` |
 | CUDA accelerators | All `nvidia-*` wheels plus CUDA-specific Torch builds | Comment GPU wheels and install CPU Torch (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) when no CUDA-capable device exists. | Not flag-controlled; match your hardware |
-| DJI Thermal SDK | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Do **not** remove if you run thermal decoding or orthomosaic pipelines. | Export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` |
+| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | Export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` whenever installed |
 | COLMAP-assisted alignment | Installed separately via `conda install -c conda-forge colmap` or system packages | Skip entirely if you only need per-frame inference. | `PVRT_ENABLE_COLMAP=0/1` |
 
 **Comment example:**
 ```text
-# --- Detectron2 stack (comment out to ship YOLO-only) ---
-# torch==2.5.1+cu121
-# torchvision==0.20.1+cu121
-# torchaudio==2.5.1+cu121
-# triton==3.1.0
+# --- Detectron2 stack (comment out to ship YOLO-only; keep the shared PyTorch runtime above) ---
 # detectron2 @ git+https://github.com/facebookresearch/detectron2.git@a1ce2f9
 # fvcore==0.1.5.post20221221
 # iopath==0.1.9
@@ -80,7 +77,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 
 ---
 
-## 4. DJI Thermal SDK Setup
+## 4. DJI Thermal SDK Setup (only for DJI radiometric workflows)
 1. **Native binaries:** The repo already vendors DJI Thermal SDK under `third_party/`. If you download a newer SDK, unzip it into the same folder so `third_party/tsdk-core/lib/linux/release_x64/libdirp.so` exists.
 2. **Environment activation:** Append to `venv/bin/activate` (or export manually) so runtime paths are set every time the environment loads:
    ```bash
@@ -103,6 +100,8 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
    PY
    ```
 5. Reactivate the environment or restart Docker containers whenever you change the library paths.
+
+> **When you can skip this:** If your datasets only contain RGB imagery or thermal renders from non-DJI drones (i.e., no DJI R-JPEG radiometric frames), you may comment the DJI SDK dependencies, skip this section, and simply leave the "Use thermal" checkbox unchecked in the UI. The backend will operate on RGB or externally supplied thermal PNG/JPEG files but will not attempt grayscale extraction or temperature calculations.
 
 ---
 
@@ -152,7 +151,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 
 ### 7.1 Single DJI Frame Inference
 1. **Upload** JPG/R-JPEG bundles under *Test → Uploads*. The server unpacks them into `test/data/uploads` for the active project.
-2. **Thermal extraction:** When the requested backend expects thermal-only data, the DJI SDK extracts 16-bit grayscale rasters. If the extraction fails, the code falls back to the embedded RGB render (logged as a warning so you know image fidelity changed).
+2. **Thermal extraction / fallback:** With the DJI SDK installed, the platform can decode DJI R-JPEG files into 16-bit grayscale rasters and expose temperature metadata. If you skipped the SDK (non-DJI thermal cameras or RGB-only workflows), keep the "Use thermal" checkbox disabled in frontend when you train —the system will operate on RGB imagery or any pre-rendered thermal PNG/JPEG files you provide, but thermal data extraction, create grayscale and temperature readouts will be unavailable.
 3. **Rotation & normalization:** Metadata-driven heading correction rotates each frame north-up. If rotation scripts fail or metadata is missing, the system continues with the original orientation but flags the session in the log.
 4. **Inference:**
    - Detectron2: loads the configured `model_final.pth` under `train/outputs/<run>/weights/` and respects batch size/thresholds from the UI.
@@ -181,7 +180,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 
 #### 7.4.2 Thermal Mosaic Builder
 - `backend/pvrt/dataops/mosaic_from_colmap.py` can optionally re-project raw thermal frames onto a flat plane using the COLMAP poses you uploaded, producing radiometrically faithful mosaics (`mosaic.tif`).
-- The resulting mosaic tiles plus `images.geojson` entries allow you to review COLMAP-derived mosaics separately from the orthophoto pipeline (which never calls COLMAP).
+- The resulting mosaic tiles plus `images.geojson` entries allow you to review COLMAP-derived mosaics separately from the orthophoto pipeline (which never calls COLMAP). This workflow assumes you have the DJI SDK installed so radiometric frames can be decoded.
 - If you only need per-frame inference, skip this workflow entirely—nothing else in the system depends on the mosaic artifacts.
 
 ### 7.5 Frontend Highlights
