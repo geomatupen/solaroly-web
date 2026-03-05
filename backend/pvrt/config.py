@@ -1,4 +1,9 @@
-# backend/pvrt/config.py
+"""Keep track of core resources such as the DIRP SDK path.
+
+Example: set ``DIRP_SDK_PATH=/opt/dirp/libdirp.so`` if the auto-detected
+location is wrong; other modules import ``DIRP_LIB`` from here.
+"""
+
 from __future__ import annotations
 import os, platform
 from pathlib import Path

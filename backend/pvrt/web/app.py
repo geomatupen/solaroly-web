@@ -50,21 +50,44 @@ except (ImportError, ModuleNotFoundError):
 # --- Backend-agnostic bridge and registry ---
 from ..core.registry import register_backend
 from .bridge import train_entry, predict_entry
-from ..backends.detectron.backend import register as register_detectron
-from ..backends.yolo.backend import register as register_yolo
+from .settings import settings
+
+if settings.enable_detectron:
+    from ..backends.detectron.backend import register as register_detectron
+else:  # feature disabled or dependency missing
+    register_detectron = None  # type: ignore
+
+if settings.enable_yolo:
+    from ..backends.yolo.backend import register as register_yolo
+else:
+    register_yolo = None  # type: ignore
 
 # --- Project management ---
 from ..core.projects import ProjectManager, Project
 
 # --- SSE/logging bridge ---
 from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
-from .colmap import (
-    router as colmap_router,
-    configure_colmap_dependencies,
-    _colmap_ready,
-    _load_colmap_meta,
-    _merge_optical_metadata,
-)
+
+if settings.enable_colmap:
+    from .colmap import (
+        router as colmap_router,
+        configure_colmap_dependencies,
+        _colmap_ready,
+        _load_colmap_meta,
+        _merge_optical_metadata,
+    )
+else:
+    colmap_router = None
+    configure_colmap_dependencies = None
+
+    def _colmap_ready(*_args, **_kwargs) -> bool:  # type: ignore
+        return False
+
+    def _load_colmap_meta(*_args, **_kwargs):  # type: ignore
+        raise RuntimeError("COLMAP support is disabled on this server.")
+
+    def _merge_optical_metadata(*_args, **_kwargs):  # type: ignore
+        raise RuntimeError("COLMAP support is disabled on this server.")
 from .mosaic import prepare_rotation_and_mosaic
 
 # --- Reuse data helpers (RJPEG decode & scanning) ---
@@ -138,8 +161,17 @@ logger.handlers.clear()
 logger.addHandler(sse_handler)
 
 # --------------- Backend registration ----------------
-register_detectron(register_backend)  # Detectron now; add YOLO later by registering it here.
-register_yolo(register_backend)
+if settings.enable_detectron and register_detectron:
+    register_detectron(register_backend)
+else:
+    logger.info("Detectron backend disabled via settings.")
+
+if settings.enable_yolo and register_yolo:
+    register_yolo(register_backend)
+elif settings.enable_yolo:
+    logger.warning("YOLO backend enabled in settings but import failed.")
+else:
+    logger.info("YOLO backend disabled via settings.")
 
 # --------------- Project management ----------------
 PROJECTS_REGISTRY = DEFAULT_PROJECTS_ROOT / "projects.json"
@@ -1373,17 +1405,19 @@ def _lookup_camera_meta_entry(camera_meta: Dict[str, Dict[str, Any]], name: str)
             continue
     return None
 
-configure_colmap_dependencies(
-    get_project_test_dir=get_project_test_dir,
-    get_project_colmap_dir=get_project_colmap_dir,
-    now_stamp=_now_stamp,
-    is_image=_is_image,
-    build_camera_meta_from_exif=_build_camera_meta_from_exif,
-    scan_image_sizes=_scan_image_sizes,
-    lookup_camera_meta_entry=_lookup_camera_meta_entry,
-)
-
-app.include_router(colmap_router)
+if settings.enable_colmap and configure_colmap_dependencies and colmap_router:
+    configure_colmap_dependencies(
+        get_project_test_dir=get_project_test_dir,
+        get_project_colmap_dir=get_project_colmap_dir,
+        now_stamp=_now_stamp,
+        is_image=_is_image,
+        build_camera_meta_from_exif=_build_camera_meta_from_exif,
+        scan_image_sizes=_scan_image_sizes,
+        lookup_camera_meta_entry=_lookup_camera_meta_entry,
+    )
+    app.include_router(colmap_router)
+else:
+    logger.info("COLMAP integration disabled via settings; skipping router setup.")
 
 
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> Optional[float]:
@@ -2078,6 +2112,12 @@ async def stream_logs():
 async def api_health():
     return {"ok": True, "time": _now_stamp()}
 
+
+@app.get("/api/features")
+async def api_features():
+    """Expose enabled feature flags so the UI can toggle controls."""
+    return {"ok": True, "features": settings.as_feature_payload()}
+
 # ================== projects CRUD ==================
 
 @app.get("/api/projects")
@@ -2304,6 +2344,12 @@ async def api_train(
     channel_count: int = Form(3),
     clear_existing: bool = Form(False),
 ):
+    if not settings.enabled_backends:
+        raise HTTPException(status_code=400, detail="No training backends are enabled on this server.")
+
+    if backend not in settings.enabled_backends:
+        raise HTTPException(status_code=400, detail=f"Backend '{backend}' is not available on this server.")
+
     safe_name = _safe_name(model_name) or _now_stamp()
     output_dir = get_project_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2634,6 +2680,13 @@ async def api_test_run(
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
+    if not settings.enabled_backends:
+        raise HTTPException(status_code=400, detail="No inference backends are enabled on this server.")
+
+    requested_backend = backend or forced_backend
+    if requested_backend and requested_backend not in settings.enabled_backends:
+        raise HTTPException(status_code=400, detail=f"Backend '{requested_backend}' is not available on this server.")
+
     test_dir = get_project_test_dir()
     ds_dir = test_dir / dataset
     
@@ -2852,6 +2905,8 @@ async def api_test_run(
     session_dir = out_root
     camera_meta: Dict[str, Any] = {}
     if accurate_locations:
+        if not settings.enable_colmap:
+            raise HTTPException(status_code=400, detail="Accurate locations require COLMAP support, which is disabled on this server.")
         if not _colmap_ready(dataset):
             raise HTTPException(status_code=400, detail="Dataset has not been optimized yet. Run Optimize Locations first.")
         camera_meta = _load_colmap_meta(dataset)
@@ -2884,15 +2939,18 @@ async def api_test_run(
     
     # Apply optimization_project merge if provided (thermal + optical geometry)
     if optimization_project and input_type == "images" and camera_meta and not accurate_locations:
-        try:
-            camera_meta = _merge_optical_metadata(camera_meta, optimization_project)
-        except ValueError as e:
-            # Match rate too low - this is expected, just use EXIF
-            logging.getLogger("pvrt.test").warning(f"UI:WARN:test: Optical sync failed: {e}")
-            logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
-        except Exception as e:
-            logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to merge optimization_project metadata: {e}")
-            logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
+        if not settings.enable_colmap:
+            logging.getLogger("pvrt.test").info("UI:INFO:test: COLMAP disabled; skipping optimization project merge.")
+        else:
+            try:
+                camera_meta = _merge_optical_metadata(camera_meta, optimization_project)
+            except ValueError as e:
+                # Match rate too low - this is expected, just use EXIF
+                logging.getLogger("pvrt.test").warning(f"UI:WARN:test: Optical sync failed: {e}")
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
+            except Exception as e:
+                logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to merge optimization_project metadata: {e}")
+                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
 
     if camera_meta:
         try:

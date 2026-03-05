@@ -423,7 +423,26 @@ function updateAccurateUI(){
   const modeRow = document.getElementById('accurateModeRow');
   const optRow = document.getElementById('useOptimizationFromRow');
   const optSel = document.getElementById('selUseOptimizationFrom');
-  const btn = document.getElementById('btnTest');
+  const btn = document.getElementById('btnRunTest');
+  const mosaicControls = document.getElementById('mosaicControls');
+  const colmapEnabled = !!(window.featureFlags && window.featureFlags.colmap);
+
+  if(!colmapEnabled){
+    if(chk){ chk.checked = false; chk.disabled = true; }
+    if(radColmap){ radColmap.checked = false; radColmap.disabled = true; }
+    if(radOptical){ radOptical.checked = false; radOptical.disabled = true; }
+    if(modeRow) setHidden(modeRow, true);
+    if(optRow) setHidden(optRow, true);
+    if(mosaicControls) mosaicControls.hidden = true;
+    if(badge){ badge.className = 'pill pill-muted'; badge.textContent = 'Disabled'; }
+    if(hint){ hint.textContent = 'Accurate poses disabled on this server.'; }
+    if(btn){ btn.disabled = false; btn.classList.remove('disabled'); }
+    return;
+  }else{
+    if(chk) chk.disabled = false;
+    if(radColmap) radColmap.disabled = false;
+    if(radOptical) radOptical.disabled = false;
+  }
   const ready = !!(state && state.ready);
   const jobStatus = state?.job?.status;
   const wantsAccurate = !!chk?.checked;
@@ -531,7 +550,6 @@ function updateAccurateUI(){
   }
 
   // Update mosaic checkbox visibility: show only if camera_meta exists (rotation will happen)
-  const mosaicControls = document.getElementById('mosaicControls');
   if(mosaicControls){
     const cameraMetaExists = wantsAccurate && modeSelected && (
       modeOptical ? !!opticalProject : (state?.camera_meta && Object.keys(state.camera_meta).length > 0)
@@ -793,6 +811,10 @@ function clearColmapPoll(){
 }
 
 function scheduleColmapPoll(dataset, state){
+  if(!(window.featureFlags && window.featureFlags.colmap)){
+    clearColmapPoll();
+    return;
+  }
   const status = state?.job?.status;
   const shouldPoll = !!(status && ['running','queued','awaiting_finish'].includes(status));
   if(!shouldPoll){
@@ -810,6 +832,9 @@ function scheduleColmapPoll(dataset, state){
 }
 
 async function refreshColmapState({ dataset, silent } = {}){
+  if(!(window.featureFlags && window.featureFlags.colmap)){
+    return null;
+  }
   const selOpt = document.getElementById('selOptimizeDataset');
   const ds = dataset || selOpt?.value || getSelectedDataset();
   if(!ds) return null;
@@ -1032,6 +1057,10 @@ function maybeApplySavedColmapParams(dataset){
 }
 
 async function startColmapJob(){
+  if(!(window.featureFlags && window.featureFlags.colmap)){
+    setColmapStatus('COLMAP is disabled on this server.', 'warn');
+    return;
+  }
   const dataset = document.getElementById('selOptimizeDataset')?.value;
   if(!dataset){
     setColmapStatus('Select a dataset to optimize.', 'warn');
@@ -1078,6 +1107,10 @@ async function startColmapJob(){
 }
 
 async function finishColmapJob(){
+  if(!(window.featureFlags && window.featureFlags.colmap)){
+    setColmapStatus('COLMAP is disabled on this server.', 'warn');
+    return;
+  }
   const dataset = document.getElementById('selOptimizeDataset')?.value;
   const state = getColmapState(dataset);
   if(!dataset){
@@ -1126,6 +1159,10 @@ function onTestDatasetChange(){
   if(ds && sel){
     sel.value = ds;
   }
+  if(!(window.featureFlags && window.featureFlags.colmap)){
+    updateAccurateUI();
+    return;
+  }
   const cached = getColmapState(ds);
   if(cached){
     updateAccurateUI();
@@ -1137,6 +1174,10 @@ function onTestDatasetChange(){
 }
 
 function onOptimizeDatasetChange(){
+  if(!(window.featureFlags && window.featureFlags.colmap)){
+    updateOptimizePanel(null);
+    return;
+  }
   const sel = document.getElementById('selOptimizeDataset');
   const ds = sel?.value;
   if(!ds){
@@ -1170,6 +1211,10 @@ function initOptimizeTabControls(){
   if(btnGoOptimize){
     btnGoOptimize.addEventListener('click', (e)=>{
       e.preventDefault();
+      if(!(window.featureFlags && window.featureFlags.colmap)){
+        warn('test', 'COLMAP optimization is disabled on this server.');
+        return;
+      }
       syncOptimizeDatasetFromTest();
       switchToTab('tab-optimize');
       refreshColmapState();

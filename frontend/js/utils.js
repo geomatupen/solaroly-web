@@ -16,7 +16,140 @@ window.api = {
   colmapStart: "/api/colmap/start",
   colmapFinish: "/api/colmap/finish",
   projects: "/api/projects",
-  activeProject: "/api/active-project"
+  activeProject: "/api/active-project",
+  features: "/api/features"
+};
+
+const featureDefaults = {
+  colmap: false,
+  detectron: true,
+  yolo: false,
+  backends: ["detectron"],
+};
+
+window.featureDefaults = featureDefaults;
+window.featureFlags = { ...featureDefaults };
+
+window.getEnabledBackends = function getEnabledBackends(){
+  const flags = window.featureFlags || {};
+  if(Array.isArray(flags.backends) && flags.backends.length){
+    return flags.backends.slice();
+  }
+  const list = [];
+  if(flags.detectron) list.push("detectron");
+  if(flags.yolo) list.push("yolo");
+  return list;
+};
+
+window.loadFeatureFlags = async function loadFeatureFlags(){
+  try{
+    const resp = await fetch(window.api.features, { cache: "no-store" });
+    if(resp.ok){
+      const data = await resp.json().catch(()=>({}));
+      if(data && data.features){
+        window.featureFlags = { ...featureDefaults, ...data.features };
+      }
+    }
+  }catch(err){
+    console.warn("Failed to load feature flags", err);
+  }
+  return window.featureFlags;
+};
+
+function updateBackendSelectOptions(selectEl, allowed){
+  if(!selectEl) return;
+  const allowedSet = new Set(allowed);
+  Array.from(selectEl.options).forEach(opt => {
+    if(opt.value && !allowedSet.has(opt.value)){
+      opt.remove();
+    }
+  });
+  if(allowed.length && !allowedSet.has(selectEl.value)){
+    selectEl.value = allowed[0];
+  }
+  if(!allowed.length){
+    selectEl.value = "";
+  }
+  selectEl.disabled = !allowed.length;
+}
+
+window.applyFeatureFlags = function applyFeatureFlags(){
+  const allowedBackends = window.getEnabledBackends();
+  const selects = [
+    document.getElementById("selBackend"),
+    document.getElementById("selBackendTrain"),
+    document.getElementById("selBackendTest")
+  ];
+  selects.forEach(sel => updateBackendSelectOptions(sel, allowedBackends));
+
+  const disableAll = allowedBackends.length === 0;
+  const trainBtn = document.getElementById('btnStartTraining');
+  const testBtn = document.getElementById('btnRunTest');
+  if(trainBtn) trainBtn.disabled = disableAll;
+  if(testBtn) testBtn.disabled = disableAll;
+  if(disableAll){
+    setText("#trainStatus", "No training backends enabled on this server.");
+    setText("#testStatus", "No inference backends enabled on this server.");
+  }
+
+  const yoloAvailable = allowedBackends.includes("yolo");
+  if(!yoloAvailable){
+    ["yoloOptions", "yoloSizeOption"].forEach(id => {
+      const el = document.getElementById(id);
+      if(el) el.style.display = "none";
+    });
+  }
+
+  const colmapEnabled = !!(window.featureFlags && window.featureFlags.colmap);
+  const btnOptimize = document.getElementById('btnOptimize');
+  if(btnOptimize){
+    btnOptimize.style.display = colmapEnabled ? 'inline-block' : 'none';
+    if(!colmapEnabled && btnOptimize.classList.contains('active') && typeof window.switchToTab === 'function'){
+      window.switchToTab('tab-test');
+    }
+  }
+  const tabOptimize = document.getElementById('tab-optimize');
+  if(tabOptimize){
+    tabOptimize.style.display = colmapEnabled ? '' : 'none';
+  }
+  const goOptimizeBtn = document.getElementById('btnGoOptimize');
+  if(goOptimizeBtn){
+    goOptimizeBtn.style.display = colmapEnabled ? '' : 'none';
+  }
+  const accurateControls = document.getElementById('accurateControls');
+  if(accurateControls){
+    accurateControls.style.display = colmapEnabled ? '' : 'none';
+  }
+  const chkAccurate = document.getElementById('chkAccurateLocations');
+  if(chkAccurate){
+    if(!colmapEnabled){
+      chkAccurate.checked = false;
+    }
+    chkAccurate.disabled = !colmapEnabled;
+  }
+  const accurateRows = [
+    document.getElementById('accurateModeRow'),
+    document.getElementById('useOptimizationFromRow'),
+    document.getElementById('mosaicControls')
+  ];
+  if(!colmapEnabled){
+    accurateRows.forEach(row => row && setHidden(row, true));
+    const badge = document.getElementById('accurateStatusBadge');
+    if(badge){
+      badge.className = 'pill pill-muted';
+      badge.textContent = 'Disabled';
+    }
+    const hint = document.getElementById('accurateHint');
+    if(hint){
+      hint.textContent = 'Accurate poses disabled on this server.';
+    }
+    if(typeof window.clearColmapPoll === 'function'){
+      window.clearColmapPoll();
+    }
+  }
+  if(typeof window.updateAccurateUI === 'function'){
+    window.updateAccurateUI();
+  }
 };
 
 window.$ = (sel) => document.querySelector(sel);
