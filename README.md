@@ -392,9 +392,17 @@ solaroly-web/
 │       │   └── yolo/                # YOLO backend
 │       └── config.py
 ├── frontend/
-│   ├── app.js                       # Main JavaScript
-│   ├── index.html                   # Web interface
-│   └── styles.css                   # Styling
+│   ├── js/
+│   │   ├── main.js                  # Core UI logic
+│   │   ├── colmap.js                # COLMAP optimization flows
+│   │   ├── map.js                   # Leaflet map rendering/helpers
+│   │   ├── map-overlay.js           # User overlay uploads
+│   │   └── utils.js                 # Shared DOM/network helpers
+│   ├── css/
+│   │   └── styles.css               # Styling
+│   ├── images/
+│   │   └── logo.svg                 # Branding asset
+│   └── index.html                   # Web interface (projects)
 ├── backend/projects/<project-id>/
 │   ├── train/
 │   │   ├── data/
