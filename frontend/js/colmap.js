@@ -1222,14 +1222,36 @@ function initOptimizeTabControls(){
   }
 
   const colmapInfoModal = document.getElementById('colmapInfoModal');
-  const openColmapInfo = ()=> colmapInfoModal?.classList.remove('hidden');
-  const closeColmapInfo = ()=> colmapInfoModal?.classList.add('hidden');
+  const openColmapInfo = ()=> {
+    if(colmapInfoModal){
+      colmapInfoModal.classList.add('show');
+      colmapInfoModal.classList.remove('hidden');
+    }
+  };
+  const closeColmapInfo = ()=> {
+    if(colmapInfoModal){
+      colmapInfoModal.classList.remove('show');
+      colmapInfoModal.classList.add('hidden');
+    }
+  };
   document.getElementById('btnColmapInfo')?.addEventListener('click', openColmapInfo);
   document.getElementById('btnCloseColmapInfo')?.addEventListener('click', closeColmapInfo);
   document.getElementById('btnColmapInfoDone')?.addEventListener('click', closeColmapInfo);
 
-  const openColmapConfig = ()=> document.getElementById('colmapConfigModal')?.classList.remove('hidden');
-  const closeColmapConfig = ()=> document.getElementById('colmapConfigModal')?.classList.add('hidden');
+  const openColmapConfig = ()=> {
+    const modal = document.getElementById('colmapConfigModal');
+    if(modal){
+      modal.classList.add('show');
+      modal.classList.remove('hidden');
+    }
+  };
+  const closeColmapConfig = ()=> {
+    const modal = document.getElementById('colmapConfigModal');
+    if(modal){
+      modal.classList.remove('show');
+      modal.classList.add('hidden');
+    }
+  };
   document.getElementById('btnColmapConfig')?.addEventListener('click', openColmapConfig);
   document.getElementById('btnCloseColmapConfig')?.addEventListener('click', closeColmapConfig);
   document.getElementById('btnColmapConfigDone')?.addEventListener('click', closeColmapConfig);

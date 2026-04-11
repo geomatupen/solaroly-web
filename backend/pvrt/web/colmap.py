@@ -581,7 +581,7 @@ async def _colmap_pipeline(job: Dict[str, Any]) -> None:
         if num_threads is not None and num_threads > 0:
             feature_args.extend(["--SiftExtraction.num_threads", str(num_threads)])
         if use_gpu is not None:
-            feature_args.extend(["--FeatureExtraction.use_gpu", "1" if use_gpu else "0"])
+            feature_args.extend(["--SiftExtraction.use_gpu", "1" if use_gpu else "0"])
         if camera_model:
             feature_args.extend(["--ImageReader.camera_model", camera_model])
         await _run_colmap_command(job, "feature_extractor", feature_args)
