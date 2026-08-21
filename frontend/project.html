@@ -163,6 +163,8 @@
         <h2>Train</h2>
         <p class="muted">Kicks off training using your configured dataset. Thermal channel support is preserved. Each run saves to <code>train/outputs/&lt;timestamp&gt;/</code>.</p>
 
+        <div class="trainLayout">
+        <div class="trainFormPane">
         <!-- Keep advanced hyperparams -->
          <div class="row">
             <label for="selBackendTrain">Backend</label>
@@ -232,6 +234,21 @@
         <p class="muted tiny">
           <a href="#" id="lnkToLogsFromTrain">See full logs</a>
         </p>
+        </div>
+
+        <aside class="trainedModelsPane" aria-labelledby="trainedModelsTitle">
+          <div class="trainedModelsHeader">
+            <div>
+              <h3 id="trainedModelsTitle">Trained models</h3>
+              <p class="muted tiny">Models available in this project</p>
+            </div>
+            <button id="btnRefreshTrainedModels" class="iconBtn" type="button" title="Refresh trained models" aria-label="Refresh trained models">↻</button>
+          </div>
+          <div id="trainedModelsList" class="trainedModelsList" aria-live="polite">
+            <p class="muted tiny">Loading models…</p>
+          </div>
+        </aside>
+        </div>
       </div>
     </section>
 

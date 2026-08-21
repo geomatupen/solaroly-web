@@ -337,7 +337,37 @@ def _read_model_meta(run_dir: Path) -> dict:
         return json.loads(meta.read_text(encoding="utf-8"))
     return {}
 
-def _list_models() -> List[str]:
+def _model_id(run_dir: Path, meta: Optional[dict] = None) -> str:
+    """The existing run-folder name is the immutable model id."""
+    return run_dir.name
+
+
+def _find_model(model_ref: str) -> Tuple[Path, dict]:
+    """Resolve either a stable model id or the legacy run-folder name."""
+    safe_ref = _safe_name(model_ref)
+    output_dir = get_project_output_dir()
+    if safe_ref:
+        legacy_dir = output_dir / safe_ref
+        if legacy_dir.is_dir() and (legacy_dir / "model_meta.json").exists():
+            return legacy_dir, _read_model_meta(legacy_dir)
+
+    for run_dir in output_dir.iterdir() if output_dir.exists() else []:
+        if not run_dir.is_dir() or not (run_dir / "model_meta.json").exists():
+            continue
+        meta = _read_model_meta(run_dir)
+        if _model_id(run_dir, meta) == model_ref:
+            return run_dir, meta
+    raise HTTPException(status_code=404, detail="Model not found.")
+
+
+def _write_model_meta(run_dir: Path, meta: dict) -> None:
+    meta_path = run_dir / "model_meta.json"
+    temp_path = run_dir / ".model_meta.json.tmp"
+    temp_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    temp_path.replace(meta_path)
+
+
+def _list_models() -> List[dict]:
     models = []
     output_dir = get_project_output_dir()
     if output_dir.exists():
@@ -346,7 +376,9 @@ def _list_models() -> List[str]:
                 # out.append(p.name)
                 meta = _read_model_meta(d)
                 models.append({
+                    "id": _model_id(d, meta),
                     "name": d.name,
+                    "display_name": meta.get("display_name") or meta.get("model_name") or d.name,
                     "mtime": int(d.stat().st_mtime),
                     # prefer explicit model_name from meta if available,
                     # but keep 'name' as the run folder for lookups
@@ -354,7 +386,9 @@ def _list_models() -> List[str]:
                     "model_type": meta.get("model_type") or None,
                     "input_mode": meta.get("input_mode", "rgb"),
                     "channel_count": meta.get("channel_count"),
-                    "backend": meta.get("backend", "detectron")
+                    "backend": meta.get("backend", "detectron"),
+                    "thermal_used": bool(meta.get("thermal_used", False)),
+                    "num_classes": meta.get("num_classes"),
                 })
     # Sort by mtime descending (newest first)
     models.sort(key=lambda m: m["mtime"], reverse=True)
@@ -2503,6 +2537,42 @@ async def api_models(backend: Optional[str] = None):
         except Exception:
             pass
     return {"ok": True, "models": models}
+
+
+@app.post("/api/models/{model_id}/rename")
+async def api_rename_model(model_id: str, name: str = Form(...)):
+    """Rename a model's display label without changing its import path/id."""
+    display_name = str(name or "").strip()[:128]
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Model name cannot be empty.")
+
+    run_dir, meta = _find_model(model_id)
+    meta["display_name"] = display_name
+    _write_model_meta(run_dir, meta)
+    logger.info("UI:OK:train: Renamed model %s to %s", run_dir.name, display_name)
+    return {
+        "ok": True,
+        "id": run_dir.name,
+        "name": run_dir.name,
+        "display_name": display_name,
+    }
+
+
+@app.delete("/api/models/{model_id}")
+async def api_delete_model(model_id: str):
+    """Delete one trained-model output directory; training data is untouched."""
+    run_dir, _ = _find_model(model_id)
+    output_dir = get_project_output_dir().resolve()
+    resolved_run = run_dir.resolve()
+    if resolved_run.parent != output_dir:
+        raise HTTPException(status_code=400, detail="Invalid model path.")
+    try:
+        shutil.rmtree(resolved_run)
+    except OSError as exc:
+        logger.exception("Failed to delete model %s", run_dir.name)
+        raise HTTPException(status_code=500, detail=f"Failed to delete model: {exc}") from exc
+    logger.info("UI:OK:train: Deleted model %s", run_dir.name)
+    return {"ok": True, "id": run_dir.name}
 
 
 # ================== TEST: dataset intake ==================

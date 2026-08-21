@@ -254,6 +254,7 @@ function populateModelsInto(list, selSelector){
       return tl.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
     }
 
+    if (m.display_name) return String(m.display_name);
     if (m.model_name) {
       const mt = prettyModelType(m.model_type || '');
       // try to pick up num_classes from several possible metadata locations
@@ -412,6 +413,9 @@ function switchToTab(tabId){
   if(tabId === "tab-map"){
     ensureMapTabLoaded();
   }
+  if(tabId === "tab-train"){
+    loadTrainedModels();
+  }
 }
 
 // ---------- datasets/models/sessions ----------
@@ -477,6 +481,149 @@ async function loadModels(backend, targetSel = '#selModelFolder'){
       populateModelsInto(models, targetSel);
     }
   }catch(e){ console.warn('loadModels failed', e); }
+}
+
+function closeTrainedModelMenus(exceptMenu = null){
+  document.querySelectorAll('.trainedModelMenu').forEach(menu => {
+    if(menu !== exceptMenu) menu.hidden = true;
+  });
+}
+
+function trainedModelType(model){
+  const backend = String(model.backend || 'unknown').toUpperCase();
+  const type = String(model.model_type || '').trim();
+  return type ? `${backend} · ${type}` : backend;
+}
+
+async function refreshModelViews(){
+  const testBackend = document.getElementById('selBackendTest')?.value || getSelectedBackend();
+  await Promise.all([
+    loadTrainedModels(),
+    loadModels(testBackend, '#selModelFolder'),
+  ]);
+}
+
+async function renameTrainedModel(model){
+  closeTrainedModelMenus();
+  const oldName = model.display_name || model.model_name || model.name;
+  const nextName = prompt('Rename model', oldName);
+  if(nextName === null || !nextName.trim() || nextName.trim() === oldName) return;
+
+  const body = new FormData();
+  body.append('name', nextName.trim());
+  const response = await fetch(`${api.models}/${encodeURIComponent(model.id || model.name)}/rename`, {
+    method: 'POST',
+    body,
+  });
+  const result = await response.json().catch(()=>({}));
+  if(!response.ok || !result.ok) throw new Error(result.detail || 'Could not rename model.');
+  await refreshModelViews();
+}
+
+async function deleteTrainedModel(model){
+  closeTrainedModelMenus();
+  const label = model.display_name || model.model_name || model.name;
+  const confirmed = confirm(`Delete model "${label}"?\n\nThis removes its trained-model output files. Training data will not be deleted.`);
+  if(!confirmed) return;
+
+  const response = await fetch(`${api.models}/${encodeURIComponent(model.id || model.name)}`, {
+    method: 'DELETE',
+  });
+  const result = await response.json().catch(()=>({}));
+  if(!response.ok || !result.ok) throw new Error(result.detail || 'Could not delete model.');
+  await refreshModelViews();
+}
+
+function renderTrainedModels(models){
+  const list = document.getElementById('trainedModelsList');
+  if(!list) return;
+  list.classList.remove('muted');
+  list.replaceChildren();
+  if(!models.length){
+    const empty = document.createElement('p');
+    empty.className = 'trainedModelsEmpty muted tiny';
+    empty.textContent = 'No trained models yet.';
+    list.appendChild(empty);
+    return;
+  }
+
+  models.forEach(model => {
+    const item = document.createElement('article');
+    item.className = 'trainedModelItem';
+
+    const main = document.createElement('div');
+    main.className = 'trainedModelMain';
+    const name = document.createElement('strong');
+    name.className = 'trainedModelName';
+    name.textContent = model.display_name || model.model_name || model.name;
+    name.title = name.textContent;
+    const id = document.createElement('small');
+    id.className = 'trainedModelId';
+    id.textContent = `ID: ${model.id || model.name}`;
+    id.title = model.id || model.name;
+    const meta = document.createElement('div');
+    meta.className = 'trainedModelMeta';
+    const input = model.thermal_used || model.input_mode === 'thermal' ? 'Thermal' : 'RGB';
+    const classes = model.num_classes != null ? `${model.num_classes} classes` : null;
+    const date = model.mtime ? new Date(model.mtime * 1000).toLocaleDateString() : null;
+    [trainedModelType(model), input, classes, date].filter(Boolean).forEach(value => {
+      const span = document.createElement('span');
+      span.textContent = value;
+      meta.appendChild(span);
+    });
+    main.append(name, id, meta);
+
+    const menuButton = document.createElement('button');
+    menuButton.type = 'button';
+    menuButton.className = 'iconDots';
+    menuButton.textContent = '⋮';
+    menuButton.title = `Actions for ${name.textContent}`;
+    menuButton.setAttribute('aria-label', menuButton.title);
+    menuButton.setAttribute('aria-expanded', 'false');
+
+    const menu = document.createElement('div');
+    menu.className = 'trainedModelMenu';
+    menu.hidden = true;
+    const renameButton = document.createElement('button');
+    renameButton.type = 'button';
+    renameButton.textContent = 'Rename';
+    renameButton.addEventListener('click', async () => {
+      try{ await renameTrainedModel(model); }
+      catch(error){ alert(error.message || 'Could not rename model.'); }
+    });
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'danger';
+    deleteButton.textContent = 'Delete';
+    deleteButton.addEventListener('click', async () => {
+      try{ await deleteTrainedModel(model); }
+      catch(error){ alert(error.message || 'Could not delete model.'); }
+    });
+    menu.append(renameButton, deleteButton);
+    menuButton.addEventListener('click', event => {
+      event.stopPropagation();
+      const willOpen = menu.hidden;
+      closeTrainedModelMenus(menu);
+      menu.hidden = !willOpen;
+      menuButton.setAttribute('aria-expanded', String(willOpen));
+    });
+    item.append(main, menuButton, menu);
+    list.appendChild(item);
+  });
+}
+
+async function loadTrainedModels(){
+  const list = document.getElementById('trainedModelsList');
+  if(!list) return;
+  try{
+    const response = await fetch(api.models);
+    const result = await response.json();
+    if(!response.ok || !result.ok) throw new Error(result.detail || 'Could not load models.');
+    renderTrainedModels(result.models || []);
+  }catch(error){
+    list.textContent = error.message || 'Could not load trained models.';
+    list.classList.add('muted');
+  }
 }
 async function loadSessions(selectLatest=true){
   const js = await _fetchSessionsOnce();
@@ -2335,7 +2482,7 @@ function connectLogs(){
       setHidden($("#spinTrain"), true);
   ok("train","Training completed.");
   wireAlertClose();
-  loadModels(getSelectedBackend(), '#selModelFolder');
+  refreshModelViews();
     }
     if(line.includes("UI:ERR:train:")){
       setHidden($("#spinTrain"), true);
@@ -2459,6 +2606,8 @@ function setupUI(){
   if(selTestFolder){ selTestFolder.addEventListener('change', onTestDatasetChange); }
   const btnRefreshModels = $("#btnRefreshModels");
   if(btnRefreshModels) btnRefreshModels.addEventListener("click", ()=> loadModels(getSelectedBackend(), '#selModelFolder'));
+  const btnRefreshTrainedModels = $("#btnRefreshTrainedModels");
+  if(btnRefreshTrainedModels) btnRefreshTrainedModels.addEventListener("click", loadTrainedModels);
   const btnOpenUpload = $("#btnOpenUploadModal");
   if(btnOpenUpload) btnOpenUpload.addEventListener("click", openUploadModal);
   const btnCloseUpload = $("#btnCloseUploadModal");
@@ -2531,6 +2680,7 @@ function setupUI(){
   setHidden($("#spinTest"), true);
 
   wireAlertClose();
+  document.addEventListener('click', ()=> closeTrainedModelMenus());
 
   // Backend selector wiring: show YOLO options when YOLO is selected
   const selBackendGlobal = $("#selBackend");
@@ -2725,7 +2875,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
     initMapOverlayUI();
   }
   connectLogs();
-  await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder')]);
+  await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder'), loadTrainedModels()]);
 });
 
 // ensure these helpers exist (from earlier step)
