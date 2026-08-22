@@ -524,7 +524,8 @@ async function renameTrainedModel(model){
 async function deleteTrainedModel(model){
   closeTrainedModelMenus();
   const label = model.display_name || model.model_name || model.name;
-  const confirmed = confirm(`Delete model "${label}"?\n\nThis removes its trained-model output files. Training data will not be deleted.`);
+  const kind = model.complete === false ? 'incomplete training run' : 'model';
+  const confirmed = confirm(`Delete ${kind} "${label}"?\n\nThis removes its trained-model output files. Training data will not be deleted.`);
   if(!confirmed) return;
 
   const response = await fetch(`${api.models}/${encodeURIComponent(model.id || model.name)}`, {
@@ -564,10 +565,18 @@ function renderTrainedModels(models){
     id.title = model.id || model.name;
     const meta = document.createElement('div');
     meta.className = 'trainedModelMeta';
-    const input = model.thermal_used || model.input_mode === 'thermal' ? 'Thermal' : 'RGB';
-    const classes = model.num_classes != null ? `${model.num_classes} classes` : null;
     const date = model.mtime ? new Date(model.mtime * 1000).toLocaleDateString() : null;
-    [trainedModelType(model), input, classes, date].filter(Boolean).forEach(value => {
+    const details = [];
+    if(model.complete === false){
+      details.push('Incomplete', date);
+      item.classList.add('incomplete');
+    }else{
+      const input = model.thermal_used || model.input_mode === 'thermal' ? 'Thermal' : 'RGB';
+      const classes = model.num_classes != null ? `${model.num_classes} classes` : null;
+      details.push('Complete', trainedModelType(model), input, classes, date);
+      item.classList.add('complete');
+    }
+    details.filter(Boolean).forEach(value => {
       const span = document.createElement('span');
       span.textContent = value;
       meta.appendChild(span);
@@ -588,6 +597,10 @@ function renderTrainedModels(models){
     const renameButton = document.createElement('button');
     renameButton.type = 'button';
     renameButton.textContent = 'Rename';
+    if(model.complete === false){
+      renameButton.disabled = true;
+      renameButton.title = 'Incomplete training runs cannot be renamed.';
+    }
     renameButton.addEventListener('click', async () => {
       try{ await renameTrainedModel(model); }
       catch(error){ alert(error.message || 'Could not rename model.'); }
@@ -617,7 +630,7 @@ async function loadTrainedModels(){
   const list = document.getElementById('trainedModelsList');
   if(!list) return;
   try{
-    const response = await fetch(api.models);
+    const response = await fetch(`${api.models}?include_incomplete=true`, {cache:'no-store'});
     const result = await response.json();
     if(!response.ok || !result.ok) throw new Error(result.detail || 'Could not load models.');
     renderTrainedModels(result.models || []);
@@ -628,9 +641,7 @@ async function loadTrainedModels(){
 }
 
 let trainingDatasetsCache = [];
-let trainingDatasetDefaultRoot = '';
 let trainingUploadXhr = null;
-let suggestedTrainingDestination = '';
 let preferredTrainingDatasetId = '';
 let selectedTrainingFolderFiles = [];
 let selectedTrainingFolderName = '';
@@ -858,7 +869,6 @@ async function loadTrainingDatasets(){
     const result = await response.json().catch(()=>({}));
     if(!response.ok || !result.ok) throw new Error(result.detail || 'Could not load training data.');
     trainingDatasetsCache = result.datasets || [];
-    trainingDatasetDefaultRoot = result.default_destination_root || '';
     renderTrainingDatasets(trainingDatasetsCache);
     populateTrainingDatasetOptions();
   }catch(error){
@@ -955,32 +965,10 @@ function closeTrainingDatasetSummary(){
   modal?.classList.add('hidden');
 }
 
-function safeDatasetFolderName(value){
-  return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || makeStamp('training_data_');
-}
-
-function joinDatasetPath(root, name){
-  if(!root) return name;
-  const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/';
-  return `${root.replace(/[\\/]+$/, '')}${separator}${name}`;
-}
-
-function updateSuggestedTrainingDestination(force = false){
-  const input = document.getElementById('inpTrainingDestination');
-  const name = document.getElementById('inpTrainingDatasetName')?.value || '';
-  if(!input || !trainingDatasetDefaultRoot) return;
-  if(force || !input.value || input.value === suggestedTrainingDestination){
-    suggestedTrainingDestination = joinDatasetPath(trainingDatasetDefaultRoot, safeDatasetFolderName(name));
-    input.value = suggestedTrainingDestination;
-  }
-}
-
 async function openTrainingUploadModal(){
-  if(!trainingDatasetDefaultRoot) await loadTrainingDatasets();
   const modal = document.getElementById('trainingUploadModal');
   const name = document.getElementById('inpTrainingDatasetName');
   if(name && !name.value) name.value = makeStamp('training_data_');
-  updateSuggestedTrainingDestination(true);
   modal?.classList.add('show');
   modal?.classList.remove('hidden');
 }
@@ -994,7 +982,7 @@ function setTrainingUploadError(message = ''){
 
 function setTrainingUploadRunning(running){
   [
-    'inpTrainingDatasetName', 'inpTrainingDestination',
+    'inpTrainingDatasetName',
     'fileTrainingZip', 'btnChooseTrainingFolder', 'btnStartTrainingUpload'
   ].forEach(id => {
     const element = document.getElementById(id);
@@ -1049,9 +1037,8 @@ function startTrainingDatasetUpload(){
   const zipFiles = Array.from(zipInput?.files || []);
   const folderFiles = selectedTrainingFolderFiles;
   const name = (document.getElementById('inpTrainingDatasetName')?.value || '').trim();
-  const destination = (document.getElementById('inpTrainingDestination')?.value || '').trim();
   setTrainingUploadError();
-  if(!name || !destination){ setTrainingUploadError('Enter a dataset name and destination folder.'); return; }
+  if(!name){ setTrainingUploadError('Enter a dataset name.'); return; }
   if((zipFiles.length ? 1 : 0) + (folderFiles.length ? 1 : 0) !== 1){
     setTrainingUploadError('Choose either one ZIP archive or one dataset folder.');
     return;
@@ -1062,7 +1049,6 @@ function startTrainingDatasetUpload(){
   const body = new FormData();
   files.forEach(item => body.append('files', item.file, item.relativePath));
   body.append('display_name', name);
-  body.append('destination_dir', destination);
   body.append('dataset_format', 'unified');
 
   const progress = document.getElementById('trainingUploadProgress');
@@ -3207,8 +3193,6 @@ function setupUI(){
     updateTrainingUploadSelection();
   });
   document.getElementById('btnChooseTrainingFolder')?.addEventListener('click', chooseTrainingDatasetFolder);
-  document.getElementById('inpTrainingDatasetName')?.addEventListener('input', () => updateSuggestedTrainingDestination(false));
-  document.getElementById('inpTrainingDestination')?.addEventListener('input', () => { suggestedTrainingDestination = ''; });
   const trainingUploadModal = document.getElementById('trainingUploadModal');
   trainingUploadModal?.addEventListener('click', event => { if(event.target === trainingUploadModal) closeTrainingUploadModal(); });
   const trainingSummaryModal = document.getElementById('trainingDatasetSummaryModal');

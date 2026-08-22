@@ -290,32 +290,18 @@ def _resolve_thermal_directory(value: str, *, must_exist: bool) -> Path:
     return candidate
 
 
-def _resolve_training_destination(value: str) -> Path:
-    """Resolve an explicit, new destination for one uploaded training dataset."""
-    raw_value = convert_windows_path_to_wsl(str(value or "").strip())
-    if not raw_value:
-        raise HTTPException(status_code=400, detail="A destination folder path is required.")
-    destination = Path(raw_value).expanduser()
-    if not destination.is_absolute():
-        raise HTTPException(status_code=400, detail="Enter an absolute destination folder path.")
-    destination = destination.resolve()
-    if destination == Path(destination.anchor) or destination == Path.home().resolve():
-        raise HTTPException(status_code=400, detail="Choose a specific new dataset folder, not a filesystem root or home folder.")
+def _project_training_dataset_destination(project, display_name: str) -> Path:
+    """Return the project-owned destination for a newly uploaded dataset."""
+    folder_name = _safe_name(display_name)
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="Training dataset name must contain letters or numbers.")
+    destination = (project.get_train_dir() / "datasets" / folder_name).resolve()
     if destination.exists():
-        raise HTTPException(status_code=409, detail="Destination folder already exists; choose a new folder.")
+        raise HTTPException(
+            status_code=409,
+            detail="A training dataset folder with this name already exists in the project. Choose another dataset name.",
+        )
     return destination
-
-
-def _default_training_dataset_root(project) -> Path:
-    """Choose a clean shared data location, configurable per installation."""
-    configured = str(os.getenv("PVRT_TRAINING_DATA_ROOT", "")).strip()
-    if configured:
-        return Path(convert_windows_path_to_wsl(configured)).expanduser().resolve()
-    project_root = Path(project.root_path).resolve()
-    parts = project_root.parts
-    if len(parts) >= 3 and parts[1].lower() == "mnt":
-        return Path("/mnt") / parts[2] / "SolarolyProjects" / "Training_Data"
-    return project.get_train_dir() / "datasets"
 
 
 def _media_url(path: Path) -> str:
@@ -391,6 +377,30 @@ def _read_model_meta(run_dir: Path) -> dict:
         return json.loads(meta.read_text(encoding="utf-8"))
     return {}
 
+
+def _write_run_status(run_dir: Path, status: str, **details: Any) -> None:
+    path = run_dir / "run_status.json"
+    temporary = run_dir / ".run_status.json.tmp"
+    payload = {"status": status, "updated_at": datetime.now().isoformat(), **details}
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _model_run_status(run_dir: Path, meta: Optional[dict] = None) -> str:
+    """Return completed only for an explicit success or a legacy final artifact."""
+    status_path = run_dir / "run_status.json"
+    if status_path.is_file():
+        try:
+            state = json.loads(status_path.read_text(encoding="utf-8"))
+            status = str(state.get("status") or "").strip().lower()
+            if status:
+                return status
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    has_meta = bool(meta) or (run_dir / "model_meta.json").is_file()
+    has_final = any((run_dir / name).is_file() for name in ("model_final.pth", "model_final.pt"))
+    return "complete" if has_meta and has_final else "incomplete"
+
 def _model_id(run_dir: Path, meta: Optional[dict] = None) -> str:
     """The existing run-folder name is the immutable model id."""
     return run_dir.name
@@ -402,11 +412,11 @@ def _find_model(model_ref: str) -> Tuple[Path, dict]:
     output_dir = get_project_output_dir()
     if safe_ref:
         legacy_dir = output_dir / safe_ref
-        if legacy_dir.is_dir() and (legacy_dir / "model_meta.json").exists():
+        if legacy_dir.is_dir():
             return legacy_dir, _read_model_meta(legacy_dir)
 
     for run_dir in output_dir.iterdir() if output_dir.exists() else []:
-        if not run_dir.is_dir() or not (run_dir / "model_meta.json").exists():
+        if not run_dir.is_dir():
             continue
         meta = _read_model_meta(run_dir)
         if _model_id(run_dir, meta) == model_ref:
@@ -421,29 +431,34 @@ def _write_model_meta(run_dir: Path, meta: dict) -> None:
     temp_path.replace(meta_path)
 
 
-def _list_models() -> List[dict]:
+def _list_models(include_incomplete: bool = False) -> List[dict]:
     models = []
     output_dir = get_project_output_dir()
     if output_dir.exists():
         for d in sorted(output_dir.iterdir()):
-            if d.is_dir() and (d / "model_meta.json").exists():
-                # out.append(p.name)
-                meta = _read_model_meta(d)
-                models.append({
-                    "id": _model_id(d, meta),
-                    "name": d.name,
-                    "display_name": meta.get("display_name") or meta.get("model_name") or d.name,
-                    "mtime": int(d.stat().st_mtime),
-                    # prefer explicit model_name from meta if available,
-                    # but keep 'name' as the run folder for lookups
-                    "model_name": meta.get("model_name") or None,
-                    "model_type": meta.get("model_type") or None,
-                    "input_mode": meta.get("input_mode", "rgb"),
-                    "channel_count": meta.get("channel_count"),
-                    "backend": meta.get("backend", "detectron"),
-                    "thermal_used": bool(meta.get("thermal_used", False)),
-                    "num_classes": meta.get("num_classes"),
-                })
+            if not d.is_dir() or not any(d.iterdir()):
+                continue
+            meta = _read_model_meta(d)
+            run_status = _model_run_status(d, meta)
+            complete = run_status in {"complete", "completed"}
+            if not complete and not include_incomplete:
+                continue
+            models.append({
+                "id": _model_id(d, meta),
+                "name": d.name,
+                "display_name": meta.get("display_name") or meta.get("model_name") or d.name,
+                "mtime": int(d.stat().st_mtime),
+                "model_name": meta.get("model_name") or None,
+                "model_type": meta.get("model_type") or None,
+                "input_mode": meta.get("input_mode"),
+                "channel_count": meta.get("channel_count"),
+                "backend": meta.get("backend"),
+                "thermal_used": bool(meta.get("thermal_used", False)),
+                "num_classes": meta.get("num_classes"),
+                "complete": complete,
+                "status": "complete" if complete else "incomplete",
+                "run_status": run_status,
+            })
     # Sort by mtime descending (newest first)
     models.sort(key=lambda m: m["mtime"], reverse=True)
     return models
@@ -2588,12 +2603,10 @@ async def api_cancel(job: str = Form(...)):
 @app.get("/api/training-datasets")
 async def api_training_datasets():
     project = get_active_project()
-    default_root = _default_training_dataset_root(project)
     await asyncio.to_thread(ensure_legacy_dataset, project.get_train_dir())
     return {
         "ok": True,
         "datasets": list_training_datasets(project.get_train_dir()),
-        "default_destination_root": str(default_root.resolve()),
     }
 
 
@@ -2644,15 +2657,14 @@ async def api_delete_training_dataset(dataset_id: str):
 async def api_upload_training_dataset(
     files: List[UploadFile] = File(...),
     display_name: str = Form(...),
-    destination_dir: str = Form(...),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="Choose a ZIP file or a dataset folder.")
     name = str(display_name or "").strip()[:128]
     if not name:
         raise HTTPException(status_code=400, detail="Training dataset name is required.")
-    destination = _resolve_training_destination(destination_dir)
     project = get_active_project()
+    destination = _project_training_dataset_destination(project, name)
     try:
         dataset = await asyncio.to_thread(
             install_training_dataset,
@@ -2741,6 +2753,13 @@ async def api_train(
             logger.warning(f"[train] Failed to clear existing directory: {e}")
     
     run_dir.mkdir(parents=True, exist_ok=True)
+    _write_run_status(
+        run_dir,
+        "running",
+        backend=backend,
+        requested_iterations=max_iter,
+        dataset_id=str(dataset_entry["id"]),
+    )
 
     CANCEL_FLAGS["train"] = False
     logger.info("UI:OK:train: Training started…")
@@ -2826,6 +2845,7 @@ async def api_train(
     try:
         resp = await asyncio.to_thread(_do_train)  # <-- key change
         meta = resp.get("meta", {})
+        _write_run_status(run_dir, "complete", backend=backend, requested_iterations=max_iter)
         logger.info(f"[train] complete: run={run_dir.name}")
         logger.info("UI:OK:train: Training completed.")
         return {"ok": True, "run": run_dir.name, "meta": meta}
@@ -2833,6 +2853,13 @@ async def api_train(
         # Log full traceback and include it in the HTTP error detail to aid debugging.
         import traceback
         tb = traceback.format_exc()
+        _write_run_status(
+            run_dir,
+            "cancelled" if CANCEL_FLAGS.get("train") else "failed",
+            backend=backend,
+            requested_iterations=max_iter,
+            error=str(e),
+        )
         logger.error("Training failed: %s", e)
         logger.error(tb)
         # Also persist to per-run train log if available
@@ -2852,12 +2879,12 @@ async def api_train(
 # -------------- List model runs --------------
 
 @app.get("/api/models")
-async def api_models(backend: Optional[str] = None):
+async def api_models(backend: Optional[str] = None, include_incomplete: bool = False):
     """List model runs. If `backend` query param is provided, return only models
     whose metadata `backend` matches (case-insensitive). This makes the
     frontend filtering reliable even when client-side heuristics fail.
     """
-    models = _list_models()
+    models = _list_models(include_incomplete=include_incomplete)
     if backend:
         try:
             b = str(backend).lower()
@@ -2875,6 +2902,8 @@ async def api_rename_model(model_id: str, name: str = Form(...)):
         raise HTTPException(status_code=400, detail="Model name cannot be empty.")
 
     run_dir, meta = _find_model(model_id)
+    if _model_run_status(run_dir, meta) not in {"complete", "completed"}:
+        raise HTTPException(status_code=400, detail="Incomplete training runs cannot be renamed.")
     meta["display_name"] = display_name
     _write_model_meta(run_dir, meta)
     logger.info("UI:OK:train: Renamed model %s to %s", run_dir.name, display_name)

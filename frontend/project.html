@@ -534,15 +534,10 @@
       <div class="modalBody trainingUploadForm">
         <div class="trainingUploadLayout">
           <div class="trainingUploadFields">
-            <p class="muted tiny">Upload one ZIP archive or one dataset folder. Its directory structure is preserved and validated before it is registered.</p>
+            <p class="muted tiny">Upload one ZIP archive or one dataset folder. It will be validated and saved automatically inside this project.</p>
             <div class="modalContentField">
               <label for="inpTrainingDatasetName">Dataset name</label>
               <input id="inpTrainingDatasetName" type="text" maxlength="128" placeholder="Solar panel training data" />
-            </div>
-            <div class="modalContentField">
-              <label for="inpTrainingDestination">Destination folder</label>
-              <input id="inpTrainingDestination" type="text" placeholder="Absolute new folder path" />
-              <small class="muted tiny">Absolute Windows, WSL, or server path. The final folder must not already exist.</small>
             </div>
             <div class="trainingUploadSources">
               <div class="modalContentField">
@@ -913,7 +908,7 @@
   <script src="js/map.js?v=20260301b"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260301b"></script>
-  <script src="js/main.js?v=20260822f"></script>
+  <script src="js/main.js?v=20260822i"></script>
   <script>
     // Hard fallback: wire upload button directly on this page, independent of main.js initialization.
     document.addEventListener("DOMContentLoaded", () => {
