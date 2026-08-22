@@ -2186,6 +2186,29 @@ def _write_asset_display_name(folder: Path, metadata_name: str, display_name: st
     temp.replace(target)
 
 
+def _write_result_status(result_dir: Path, status: str, **details: Any) -> None:
+    path = result_dir / "result_status.json"
+    temporary = result_dir / ".result_status.json.tmp"
+    payload = {"status": status, "updated_at": datetime.now().isoformat(), **details}
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _result_run_status(result_dir: Path) -> str:
+    """Use explicit state for new results and required artifacts for legacy results."""
+    status_path = result_dir / "result_status.json"
+    if status_path.is_file():
+        try:
+            state = json.loads(status_path.read_text(encoding="utf-8"))
+            status = str(state.get("status") or "").strip().lower()
+            if status:
+                return status
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            pass
+    required = ("metrics.json", "manifest.json", "anomalies.geojson", "images.geojson")
+    return "complete" if all((result_dir / name).is_file() for name in required) else "incomplete"
+
+
 def _project_child(root: Path, child_id: str, label: str) -> Path:
     safe_id = _safe_name(child_id)
     child = root / safe_id
@@ -2226,11 +2249,16 @@ def _list_sessions() -> list[dict]:
     items = []
     for p in sorted([x for x in base.iterdir() if x.is_dir()],
                     key=lambda x: x.stat().st_mtime, reverse=True):
+        run_status = _result_run_status(p)
+        complete = run_status in {"complete", "completed"}
         items.append({
             "id": p.name,
             "name": p.name,                 # normalized to just the id
             "display_name": _asset_display_name(p, ".result_meta.json"),
             "mtime": int(p.stat().st_mtime),
+            "complete": complete,
+            "status": "complete" if complete else "incomplete",
+            "run_status": run_status,
         })
     return items
 
@@ -3299,6 +3327,7 @@ async def api_test_run(
 
     out_root = get_project_sessions_dir() / session
     out_root.mkdir(parents=True, exist_ok=True)
+    _write_result_status(out_root, "running", dataset=dataset, model=model_dir.name)
 
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
     input_type = _detect_image_input_type(ds_dir)
@@ -3587,6 +3616,7 @@ async def api_test_run(
     try:
         presp = await asyncio.to_thread(_do_predict)  # <-- offload
     except Exception as e:
+        _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=str(e))
         logger.exception("Inference failed.")
         raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
 
@@ -3831,6 +3861,7 @@ async def api_test_run(
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
 
+    _write_result_status(out_root, "complete", dataset=dataset, model=model_dir.name)
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
         "ok": True,

@@ -514,9 +514,11 @@ function testAssetCard(asset, kind){
   id.title = asset.id || asset.name;
   const meta = document.createElement('div');
   meta.className = 'trainedModelMeta';
+  const resultComplete = asset.complete !== false && asset.status !== 'incomplete';
   const details = isResult
-    ? ['Result', asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null]
+    ? [resultComplete ? 'Complete' : 'Incomplete', asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null]
     : [`${asset.count || 0} images`, asset.colmap_ready ? 'Optimized poses' : null, asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null];
+  if(isResult) item.classList.add(resultComplete ? 'complete' : 'incomplete');
   details.filter(Boolean).forEach(value => {
     const span = document.createElement('span');
     span.textContent = value;
@@ -1753,6 +1755,7 @@ async function runTest(){
     }else{
       err("test", String(ex));
     }
+    await loadSessions(false).catch(()=>{});
   }finally{
     setHidden($("#spinTest"), true);
     testAbort = null;
@@ -4219,5 +4222,9 @@ async function loadResultsInfo(sessionName) {
   }
 
   renderResultsInfo(metrics, meta);
-  predictions_title.innerHTML = "Predictions: "+ metrics.total_detections;
+  if(predictions_title){
+    predictions_title.textContent = metrics?.total_detections != null
+      ? `Predictions: ${metrics.total_detections}`
+      : 'Predictions';
+  }
 }
