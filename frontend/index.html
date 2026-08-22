@@ -24,7 +24,10 @@
 
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
         <h2 style="margin:0; font-size:20px;">Projects</h2>
-        <button id="btnNewProject" style="padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">+ New Project</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="btnOpenThermalConvert" class="secondary">Image to grayscale</button>
+          <button id="btnNewProject" style="padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">+ New Project</button>
+        </div>
       </div>
       
       <div style="display:flex; gap:10px; margin-bottom:24px; flex-wrap: wrap;">
@@ -79,12 +82,93 @@
     </div>
   </div>
 
+  <!-- THERMAL CONVERTER MODAL -->
+  <div id="thermalConvertModal" class="modal hidden">
+    <div class="modalContent" style="width:90%; max-width:760px; padding:20px;">
+      <div class="row between">
+        <div>
+          <h2 style="margin:0;">Image to Grayscale Converter</h2>
+          <p class="muted">Convert radiometric thermal data or standard image pixels to grayscale.</p>
+        </div>
+        <button id="btnCloseThermalConvert" class="iconBtn" type="button" aria-label="Close image converter">&times;</button>
+      </div>
+
+      <div class="thermalConvertGrid">
+        <div class="row thermalConvertField wide">
+          <label for="selThermalConversionType">Conversion type</label>
+          <select id="selThermalConversionType">
+            <option value="radiometric" selected>Radiometric thermal JPEG (DJI/FLIR)</option>
+            <option value="standard">Standard non-radiometric JPG/PNG</option>
+          </select>
+          <small class="muted tiny" id="thermalConversionTypeHelp">Extracts the radiometric sensor data embedded in supported DJI and FLIR JPEGs.</small>
+        </div>
+        <div class="row thermalConvertField">
+          <label for="inpThermalInputDir">Input folder</label>
+          <input id="inpThermalInputDir" type="text" placeholder="/path/to/thermal/images" />
+          <small class="muted tiny" id="thermalInputHelp">Folder containing the original radiometric JPEGs.</small>
+        </div>
+        <label class="switchRow thermalStandardOption" id="thermalIncludeRadiometricRow" hidden>
+          <input id="chkThermalIncludeRadiometric" type="checkbox" />
+          <span>Include radiometric JPEGs using their visible pixels</span>
+        </label>
+        <div class="row thermalConvertField">
+          <label for="inpThermalOutputDir">Output folder</label>
+          <input id="inpThermalOutputDir" type="text" placeholder="/path/to/grayscale/images" />
+          <small class="muted tiny">Exact output folder; it is created if necessary.</small>
+        </div>
+        <div class="row thermalConvertField compact">
+          <label for="selThermalOutputFormat">Output format</label>
+          <select id="selThermalOutputFormat">
+            <option value="jpg" selected>JPG</option>
+            <option value="png">PNG</option>
+          </select>
+          <small class="muted tiny">Applies only to generated output files.</small>
+        </div>
+        <div class="row thermalConvertField compact" id="thermalQualityRow">
+          <label for="inpThermalJpegQuality">JPEG quality</label>
+          <input id="inpThermalJpegQuality" type="number" min="1" max="100" value="100" />
+        </div>
+        <label class="switchRow">
+          <input id="chkThermalOverwrite" type="checkbox" />
+          <span>Overwrite files already in the output folder</span>
+        </label>
+      </div>
+
+      <details class="thermalSupportInfo">
+        <summary>Supported cameras and files</summary>
+        <div>DJI DIRP radiometric JPEGs, including M3T/M3TD and compatible DJI thermal models.</div>
+        <div>FLIR FFF radiometric JPEGs, including DJI Zenmuse XT2 and compatible FLIR cameras.</div>
+        <div>Standard conversion accepts non-radiometric JPG, JPEG, and PNG images; radiometric JPEGs are skipped.</div>
+      </details>
+      <div id="thermalScanResult" class="thermalScanResult" hidden aria-live="polite"></div>
+
+      <div class="actions">
+        <button id="btnScanThermalFolder" class="secondary" type="button">Scan input folder</button>
+        <button id="btnStartThermalConvert" type="button" hidden disabled>Start conversion</button>
+        <button id="btnCancelThermalConvert" class="secondary" type="button" disabled>Cancel</button>
+        <span class="spinner" id="spinThermalConvert" hidden></span>
+      </div>
+      <div id="thermalConvertProgress" class="progressWrap" hidden>
+        <div class="progressBar"><span id="thermalConvertBar" style="width:0%"></span></div>
+        <div class="progressText" id="thermalConvertProgressText">Waiting…</div>
+      </div>
+      <div id="thermalConvertStats" class="thermalConvertStats" hidden>
+        <span>Converted <strong id="thermalStatConverted">0</strong></span>
+        <span>Skipped <strong id="thermalStatSkipped">0</strong></span>
+        <span>Failed <strong id="thermalStatFailed">0</strong></span>
+      </div>
+      <div id="thermalConvertStatus" class="statusLine"></div>
+      <div class="alert err" id="thermalConvertError" hidden></div>
+    </div>
+  </div>
+
   <script>
     /* Global state */
     const api = {
       projects: "/api/projects",
       activeProject: "/api/active-project",
-      defaultProjectsRoot: "/api/projects/default-root"
+      defaultProjectsRoot: "/api/projects/default-root",
+      thermalConvert: "/api/thermal-convert"
     };
 
     let allProjects = [];
@@ -585,5 +669,6 @@
 
     document.addEventListener("DOMContentLoaded", initialize);
   </script>
+  <script src="js/thermal-convert.js?v=20260821g"></script>
 </body>
 </html>

@@ -90,6 +90,7 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .tiny{ font-size:12px; }
 
 .spinner{ width:16px; height:16px; border:2px solid rgba(255,255,255,.2); border-top:2px solid #fff; border-radius:50%; display:inline-block; animation:spin .9s linear infinite; }
+.spinner[hidden]{ display:none; }
 @keyframes spin{ to{ transform:rotate(360deg); } }
 
 .tabPanel{ display:none; }
@@ -116,6 +117,29 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 @media (max-width:800px){
   .trainLayout{ grid-template-columns:1fr; }
   .trainedModelsPane{ border-left:0; border-top:1px solid var(--border); padding:16px 0 0; }
+}
+
+.thermalConvertGrid{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px; margin-top:18px; }
+.thermalConvertField{ align-items:stretch; flex-direction:column; gap:5px; }
+.thermalConvertField select{ width:100%; }
+.thermalConvertField input[type="text"]{ width:100%; background:#0b1117; border:1px solid var(--border); color:#e6edf3; padding:6px 8px; border-radius:8px; }
+.thermalConvertField.compact{ max-width:240px; }
+.thermalConvertField.wide{ grid-column:1 / -1; max-width:430px; }
+.thermalStandardOption{ grid-column:1 / -1; }
+.thermalStandardOption[hidden]{ display:none; }
+.thermalConvertStats{ display:flex; flex-wrap:wrap; gap:18px; margin-top:10px; color:var(--muted); font-size:12px; }
+.thermalConvertStats strong{ color:#e6edf3; }
+.thermalSupportInfo{ margin-top:14px; color:var(--muted); font-size:12px; }
+.thermalSupportInfo summary{ cursor:pointer; color:#cdd6df; }
+.thermalSupportInfo div{ margin-top:5px; }
+.thermalScanResult{ margin-top:12px; padding:9px 11px; border:1px solid var(--border); border-radius:8px; font-size:12px; line-height:1.5; }
+.thermalScanResult[hidden]{ display:none; }
+.thermalScanResult.ok{ border-color:rgba(24,183,106,.45); background:rgba(24,183,106,.09); }
+.thermalScanResult.warn{ border-color:rgba(244,180,0,.45); background:rgba(244,180,0,.09); }
+.thermalScanResult.err{ border-color:rgba(255,100,100,.45); background:rgba(255,100,100,.09); }
+#btnStartThermalConvert[hidden]{ display:none; }
+@media (max-width:700px){
+  .thermalConvertGrid{ grid-template-columns:1fr; }
 }
 
 /* Results grid: thumbs now ~half the previous size */

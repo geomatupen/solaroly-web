@@ -6,15 +6,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-import numpy as np
-import tifffile
-from ..core.thermal import normalize_thermal
-
-from dji_thermal_sdk.dji_sdk import dji_init
-from dji_thermal_sdk.utility import rjpeg_to_heatmap
-
-from ..config import DIRP_LIB, describe_dirp
 from ..core.io import THERMAL_EXTS
+from .thermal_convert import convert_dji_rjpeg
 
 log = logging.getLogger("pvrt")
 
@@ -22,35 +15,6 @@ _IMG_EXTS = {
     ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp",
     ".JPG", ".JPEG", ".PNG", ".TIF", ".TIFF", ".BMP", ".WEBP",
 }
-
-_DJI_READY = False  # set by ensure_dirp_init()
-
-
-# -----------------------
-# Public, small API
-# -----------------------
-
-def ensure_dirp_init() -> None:
-    """
-    Initialize DJI DIRP once using the absolute shared library path (DIRP_LIB).
-    Raises a clear error if the library is missing or invalid.
-    """
-    global _DJI_READY
-    if _DJI_READY:
-        return
-
-    lib = Path(DIRP_LIB) if DIRP_LIB else None
-    if not lib or not lib.exists():
-        raise FileNotFoundError(
-            f"DJI DIRP library not found. {describe_dirp()} "
-            f"Set PVRT_DIRP_LIB to the absolute path of your libdirp (.so/.dll)."
-        )
-
-    # Initialize the SDK with the exact .so/.dll path.
-    dji_init(str(lib))
-    log.info(f"[DJI] DIRP initialized: {lib}")
-    _DJI_READY = True
-
 
 def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | str | None]]:
     """
@@ -60,7 +24,7 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
 
     Rules:
         - If a thermal preview already exists, keep it (idempotent).
-        - Else, try to decode RJPEG via DJI SDK and write a normalized 3-channel
+        - Else, try to decode a supported DJI DIRP or FLIR FFF RJPEG and write a normalized 3-channel
           JPEG preview (`<stem>_thermal.jpg`). Single-band TIFFs are not written
           for decoded RJPEGs to simplify downstream tooling.
         - Never overwrite existing thermal preview files.
@@ -91,10 +55,6 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
     ok = fail = reuse = 0
     first_error: Optional[str] = None
 
-    # Ensure DIRP is initialized once; let initialization errors propagate.
-    ensure_dirp_init()
-    log.info("UI:INFO:test: DIRP SDK initialized")
-
     for rgb in sorted(images_dir.iterdir()):
         if not _looks_like_rgb(rgb):
             continue
@@ -116,43 +76,14 @@ def scan_split_decode_thermal(images_dir: Path) -> Tuple[Path, Dict[str, int | s
             reuse += 1
             continue
 
-        # Attempt decode using DJI SDK
+        # Dispatch to DJI DIRP or FLIR FFF according to the source payload.
         try:
-            temps = rjpeg_to_heatmap(str(rgb), dtype=np.float32)  # HxW float32
-            if not isinstance(temps, np.ndarray) or temps.ndim != 2:
-                raise ValueError("Invalid thermal plane read from RJPEG.")
-
-            # Log decoded range when possible
-            try:
-                tmin = float(np.nanmin(temps))
-                tmax = float(np.nanmax(temps))
-                log.info(f"INFO:prep: decoded {rgb.name} - {out_preview.name} | range={tmin:.2f}..{tmax:.2f}°C")
-            except (TypeError, ValueError):
-                log.info(f"INFO:prep: decoded {rgb.name} - {out_preview.name}")
-
-            # Normalize to canonical uint8 using the shared helper. This
-            # guarantees the decoder writes exactly the same 8-bit preview
-            # that training/inference expect (2..98 percentile stretch for
-            # numeric arrays; uint8 arrays are returned unchanged).
-            try:
-                g8 = normalize_thermal(temps)
-            except Exception:
-                # Fallback to the original inline normalization if anything
-                # unexpected happens in normalize_thermal.
-                vals = temps.ravel()
-                p2 = float(np.percentile(vals, 2)) if vals.size else 0.0
-                p98 = float(np.percentile(vals, 98)) if vals.size else 1.0
-                g = (np.clip(temps, p2, p98) - p2) / max(1e-12, (p98 - p2))
-                g8 = (np.nan_to_num(g) * 255.0).astype(np.uint8)
-
-            # make 3-channel RGB by stacking the single-channel uint8 preview
-            if g8.ndim == 2:
-                rgb_arr = np.stack([g8, g8, g8], axis=2)
-            else:
-                rgb_arr = g8[..., :3]
-
-            from PIL import Image
-            Image.fromarray(rgb_arr).save(str(out_preview), format="JPEG", quality=90)
+            decoded = convert_dji_rjpeg(rgb, out_preview, quality=100, preserve_metadata=True)
+            log.info(
+                "INFO:prep: decoded %s - %s via %s | raw range=%.2f..%.2f",
+                rgb.name, out_preview.name, decoded["backend"],
+                decoded["min_value"], decoded["max_value"],
+            )
             pairs[rgb.name] = str(out_preview.relative_to(images_dir))
             ok += 1
         except Exception as e:

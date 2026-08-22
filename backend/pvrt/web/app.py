@@ -92,8 +92,9 @@ from .mosaic import prepare_rotation_and_mosaic
 
 # --- Reuse data helpers (RJPEG decode & scanning) ---
 from ..dataops.scan_decode_split import (
-    ensure_dirp_init, scan_split_decode_thermal, # safe to call only if thermal requested
+    scan_split_decode_thermal, # safe to call only if thermal requested
 )
+from ..dataops.thermal_convert import convert_thermal_folder, ensure_dirp_init, scan_conversion_folder
 from ..core.io import has_thermal_for_images
 
 # -------- Path utilities --------
@@ -265,6 +266,20 @@ def get_project_colmap_dir(project: Optional[Project] = None) -> Path:
     return project.get_colmap_dir()
 
 
+def _resolve_thermal_directory(value: str, *, must_exist: bool) -> Path:
+    """Resolve an explicit host directory for the standalone converter."""
+    raw_value = convert_windows_path_to_wsl(str(value or "").strip())
+    if not raw_value:
+        raise HTTPException(status_code=400, detail="A folder path is required.")
+    candidate = Path(raw_value).expanduser()
+    if not candidate.is_absolute():
+        raise HTTPException(status_code=400, detail="Enter an absolute input and output folder path.")
+    candidate = candidate.resolve()
+    if must_exist and (not candidate.exists() or not candidate.is_dir()):
+        raise HTTPException(status_code=404, detail=f"Folder not found: {value}")
+    return candidate
+
+
 def _media_url(path: Path) -> str:
     """Convert absolute path to /media URL path.
     For project files, use /api/project_file endpoint to support external drives.
@@ -286,6 +301,7 @@ def _media_url(path: Path) -> str:
 
 # --------------- Cancel flag (best-effort) ----------------
 CANCEL_FLAGS: Dict[str, bool] = {"train": False}
+THERMAL_CONVERT_JOBS: Dict[str, Dict[str, Any]] = {}
 
 # ================== small, reusable utils ==================
 
@@ -2164,6 +2180,162 @@ async def api_health():
 async def api_features():
     """Expose enabled feature flags so the UI can toggle controls."""
     return {"ok": True, "features": settings.as_feature_payload()}
+
+
+def _thermal_job_payload(job: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in job.items() if key != "task"}
+
+
+@app.post("/api/thermal-convert/scan")
+async def api_scan_thermal_conversion_folder(
+    input_dir: str = Form(...),
+    conversion_type: str = Form("radiometric"),
+    include_radiometric: bool = Form(False),
+):
+    source = _resolve_thermal_directory(input_dir, must_exist=True)
+    try:
+        scan = await asyncio.to_thread(
+            scan_conversion_folder, source, conversion_type=conversion_type,
+            include_radiometric=include_radiometric,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "scan": scan}
+
+
+@app.post("/api/thermal-convert/start")
+async def api_start_thermal_conversion(
+    input_dir: str = Form(...),
+    output_dir: str = Form(...),
+    conversion_type: str = Form("radiometric"),
+    include_radiometric: bool = Form(False),
+    output_format: str = Form("jpg"),
+    quality: int = Form(100),
+    overwrite: bool = Form(False),
+):
+    mode = str(conversion_type).strip().lower()
+    if mode not in {"radiometric", "standard"}:
+        raise HTTPException(status_code=400, detail="Conversion type must be radiometric or standard.")
+    if mode == "radiometric":
+        _require_thermal_enabled("convert radiometric thermal images")
+    source = _resolve_thermal_directory(input_dir, must_exist=True)
+    destination = _resolve_thermal_directory(output_dir, must_exist=False)
+    if source == destination:
+        raise HTTPException(status_code=400, detail="Input and output folders must be different.")
+    fmt = str(output_format).lower().lstrip(".")
+    if fmt not in {"jpg", "jpeg", "png"}:
+        raise HTTPException(status_code=400, detail="Output format must be JPG or PNG.")
+    if not 1 <= quality <= 100:
+        raise HTTPException(status_code=400, detail="JPEG quality must be between 1 and 100.")
+    scan = await asyncio.to_thread(
+        scan_conversion_folder,
+        source,
+        conversion_type=mode,
+        include_radiometric=include_radiometric,
+    )
+    if not scan["supported"]:
+        if mode == "standard":
+            detail = (
+                "No eligible standard JPG, JPEG, or PNG images were found directly in the input folder. "
+                "Radiometric JPEGs are skipped unless the visible-pixels option is selected."
+            )
+        else:
+            detail = (
+                "No supported radiometric JPG/JPEG images were found directly in the input folder. "
+                "Supported payloads are DJI DIRP (including M3T/M3TD) and FLIR FFF "
+                "(including DJI Zenmuse XT2)."
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=detail,
+        )
+    for existing in THERMAL_CONVERT_JOBS.values():
+        if existing.get("status") in {"queued", "running"} and existing.get("output_dir") == str(destination):
+            raise HTTPException(status_code=409, detail="A conversion is already writing to that output folder.")
+
+    job_id = uuid.uuid4().hex[:12]
+    job: Dict[str, Any] = {
+        "id": job_id,
+        "status": "queued",
+        "input_dir": str(source),
+        "output_dir": str(destination),
+        "conversion_type": mode,
+        "include_radiometric": bool(include_radiometric) if mode == "standard" else False,
+        "output_format": "jpg" if fmt == "jpeg" else fmt,
+        "quality": quality,
+        "overwrite": overwrite,
+        "total": scan["supported"],
+        "completed": 0,
+        "converted": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unsupported": scan["unsupported"],
+        "excluded_radiometric": scan["excluded_radiometric"],
+        "ignored_images": scan["ignored_images"],
+        "cameras": scan["cameras"],
+        "current_file": None,
+        "first_error": None,
+        "cancel_requested": False,
+        "created_at": datetime.now().isoformat(),
+        "finished_at": None,
+    }
+    THERMAL_CONVERT_JOBS[job_id] = job
+
+    async def _runner():
+        job["status"] = "running"
+
+        def _progress(state: Dict[str, object]) -> None:
+            for key in (
+                "total", "completed", "converted", "skipped", "failed", "current_file",
+                "first_error", "unsupported", "excluded_radiometric", "ignored_images", "cameras",
+            ):
+                if key in state:
+                    job[key] = state[key]
+
+        try:
+            result = await asyncio.to_thread(
+                convert_thermal_folder,
+                source,
+                destination,
+                output_format=job["output_format"],
+                conversion_type=mode,
+                include_radiometric=include_radiometric,
+                quality=quality,
+                overwrite=overwrite,
+                progress=_progress,
+                should_cancel=lambda: bool(job.get("cancel_requested")),
+            )
+            _progress(result)
+            job["status"] = "cancelled" if result.get("cancelled") else "completed"
+        except Exception as exc:
+            job["status"] = "failed"
+            job["first_error"] = str(exc)
+            logger.exception("Image grayscale conversion job %s failed", job_id)
+        finally:
+            job["finished_at"] = datetime.now().isoformat()
+            job.pop("task", None)
+
+    task = asyncio.create_task(_runner())
+    job["task"] = task
+    return {"ok": True, "job": _thermal_job_payload(job)}
+
+
+@app.get("/api/thermal-convert/{job_id}")
+async def api_thermal_conversion_status(job_id: str):
+    job = THERMAL_CONVERT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Thermal conversion job not found.")
+    return {"ok": True, "job": _thermal_job_payload(job)}
+
+
+@app.post("/api/thermal-convert/{job_id}/cancel")
+async def api_cancel_thermal_conversion(job_id: str):
+    job = THERMAL_CONVERT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Thermal conversion job not found.")
+    if job.get("status") in {"queued", "running"}:
+        job["cancel_requested"] = True
+    return {"ok": True, "job": _thermal_job_payload(job)}
 
 # ================== projects CRUD ==================
 

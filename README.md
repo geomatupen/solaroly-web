@@ -182,6 +182,12 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 3. Logs stream through SSE to the browser (`UI:INFO:train` messages) and persist into `train/outputs/<run>/train.log`. Cancel buttons terminate the worker gracefully.
 4. Completed runs hold `model_meta.json`, weights, metrics, and preview overlays. Switching to Testing allows you to pick any run folder as the active weights directory.
 
+The standalone **Image to grayscale** button on the Projects page works independently of any project. Choose **Radiometric thermal JPEG** to extract DJI DIRP data (including M3T/M3TD) or FLIR FFF data (including DJI Zenmuse XT2). Choose **Standard JPG/PNG** to convert the visible pixels of ordinary JPG, JPEG, and PNG inputs. Standard mode skips radiometric JPEGs by default; explicitly select **Include radiometric JPEGs using their visible pixels** to include them without extracting their sensor data. Enter exact absolute input and output folder paths and scan the input before starting. The preflight warns about files unsupported by the selected mode and prevents conversion when none are supported. Conversion skips unsupported files, reports per-file progress, produces grayscale JPG or PNG at the exact source dimensions, and preserves transferable EXIF/GPS/camera metadata, ICC/XMP data, and filesystem timestamps. The same converter is available from the command line; add `--type standard` for ordinary images and `--include-radiometric` when desired:
+
+```bash
+PYTHONPATH=backend python -m pvrt.dataops.thermal_convert INPUT_DIR OUTPUT_DIR --format jpg
+```
+
 ### 7.4 COLMAP Workflows
 
 #### 7.4.1 Pose Optimization for Single Images
