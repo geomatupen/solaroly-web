@@ -2,6 +2,7 @@
 
 window.api = {
   datasets: "/api/test_datasets",
+  testDatasets: "/api/test-datasets",
   models: "/api/models",
   trainingDatasets: "/api/training-datasets",
   trainingDatasetUpload: "/api/training-datasets/upload",
@@ -11,6 +12,7 @@ window.api = {
   cancel: "/api/cancel",
   logs: "/api/logs",
   sessions: "/api/sessions",
+  results: "/api/results",
   sessionSummary: "/api/session_summary",
   sessionTiles: "/api/session_tiles",
   colmapState: "/api/colmap/state",

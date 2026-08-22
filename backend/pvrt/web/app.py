@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import copy
 import io
 import json
@@ -429,6 +430,52 @@ def _write_model_meta(run_dir: Path, meta: dict) -> None:
     temp_path = run_dir / ".model_meta.json.tmp"
     temp_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     temp_path.replace(meta_path)
+
+
+def _latest_training_metrics(run_dir: Path) -> dict:
+    """Read the latest JSON-lines metrics row and latest row containing each loss."""
+    path = run_dir / "metrics.json"
+    latest: dict = {}
+    latest_losses: dict = {}
+    if path.is_file():
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                latest = row
+                for key, value in row.items():
+                    if "loss" in str(key).lower() and isinstance(value, (int, float)):
+                        latest_losses[key] = value
+        except (OSError, UnicodeDecodeError):
+            pass
+    summary = {
+        key: latest.get(key)
+        for key in ("iteration", "lr", "eta_seconds", "bbox/AP", "bbox/AP50", "bbox/AP75")
+        if latest.get(key) is not None
+    }
+    summary.update(latest_losses)
+    csv_path = run_dir / "results.csv"
+    if csv_path.is_file():
+        try:
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            if rows:
+                for raw_key, raw_value in rows[-1].items():
+                    key = str(raw_key or "").strip()
+                    try:
+                        summary[key] = float(raw_value)
+                    except (TypeError, ValueError):
+                        if raw_value not in (None, ""):
+                            summary[key] = raw_value
+                if "epoch" in summary and "iteration" not in summary:
+                    summary["iteration"] = summary["epoch"]
+        except (OSError, UnicodeDecodeError, csv.Error):
+            pass
+    return summary
 
 
 def _list_models(include_incomplete: bool = False) -> List[dict]:
@@ -2119,6 +2166,33 @@ def _count_top_level_images(d: Path) -> int:
         return 0
     return sum(1 for p in d.iterdir() if p.is_file() and _is_image(p))
 
+
+def _asset_display_name(folder: Path, metadata_name: str) -> str:
+    path = folder / metadata_name
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get("display_name")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            pass
+    return folder.name
+
+
+def _write_asset_display_name(folder: Path, metadata_name: str, display_name: str) -> None:
+    temp = folder / f"{metadata_name}.tmp"
+    target = folder / metadata_name
+    temp.write_text(json.dumps({"display_name": display_name}, indent=2), encoding="utf-8")
+    temp.replace(target)
+
+
+def _project_child(root: Path, child_id: str, label: str) -> Path:
+    safe_id = _safe_name(child_id)
+    child = root / safe_id
+    if not safe_id or not child.is_dir() or child.resolve().parent != root.resolve():
+        raise HTTPException(status_code=404, detail=f"{label} not found.")
+    return child
+
 def _list_datasets() -> list[dict]:
     """
     Return detailed dataset info from data/test/.
@@ -2131,7 +2205,9 @@ def _list_datasets() -> list[dict]:
     for p in sorted([x for x in test_dir.iterdir() if x.is_dir()],
                     key=lambda x: x.stat().st_mtime, reverse=True):
         items.append({
+            "id": p.name,
             "name": p.name,
+            "display_name": _asset_display_name(p, ".dataset_meta.json"),
             "count": _count_top_level_images(p),
             "mtime": int(p.stat().st_mtime),
             "colmap_ready": _colmap_ready(p.name),
@@ -2151,8 +2227,10 @@ def _list_sessions() -> list[dict]:
     for p in sorted([x for x in base.iterdir() if x.is_dir()],
                     key=lambda x: x.stat().st_mtime, reverse=True):
         items.append({
+            "id": p.name,
             "name": p.name,                 # normalized to just the id
-            "mtime": int(p.stat().st_mtime)
+            "display_name": _asset_display_name(p, ".result_meta.json"),
+            "mtime": int(p.stat().st_mtime),
         })
     return items
 
@@ -2894,6 +2972,40 @@ async def api_models(backend: Optional[str] = None, include_incomplete: bool = F
     return {"ok": True, "models": models}
 
 
+@app.get("/api/models/{model_id}")
+async def api_model_detail(model_id: str):
+    run_dir, meta = _find_model(model_id)
+    run_status = _model_run_status(run_dir, meta)
+    complete = run_status in {"complete", "completed"}
+    state = {}
+    state_path = run_dir / "run_status.json"
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            state = {}
+    checkpoints = [
+        name for name in ("model_best.pth", "model_final.pth", "model_best.pt", "model_final.pt")
+        if (run_dir / name).is_file()
+    ]
+    return {
+        "ok": True,
+        "model": {
+            "id": _model_id(run_dir, meta),
+            "name": run_dir.name,
+            "display_name": meta.get("display_name") or meta.get("model_name") or run_dir.name,
+            "status": "complete" if complete else "incomplete",
+            "run_status": run_status,
+            "mtime": int(run_dir.stat().st_mtime),
+            "path": str(run_dir),
+            "checkpoints": checkpoints,
+        },
+        "meta": meta,
+        "state": state,
+        "latest_metrics": _latest_training_metrics(run_dir),
+    }
+
+
 @app.post("/api/models/{model_id}/rename")
 async def api_rename_model(model_id: str, name: str = Form(...)):
     """Rename a model's display label without changing its import path/id."""
@@ -2939,6 +3051,29 @@ async def api_test_datasets():
     details = _list_datasets()                      # current shape: [{name, count, mtime}, ...]
     names = [d["name"] for d in details]           # simple shape: ["name", ...]
     return {"ok": True, "datasets": details, "dataset_names": names}
+
+
+@app.post("/api/test-datasets/{dataset_id}/rename")
+async def api_rename_test_dataset(dataset_id: str, name: str = Form(...)):
+    display_name = str(name or "").strip()[:128]
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Test dataset name cannot be empty.")
+    dataset_dir = _project_child(get_project_test_dir(), dataset_id, "Test dataset")
+    _write_asset_display_name(dataset_dir, ".dataset_meta.json", display_name)
+    logger.info("UI:OK:test: Renamed test dataset %s to %s", dataset_dir.name, display_name)
+    return {"ok": True, "id": dataset_dir.name, "name": dataset_dir.name, "display_name": display_name}
+
+
+@app.delete("/api/test-datasets/{dataset_id}")
+async def api_delete_test_dataset(dataset_id: str):
+    dataset_dir = _project_child(get_project_test_dir(), dataset_id, "Test dataset")
+    try:
+        shutil.rmtree(dataset_dir)
+    except OSError as exc:
+        logger.exception("Failed to delete test dataset %s", dataset_dir.name)
+        raise HTTPException(status_code=500, detail=f"Failed to delete test dataset: {exc}") from exc
+    logger.info("UI:OK:test: Deleted test dataset %s", dataset_dir.name)
+    return {"ok": True, "id": dataset_dir.name}
 
 
 @app.get("/api/dataset_bands")
@@ -3731,6 +3866,29 @@ async def api_sessions():
     details = _list_sessions()                 # [{"name","mtime"}, ...] where name == session id
     ids = [d["name"] for d in details]
     return {"ok": True, "sessions": details, "session_ids": ids}
+
+
+@app.post("/api/results/{session_id}/rename")
+async def api_rename_result(session_id: str, name: str = Form(...)):
+    display_name = str(name or "").strip()[:128]
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Result name cannot be empty.")
+    session_dir = _project_child(get_project_sessions_dir(), session_id, "Result")
+    _write_asset_display_name(session_dir, ".result_meta.json", display_name)
+    logger.info("UI:OK:test: Renamed result %s to %s", session_dir.name, display_name)
+    return {"ok": True, "id": session_dir.name, "name": session_dir.name, "display_name": display_name}
+
+
+@app.delete("/api/results/{session_id}")
+async def api_delete_result(session_id: str):
+    session_dir = _project_child(get_project_sessions_dir(), session_id, "Result")
+    try:
+        shutil.rmtree(session_dir)
+    except OSError as exc:
+        logger.exception("Failed to delete result %s", session_dir.name)
+        raise HTTPException(status_code=500, detail=f"Failed to delete result: {exc}") from exc
+    logger.info("UI:OK:test: Deleted result %s", session_dir.name)
+    return {"ok": True, "id": session_dir.name}
 
 
 @app.get("/api/session_summary")

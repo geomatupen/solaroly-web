@@ -469,7 +469,10 @@ def validate_yolo_sidecars(root: Path, coco: dict[str, Any]) -> dict[str, Any]:
         if not label_files:
             errors.append(f"YOLO-compatible {label} split has no label files.")
         if missing_labels:
-            warnings.append(f"YOLO-compatible {label} split has {missing_labels} images without labels.")
+            warnings.append(
+                f"YOLO-compatible {label} split has {missing_labels} images without label files "
+                "(valid background images; add labels only if those images contain objects)."
+            )
         split_info[label] = {
             "images": len(images), "label_files": label_files,
             "missing_labels": missing_labels, "image_dir": str(split.relative_to(root)),
@@ -517,6 +520,11 @@ def validate_dataset(root: Path, requested_format: str = "auto") -> dict[str, An
             if not errors:
                 errors.append("No supported COCO or YOLO training layout was detected.")
         for name, result in validators.items():
+            # The project layout stores valid YOLO labels beside the COCO images.
+            # A stray or incompatible native data.yaml must not imply that YOLO
+            # training is unavailable when those sidecars already validate.
+            if name == "yolo" and yolo_sidecar["valid"]:
+                continue
             if result["detected"] and not result["valid"] and compatible:
                 warnings.extend(f"{name.upper()} compatibility: {message}" for message in result["errors"])
         if coco["valid"] and yolo_sidecar["detected"] and not yolo_sidecar["valid"]:

@@ -96,8 +96,8 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .tabPanel{ display:none; }
 .tabPanel.active{ display:block; }
 
-.trainLayout{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(280px, 360px); gap:20px; align-items:start; }
-.trainFormPane{ min-width:0; }
+.trainLayout, .testLayout{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(280px, 360px); gap:20px; align-items:start; }
+.trainFormPane, .testFormPane{ min-width:0; }
 .trainedModelsPane{ border-left:1px solid var(--border); padding-left:18px; min-width:0; }
 .trainedModelsHeader{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:10px; }
 .trainedModelsHeader h3{ margin:0; }
@@ -108,6 +108,10 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .trainedModelItem.incomplete .trainedModelMeta span:first-child{ color:var(--warn); font-weight:600; }
 .trainedModelItem.complete .trainedModelMeta span:first-child{ color:var(--ok); font-weight:600; }
 .trainedModelMain{ flex:1; min-width:0; }
+.modelDetailsTrigger{ cursor:pointer; }
+.modelDetailsTrigger:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:5px; }
+.testAssetTrigger{ cursor:pointer; }
+.testAssetTrigger:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:5px; }
 .trainingDatasetItem .trainedModelMain{ cursor:pointer; }
 .trainingDatasetItem .trainedModelMain:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:5px; }
 .trainedModelName{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -138,6 +142,7 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .trainingDatasetSelectRow select{ flex:1; min-width:0; }
 .trainingUploadModalContent{ width:94%; max-width:1000px; max-height:90vh; overflow:auto; }
 .trainingDatasetSummaryContent{ width:90%; max-width:760px; max-height:90vh; overflow:auto; }
+.modelDetailsContent{ width:90%; max-width:900px; max-height:90vh; overflow:auto; }
 #trainingUploadModal .modalBody, #trainingDatasetSummaryModal .modalBody{ display:block; padding:12px; overflow:auto; }
 .trainingUploadForm input[type="text"], .trainingUploadForm select{ width:100%; box-sizing:border-box; }
 .trainingUploadLayout{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(330px, .9fr); gap:20px; align-items:start; }
@@ -159,7 +164,7 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .trainingDatasetSummarySection h4{ margin:0 0 7px; }
 .trainingDatasetMessageList{ margin:0; padding-left:20px; font-size:12px; }
 @media (max-width:800px){
-  .trainLayout{ grid-template-columns:1fr; }
+  .trainLayout, .testLayout{ grid-template-columns:1fr; }
   .trainedModelsPane{ border-left:0; border-top:1px solid var(--border); padding:16px 0 0; }
   .trainingUploadLayout{ grid-template-columns:1fr; }
 }
@@ -1012,10 +1017,33 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
   padding:16px;
   overflow:auto;
 }
+#modelDetailsModal .modelDetailsContent{
+  display:flex;
+  flex-direction:column;
+  width:min(900px, calc(100vw - 32px));
+  max-width:900px;
+  max-height:calc(100vh - 32px);
+  padding:0;
+  overflow:hidden;
+}
+#modelDetailsModal .modalHeader{ flex:0 0 auto; }
+#modelDetailsModal .modalBody{
+  display:block;
+  min-height:0;
+  padding:16px;
+  overflow:auto;
+}
+#modelDetailsModal .info-grid{
+  display:grid;
+  grid-template-columns:minmax(0, 1.2fr) minmax(260px, .8fr);
+  gap:12px;
+}
+#modelDetailsModal .kv-list{ max-height:60vh; }
 @media (max-width:800px){
   #trainingUploadModal .trainingUploadModalContent{
     width:calc(100vw - 24px);
     max-height:calc(100vh - 24px);
   }
   #trainingUploadModal .trainingUploadLayout{ grid-template-columns:1fr; }
+  #modelDetailsModal .info-grid{ grid-template-columns:1fr; }
 }

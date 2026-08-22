@@ -194,6 +194,7 @@ function updateProjectUI() {
 let testAbort = null;
 let modelsCache = {};                // name -> model metadata returned by /api/models
 let datasetsCache = [];              // cached dataset list with colmap_ready flag
+let testResultsCache = [];            // cached inference result sessions
 let userToggledThermalTrain = false; // whether user manually toggled the train thermal checkbox
 let userToggledThermalTest = false;  // whether user manually toggled the test thermal checkbox
 
@@ -205,7 +206,8 @@ function populateFolders(list){
     list.forEach(d => {
       const o = document.createElement("option");
       o.value = d.name;
-      o.textContent = `${d.name} (${d.count})`;
+      o.textContent = `${d.display_name || d.name} (${d.count})`;
+      o.title = `${d.display_name || d.name} · ID: ${d.id || d.name}`;
       selTest.appendChild(o);
     });
     if(prevTest && list.some(d => d.name === prevTest)){
@@ -219,7 +221,7 @@ function populateFolders(list){
     list.forEach(d => {
       const o = document.createElement("option");
       o.value = d.name;
-      o.textContent = d.name;
+      o.textContent = d.display_name || d.name;
       selOpt.appendChild(o);
     });
     if(prevOpt && list.some(d => d.name === prevOpt)){
@@ -417,6 +419,10 @@ function switchToTab(tabId){
     if(document.getElementById('btnAssetData')?.classList.contains('active')) loadTrainingDatasets();
     else loadTrainedModels();
   }
+  if(tabId === "tab-test"){
+    if(document.getElementById('btnTestAssetResults')?.classList.contains('active')) loadSessions(false);
+    else loadDatasets();
+  }
 }
 
 // ---------- datasets/models/sessions ----------
@@ -460,6 +466,7 @@ async function loadDatasets(){
   if(js.ok){
     datasetsCache = js.datasets || [];
     populateFolders(js.datasets);
+    renderTestDatasets(datasetsCache);
     onTestDatasetChange();
     if(window.featureFlags?.colmap){
       onOptimizeDatasetChange();
@@ -467,6 +474,160 @@ async function loadDatasets(){
       updateOptimizePanel(null);
     }
   }
+}
+
+function switchTestAssetPanel(panel){
+  const showData = panel !== 'results';
+  const dataTab = document.getElementById('btnTestAssetData');
+  const resultsTab = document.getElementById('btnTestAssetResults');
+  const dataPanel = document.getElementById('testDataPanel');
+  const resultsPanel = document.getElementById('testResultsPanel');
+  dataTab?.classList.toggle('active', showData);
+  resultsTab?.classList.toggle('active', !showData);
+  dataTab?.setAttribute('aria-selected', String(showData));
+  resultsTab?.setAttribute('aria-selected', String(!showData));
+  if(dataTab) dataTab.tabIndex = showData ? 0 : -1;
+  if(resultsTab) resultsTab.tabIndex = showData ? -1 : 0;
+  if(dataPanel) dataPanel.hidden = !showData;
+  if(resultsPanel) resultsPanel.hidden = showData;
+  if(showData) loadDatasets();
+  else loadSessions(false);
+}
+
+function testAssetCard(asset, kind){
+  const isResult = kind === 'result';
+  const item = document.createElement('article');
+  item.className = 'trainedModelItem';
+  const main = document.createElement('div');
+  main.className = 'trainedModelMain testAssetTrigger';
+  main.tabIndex = 0;
+  main.setAttribute('role', 'button');
+  const displayName = asset.display_name || asset.name;
+  main.setAttribute('aria-label', isResult ? `Open result ${displayName}` : `Select test dataset ${displayName}`);
+  const name = document.createElement('strong');
+  name.className = 'trainedModelName';
+  name.textContent = displayName;
+  name.title = displayName;
+  const id = document.createElement('small');
+  id.className = 'trainedModelId';
+  id.textContent = `ID: ${asset.id || asset.name}`;
+  id.title = asset.id || asset.name;
+  const meta = document.createElement('div');
+  meta.className = 'trainedModelMeta';
+  const details = isResult
+    ? ['Result', asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null]
+    : [`${asset.count || 0} images`, asset.colmap_ready ? 'Optimized poses' : null, asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null];
+  details.filter(Boolean).forEach(value => {
+    const span = document.createElement('span');
+    span.textContent = value;
+    meta.appendChild(span);
+  });
+  main.append(name, id, meta);
+
+  const open = async () => {
+    if(isResult){
+      switchToTab('tab-results');
+      await ensureResultsTabLoaded();
+      const select = document.getElementById('selResults');
+      if(select){ select.value = asset.name; await showResultsForSelected(); }
+    }else{
+      const select = document.getElementById('selTestFolder');
+      if(select){ select.value = asset.name; onTestDatasetChange(); }
+    }
+  };
+  main.addEventListener('click', open);
+  main.addEventListener('keydown', event => {
+    if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); open(); }
+  });
+
+  const menuButton = document.createElement('button');
+  menuButton.type = 'button';
+  menuButton.className = 'iconDots';
+  menuButton.textContent = '⋮';
+  menuButton.title = `Actions for ${displayName}`;
+  menuButton.setAttribute('aria-label', menuButton.title);
+  menuButton.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'trainedModelMenu';
+  menu.hidden = true;
+  const renameButton = document.createElement('button');
+  renameButton.type = 'button';
+  renameButton.textContent = 'Rename';
+  renameButton.addEventListener('click', async event => {
+    event.stopPropagation();
+    try{ await renameTestAsset(asset, kind); }
+    catch(error){ alert(error.message || `Could not rename ${isResult ? 'result' : 'test dataset'}.`); }
+  });
+  const deleteButton = document.createElement('button');
+  deleteButton.type = 'button';
+  deleteButton.className = 'danger';
+  deleteButton.textContent = 'Delete';
+  deleteButton.addEventListener('click', async event => {
+    event.stopPropagation();
+    try{ await deleteTestAsset(asset, kind); }
+    catch(error){ alert(error.message || `Could not delete ${isResult ? 'result' : 'test dataset'}.`); }
+  });
+  menu.append(renameButton, deleteButton);
+  menuButton.addEventListener('click', event => {
+    event.stopPropagation();
+    const willOpen = menu.hidden;
+    closeTrainedModelMenus(menu);
+    menu.hidden = !willOpen;
+    menuButton.setAttribute('aria-expanded', String(willOpen));
+  });
+  item.append(main, menuButton, menu);
+  return item;
+}
+
+function renderTestAssetList(listId, assets, kind){
+  const list = document.getElementById(listId);
+  if(!list) return;
+  list.replaceChildren();
+  list.classList.remove('muted');
+  if(!assets.length){
+    const empty = document.createElement('p');
+    empty.className = 'trainedModelsEmpty muted tiny';
+    empty.textContent = kind === 'result' ? 'No model results yet.' : 'No test datasets yet.';
+    list.appendChild(empty);
+    return;
+  }
+  assets.forEach(asset => list.appendChild(testAssetCard(asset, kind)));
+}
+
+function renderTestDatasets(datasets){ renderTestAssetList('testDatasetsList', datasets || [], 'dataset'); }
+function renderTestResults(results){ renderTestAssetList('testResultsList', results || [], 'result'); }
+
+async function renameTestAsset(asset, kind){
+  closeTrainedModelMenus();
+  const oldName = asset.display_name || asset.name;
+  const nextName = prompt(kind === 'result' ? 'Rename model result' : 'Rename test dataset', oldName);
+  if(nextName === null || !nextName.trim() || nextName.trim() === oldName) return;
+  const base = kind === 'result' ? api.results : api.testDatasets;
+  const body = new FormData();
+  body.append('name', nextName.trim());
+  const response = await fetch(`${base}/${encodeURIComponent(asset.id || asset.name)}/rename`, {method:'POST', body});
+  const result = await response.json().catch(()=>({}));
+  if(!response.ok || !result.ok) throw new Error(result.detail || 'Rename failed.');
+  if(kind === 'result') await loadSessions(false);
+  else await loadDatasets();
+}
+
+async function deleteTestAsset(asset, kind){
+  closeTrainedModelMenus();
+  const label = asset.display_name || asset.name;
+  const noun = kind === 'result' ? 'model result' : 'test dataset';
+  const explanation = kind === 'result'
+    ? 'This removes the saved inference result files. The model and test data are not deleted.'
+    : 'This removes the uploaded test files. Trained models and saved results are not deleted.';
+  if(!confirm(`Delete ${noun} "${label}"?\n\n${explanation}`)) return;
+  const base = kind === 'result' ? api.results : api.testDatasets;
+  const response = await fetch(`${base}/${encodeURIComponent(asset.id || asset.name)}`, {method:'DELETE'});
+  const result = await response.json().catch(()=>({}));
+  if(!response.ok || !result.ok) throw new Error(result.detail || 'Delete failed.');
+  if(kind === 'result'){
+    _resultsTabLoaded = false;
+    await loadSessions(true);
+  }else await loadDatasets();
 }
 // Load models, optionally filtered by backend (e.g., ?backend=yolo)
 // targetSel - optional selector string for which <select> to populate (defaults to '#selModelFolder')
@@ -536,6 +697,46 @@ async function deleteTrainedModel(model){
   await refreshModelViews();
 }
 
+async function openModelDetails(modelId){
+  const modal = document.getElementById('modelDetailsModal');
+  const body = document.getElementById('modelDetailsBody');
+  const title = document.getElementById('modelDetailsTitle');
+  if(!modal || !body) return;
+  body.textContent = 'Loading model details…';
+  modal.classList.add('show');
+  modal.classList.remove('hidden');
+  try{
+    const response = await fetch(`${api.models}/${encodeURIComponent(modelId)}`, {cache:'no-store'});
+    const result = await response.json().catch(()=>({}));
+    if(!response.ok || !result.ok) throw new Error(result.detail || 'Could not load model details.');
+    const model = result.model || {};
+    const meta = result.meta || {};
+    const metrics = result.latest_metrics || {};
+    if(title) title.textContent = model.display_name || model.name || 'Model details';
+    const lossDetails = {};
+    if(metrics.iteration != null) lossDetails.iteration = metrics.iteration;
+    if(metrics.lr != null) lossDetails.lr = metrics.lr;
+    Object.entries(metrics).forEach(([key, value]) => {
+      if(key.toLowerCase().includes('loss')) lossDetails[key] = value;
+    });
+    const metaCard = Object.keys(meta).length
+      ? `<section class="info-card"><h4>Model Meta</h4>${renderJsonList(meta)}</section>`
+      : '<section class="info-card"><h4>Model Meta</h4><p class="muted tiny">No model_meta.json metadata is available for this run.</p></section>';
+    const lossCard = Object.keys(lossDetails).length
+      ? `<section class="info-card"><h4>Training Losses</h4>${renderJsonList(lossDetails)}</section>`
+      : '<section class="info-card"><h4>Training Losses</h4><p class="muted tiny">No loss metrics were recorded for this run.</p></section>';
+    body.innerHTML = `<div class="info-grid">${metaCard}${lossCard}</div>`;
+  }catch(error){
+    body.textContent = error.message || 'Could not load model details.';
+  }
+}
+
+function closeModelDetails(){
+  const modal = document.getElementById('modelDetailsModal');
+  modal?.classList.remove('show');
+  modal?.classList.add('hidden');
+}
+
 function renderTrainedModels(models){
   const list = document.getElementById('trainedModelsList');
   if(!list) return;
@@ -554,7 +755,10 @@ function renderTrainedModels(models){
     item.className = 'trainedModelItem';
 
     const main = document.createElement('div');
-    main.className = 'trainedModelMain';
+    main.className = 'trainedModelMain modelDetailsTrigger';
+    main.tabIndex = 0;
+    main.setAttribute('role', 'button');
+    main.setAttribute('aria-label', `View details for ${model.display_name || model.name}`);
     const name = document.createElement('strong');
     name.className = 'trainedModelName';
     name.textContent = model.display_name || model.model_name || model.name;
@@ -582,6 +786,11 @@ function renderTrainedModels(models){
       meta.appendChild(span);
     });
     main.append(name, id, meta);
+    const openDetails = () => openModelDetails(model.id || model.name);
+    main.addEventListener('click', openDetails);
+    main.addEventListener('keydown', event => {
+      if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); openDetails(); }
+    });
 
     const menuButton = document.createElement('button');
     menuButton.type = 'button';
@@ -930,6 +1139,15 @@ async function openTrainingDatasetSummary(datasetId){
     );
     addDatasetSummaryRow(grid, 'Format', trainingDatasetFormatLabel(dataset));
     addDatasetSummaryRow(grid, 'Training backends', (validation.training_backends || []).map(value => value === 'yolo' ? 'YOLO' : 'Detectron').join(', '));
+    const backendSet = new Set(validation.training_backends || []);
+    const sidecarReady = Boolean(validation.yolo_sidecar?.valid);
+    const nativeYoloReady = Boolean(validation.format_details?.yolo?.valid);
+    addDatasetSummaryRow(grid, 'Detectron / COCO', backendSet.has('detectron') ? 'Ready' : 'Not available');
+    addDatasetSummaryRow(
+      grid,
+      'YOLO',
+      backendSet.has('yolo') ? `Ready (${sidecarReady ? 'shared sidecar layout' : nativeYoloReady ? 'native layout' : 'validated'})` : 'Not available'
+    );
     addDatasetSummaryRow(grid, 'Storage path', dataset.storage_path);
     addDatasetSummaryRow(grid, 'Files', validation.file_count || 0);
     addDatasetSummaryRow(grid, 'Size', formatBytes(Number(validation.size_bytes || 0)));
@@ -952,7 +1170,16 @@ async function openTrainingDatasetSummary(datasetId){
       section.append(heading, text);
       body.appendChild(section);
     });
-    addDatasetMessages(body, 'Warnings', validation.warnings, 'warn');
+    const warnings = (validation.warnings || [])
+      .filter(message => !(backendSet.has('yolo') && String(message).startsWith('YOLO compatibility:')))
+      .map(message => {
+        const text = String(message);
+        if(/YOLO-compatible .* images without labels\.?$/i.test(text)){
+          return `${text.replace(/\.$/, '')} (valid background images; add labels only if those images contain objects).`;
+        }
+        return text;
+      });
+    addDatasetMessages(body, validation.valid ? 'Compatibility notes' : 'Warnings', warnings, 'warn');
     addDatasetMessages(body, 'Errors', validation.errors, 'err');
   }catch(error){
     body.textContent = error.message || 'Could not load dataset summary.';
@@ -1162,19 +1389,27 @@ async function loadSessions(selectLatest=true){
   if(!js.ok) return;
   const sel1 = $("#selResults");
   const sel2 = $("#selMapSession");
+  const previousResults = sel1.value;
+  const previousMap = sel2.value;
   sel1.innerHTML = ""; sel2.innerHTML = "";
+  testResultsCache = js.sessions || [];
   js.sessions.forEach(s=>{
-    const nm = s.name.split("/").pop();
+    const nm = s.display_name || s.name.split("/").pop();
     for(const sel of [sel1, sel2]){
       const o = document.createElement("option");
       o.value = s.name;
       o.textContent = nm;
+      o.title = `${nm} · ID: ${s.id || s.name}`;
       sel.appendChild(o);
     }
   });
+  renderTestResults(testResultsCache);
   if(selectLatest && js.sessions.length){
     const latest = js.sessions[0].name;
     sel1.value = latest; sel2.value = latest;
+  }else{
+    if(js.sessions.some(session => session.name === previousResults)) sel1.value = previousResults;
+    if(js.sessions.some(session => session.name === previousMap)) sel2.value = previousMap;
   }
 }
 
@@ -3150,13 +3385,25 @@ function setupUI(){
   if(btnRefreshFolders) btnRefreshFolders.addEventListener("click", loadDatasets);
   const selTestFolder = document.getElementById('selTestFolder');
   if(selTestFolder){ selTestFolder.addEventListener('change', onTestDatasetChange); }
+  document.getElementById('btnTestAssetData')?.addEventListener('click', () => switchTestAssetPanel('data'));
+  document.getElementById('btnTestAssetResults')?.addEventListener('click', () => switchTestAssetPanel('results'));
+  document.getElementById('btnRefreshTestDataList')?.addEventListener('click', loadDatasets);
+  document.getElementById('btnRefreshTestResultsList')?.addEventListener('click', () => loadSessions(false));
+  document.getElementById('btnOpenTestUploadFromList')?.addEventListener('click', openUploadModal);
+  document.querySelector('.testAssetTabs')?.addEventListener('keydown', event => {
+    if(!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const showResults = event.key === 'ArrowRight' || event.key === 'End';
+    switchTestAssetPanel(showResults ? 'results' : 'data');
+    document.getElementById(showResults ? 'btnTestAssetResults' : 'btnTestAssetData')?.focus();
+  });
   const btnRefreshModels = $("#btnRefreshModels");
   if(btnRefreshModels) btnRefreshModels.addEventListener("click", ()=> loadModels(getSelectedBackend(), '#selModelFolder'));
   const btnRefreshTrainedModels = $("#btnRefreshTrainedModels");
   if(btnRefreshTrainedModels) btnRefreshTrainedModels.addEventListener("click", loadTrainedModels);
   document.getElementById('btnAssetModels')?.addEventListener('click', () => switchTrainingAssetPanel('models'));
   document.getElementById('btnAssetData')?.addEventListener('click', () => switchTrainingAssetPanel('data'));
-  document.querySelector('.trainingAssetTabs')?.addEventListener('keydown', event => {
+  document.querySelector('#tab-train .trainingAssetTabs')?.addEventListener('keydown', event => {
     if(!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
@@ -3185,6 +3432,7 @@ function setupUI(){
   });
   document.getElementById('btnStartTrainingUpload')?.addEventListener('click', startTrainingDatasetUpload);
   document.getElementById('btnCloseTrainingDatasetSummary')?.addEventListener('click', closeTrainingDatasetSummary);
+  document.getElementById('btnCloseModelDetails')?.addEventListener('click', closeModelDetails);
   document.getElementById('fileTrainingZip')?.addEventListener('change', event => {
     if(event.target.files?.length){
       selectedTrainingFolderFiles = [];
@@ -3197,8 +3445,8 @@ function setupUI(){
   trainingUploadModal?.addEventListener('click', event => { if(event.target === trainingUploadModal) closeTrainingUploadModal(); });
   const trainingSummaryModal = document.getElementById('trainingDatasetSummaryModal');
   trainingSummaryModal?.addEventListener('click', event => { if(event.target === trainingSummaryModal) closeTrainingDatasetSummary(); });
-  const btnOpenUpload = $("#btnOpenUploadModal");
-  if(btnOpenUpload) btnOpenUpload.addEventListener("click", openUploadModal);
+  const modelDetailsModal = document.getElementById('modelDetailsModal');
+  modelDetailsModal?.addEventListener('click', event => { if(event.target === modelDetailsModal) closeModelDetails(); });
   const btnCloseUpload = $("#btnCloseUploadModal");
   if(btnCloseUpload) btnCloseUpload.addEventListener("click", ()=>{ closeUploadModal(); resetUploadProgress(); });
   const btnCancelUpload = $("#btnCancelUpload");
@@ -3910,7 +4158,7 @@ function renderJsonList(obj) {
     .sort(([a],[b]) => a.localeCompare(b))
     .map(([k, v]) => {
       const val = (typeof v === "string") ? v : JSON.stringify(v);
-      return `<li><span class="key">${k}</span><span class="val">${val}</span></li>`;
+      return `<li><span class="key">${escapeHtml(k)}</span><span class="val">${escapeHtml(val ?? '')}</span></li>`;
     })
     .join("");
   return `<ul class="kv-list">${rows}</ul>`;

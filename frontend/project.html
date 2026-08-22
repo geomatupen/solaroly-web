@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260822a" />
+  <link rel="stylesheet" href="css/styles.css?v=20260822b" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -38,15 +38,13 @@
       <div class="card">
         <h2>Test / Inference</h2>
         <p class="muted">
-          Choose a dataset folder to test. Use <b>Upload data</b> to add a new folder (zip or images).
+          Choose a dataset folder to test. Use <b>Upload test data</b> to add a new folder (zip or images).
           Folders are created inside <code>test/data/</code> and named from the zip or first image.
         </p>
 
+        <div class="testLayout">
+        <div class="testFormPane">
         <div class="formGrid">
-          <div class="row">
-            <button id="btnOpenUploadModal" type="button" class="push-right" onclick="var m=document.getElementById('uploadModal'); if(m){m.classList.add('show');m.classList.remove('hidden');} return false;">Upload data…</button>
-          </div>
-
           <div id="testUploadProgress" class="progressWrap" hidden>
             <div class="progressBar"><span id="testUploadBar" style="width:0%"></span></div>
             <div class="progressText" id="testUploadText">Uploading… 0%</div>
@@ -154,6 +152,39 @@
         <p class="muted tiny">
           <a href="#" id="lnkToLogsFromTest">See full logs</a>
         </p>
+        </div>
+
+        <aside class="trainedModelsPane testAssetsPane" aria-labelledby="testAssetsTitle">
+          <div class="trainedModelsHeader">
+            <div>
+              <h3 id="testAssetsTitle">Test assets</h3>
+              <p class="muted tiny">Test datasets and model results</p>
+            </div>
+          </div>
+          <div class="trainingAssetTabs testAssetTabs" role="tablist" aria-label="Test assets">
+            <button id="btnTestAssetData" class="active" type="button" role="tab" aria-selected="true" aria-controls="testDataPanel">Test datasets</button>
+            <button id="btnTestAssetResults" type="button" role="tab" aria-selected="false" aria-controls="testResultsPanel" tabindex="-1">Model results</button>
+          </div>
+          <section id="testDataPanel" class="trainingAssetPanel" role="tabpanel" aria-labelledby="btnTestAssetData">
+            <div class="trainingAssetToolbar">
+              <button id="btnOpenTestUploadFromList" type="button">Upload test data</button>
+              <button id="btnRefreshTestDataList" class="iconBtn" type="button" title="Refresh test datasets" aria-label="Refresh test datasets">↻</button>
+            </div>
+            <div id="testDatasetsList" class="trainedModelsList" aria-live="polite">
+              <p class="muted tiny">Loading test datasets…</p>
+            </div>
+          </section>
+          <section id="testResultsPanel" class="trainingAssetPanel" role="tabpanel" aria-labelledby="btnTestAssetResults" hidden>
+            <div class="trainingAssetToolbar">
+              <span class="muted tiny">Results saved in this project</span>
+              <button id="btnRefreshTestResultsList" class="iconBtn" type="button" title="Refresh model results" aria-label="Refresh model results">↻</button>
+            </div>
+            <div id="testResultsList" class="trainedModelsList" aria-live="polite">
+              <p class="muted tiny">Loading model results…</p>
+            </div>
+          </section>
+        </aside>
+        </div>
       </div>
     </section>
 
@@ -594,6 +625,17 @@
     </div>
   </div>
 
+  <!-- Model Details Modal -->
+  <div id="modelDetailsModal" class="modal hidden">
+    <div class="modalContent modelDetailsContent">
+      <div class="modalHeader">
+        <h3 id="modelDetailsTitle">Model details</h3>
+        <button class="iconBtn" id="btnCloseModelDetails" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div id="modelDetailsBody" class="modalBody"></div>
+    </div>
+  </div>
+
   <!-- Map File Overlay Modal -->
   <div id="addMapFileModal" class="modal hidden">
     <div class="modalContent">
@@ -904,25 +946,12 @@
     </div>
   </div>
 
-  <script src="js/utils.js?v=20260301b"></script>
+  <script src="js/utils.js?v=20260822c"></script>
   <script src="js/map.js?v=20260301b"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260301b"></script>
-  <script src="js/main.js?v=20260822i"></script>
+  <script src="js/main.js?v=20260822k"></script>
   <script>
-    // Hard fallback: wire upload button directly on this page, independent of main.js initialization.
-    document.addEventListener("DOMContentLoaded", () => {
-      const openBtn = document.getElementById("btnOpenUploadModal");
-      const modal = document.getElementById("uploadModal");
-      if (openBtn && modal) {
-        openBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          modal.classList.add("show");
-          modal.classList.remove("hidden");
-        });
-      }
-    });
-
     // Display active project name in header
     async function initProjectHeader() {
       try {
