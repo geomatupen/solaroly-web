@@ -95,6 +95,16 @@ from ..dataops.scan_decode_split import (
     scan_split_decode_thermal, # safe to call only if thermal requested
 )
 from ..dataops.thermal_convert import convert_thermal_folder, ensure_dirp_init, scan_conversion_folder
+from ..dataops.training_datasets import (
+    DatasetUploadError,
+    delete_dataset as delete_training_dataset,
+    ensure_legacy_dataset,
+    get_dataset as get_training_dataset,
+    install_dataset as install_training_dataset,
+    list_datasets as list_training_datasets,
+    rename_dataset as rename_training_dataset,
+    resolve_dataset_for_training,
+)
 from ..core.io import has_thermal_for_images
 
 # -------- Path utilities --------
@@ -278,6 +288,34 @@ def _resolve_thermal_directory(value: str, *, must_exist: bool) -> Path:
     if must_exist and (not candidate.exists() or not candidate.is_dir()):
         raise HTTPException(status_code=404, detail=f"Folder not found: {value}")
     return candidate
+
+
+def _resolve_training_destination(value: str) -> Path:
+    """Resolve an explicit, new destination for one uploaded training dataset."""
+    raw_value = convert_windows_path_to_wsl(str(value or "").strip())
+    if not raw_value:
+        raise HTTPException(status_code=400, detail="A destination folder path is required.")
+    destination = Path(raw_value).expanduser()
+    if not destination.is_absolute():
+        raise HTTPException(status_code=400, detail="Enter an absolute destination folder path.")
+    destination = destination.resolve()
+    if destination == Path(destination.anchor) or destination == Path.home().resolve():
+        raise HTTPException(status_code=400, detail="Choose a specific new dataset folder, not a filesystem root or home folder.")
+    if destination.exists():
+        raise HTTPException(status_code=409, detail="Destination folder already exists; choose a new folder.")
+    return destination
+
+
+def _default_training_dataset_root(project) -> Path:
+    """Choose a clean shared data location, configurable per installation."""
+    configured = str(os.getenv("PVRT_TRAINING_DATA_ROOT", "")).strip()
+    if configured:
+        return Path(convert_windows_path_to_wsl(configured)).expanduser().resolve()
+    project_root = Path(project.root_path).resolve()
+    parts = project_root.parts
+    if len(parts) >= 3 and parts[1].lower() == "mnt":
+        return Path("/mnt") / parts[2] / "SolarolyProjects" / "Training_Data"
+    return project.get_train_dir() / "datasets"
 
 
 def _media_url(path: Path) -> str:
@@ -2547,6 +2585,94 @@ async def api_cancel(job: str = Form(...)):
 
 # ================== TRAIN ==================
 
+@app.get("/api/training-datasets")
+async def api_training_datasets():
+    project = get_active_project()
+    default_root = _default_training_dataset_root(project)
+    await asyncio.to_thread(ensure_legacy_dataset, project.get_train_dir())
+    return {
+        "ok": True,
+        "datasets": list_training_datasets(project.get_train_dir()),
+        "default_destination_root": str(default_root.resolve()),
+    }
+
+
+@app.get("/api/training-datasets/{dataset_id}")
+async def api_training_dataset_detail(dataset_id: str):
+    project = get_active_project()
+    dataset = get_training_dataset(project.get_train_dir(), dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Training dataset not found.")
+    return {"ok": True, "dataset": dataset}
+
+
+@app.post("/api/training-datasets/{dataset_id}/rename")
+async def api_rename_training_dataset(dataset_id: str, name: str = Form(...)):
+    project = get_active_project()
+    try:
+        dataset = await asyncio.to_thread(
+            rename_training_dataset,
+            project.get_train_dir(),
+            dataset_id,
+            name,
+        )
+    except DatasetUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("UI:OK:train: Renamed training dataset %s to %s", dataset_id, dataset["display_name"])
+    return {"ok": True, "dataset": dataset}
+
+
+@app.delete("/api/training-datasets/{dataset_id}")
+async def api_delete_training_dataset(dataset_id: str):
+    project = get_active_project()
+    try:
+        dataset = await asyncio.to_thread(
+            delete_training_dataset,
+            project.get_train_dir(),
+            dataset_id,
+        )
+    except DatasetUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("Failed to delete training dataset %s", dataset_id)
+        raise HTTPException(status_code=500, detail=f"Could not delete training dataset: {exc}") from exc
+    logger.info("UI:OK:train: Deleted training dataset %s", dataset_id)
+    return {"ok": True, "id": dataset_id, "display_name": dataset.get("display_name")}
+
+
+@app.post("/api/training-datasets/upload")
+async def api_upload_training_dataset(
+    files: List[UploadFile] = File(...),
+    display_name: str = Form(...),
+    destination_dir: str = Form(...),
+):
+    if not files:
+        raise HTTPException(status_code=400, detail="Choose a ZIP file or a dataset folder.")
+    name = str(display_name or "").strip()[:128]
+    if not name:
+        raise HTTPException(status_code=400, detail="Training dataset name is required.")
+    destination = _resolve_training_destination(destination_dir)
+    project = get_active_project()
+    try:
+        dataset = await asyncio.to_thread(
+            install_training_dataset,
+            files=files,
+            destination=destination,
+            display_name=name,
+            requested_format="auto",
+            project_train_dir=project.get_train_dir(),
+        )
+    except DatasetUploadError as exc:
+        detail: Any = {"message": str(exc)}
+        if exc.report:
+            detail["validation"] = exc.report
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except OSError as exc:
+        logger.exception("Training dataset upload failed")
+        raise HTTPException(status_code=500, detail=f"Could not store training dataset: {exc}") from exc
+    logger.info("UI:OK:train: Uploaded training dataset %s (%s)", name, dataset["id"])
+    return {"ok": True, "dataset": dataset}
+
 @app.post("/api/train")
 async def api_train(
     use_thermal: bool = Form(False),
@@ -2562,6 +2688,7 @@ async def api_train(
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
     clear_existing: bool = Form(False),
+    dataset_id: str = Form(""),
 ):
     if not settings.enabled_backends:
         raise HTTPException(status_code=400, detail="No training backends are enabled on this server.")
@@ -2571,6 +2698,33 @@ async def api_train(
 
     if use_thermal:
         _require_thermal_enabled("train models that rely on thermal decoding")
+
+    project = get_active_project()
+    await asyncio.to_thread(ensure_legacy_dataset, project.get_train_dir())
+    selected_dataset_id = str(dataset_id or "").strip()
+    if not selected_dataset_id:
+        legacy = next(
+            (item for item in list_training_datasets(project.get_train_dir()) if item.get("source") == "legacy_project_data"),
+            None,
+        )
+        if not legacy:
+            raise HTTPException(status_code=400, detail="Select a validated training dataset.")
+        selected_dataset_id = str(legacy["id"])
+    try:
+        resolved_dataset = await asyncio.to_thread(
+            resolve_dataset_for_training,
+            project.get_train_dir(),
+            selected_dataset_id,
+            backend,
+        )
+    except DatasetUploadError as exc:
+        detail = str(exc)
+        if exc.report and exc.report.get("errors"):
+            detail += " " + " ".join(str(value) for value in exc.report["errors"][:5])
+        raise HTTPException(status_code=400, detail=detail) from exc
+    dataset_entry = resolved_dataset["entry"]
+    train_dir = Path(resolved_dataset["train_dir"])
+    valid_dir = Path(resolved_dataset["valid_dir"])
 
     safe_name = _safe_name(model_name) or _now_stamp()
     output_dir = get_project_output_dir()
@@ -2592,23 +2746,23 @@ async def api_train(
     logger.info("UI:OK:train: Training started…")
     logger.info(
         f"[train] run={run_dir.name} backend={backend} "
-        f"use_thermal={use_thermal} iters={max_iter} lr={base_lr} batch={ims_per_batch}"
+        f"dataset={dataset_entry['id']} use_thermal={use_thermal} "
+        f"iters={max_iter} lr={base_lr} batch={ims_per_batch}"
     )
 
     # Prepare thermal pairs if requested
     if use_thermal:
         ensure_dirp_init()
-        train_dir = get_project_train_dir()
-        valid_dir = get_project_valid_dir()
         scan_split_decode_thermal(train_dir)
         scan_split_decode_thermal(valid_dir)
 
     # Offload the heavy training to a background thread so SSE can stream
     def _do_train():
-        from detectron2.utils.logger import setup_logger
-        setup_logger()  # route detectron2/fvcore to std logging (SSE handler will pick it up)
+        if backend == "detectron":
+            from detectron2.utils.logger import setup_logger
+            setup_logger()  # route detectron2/fvcore to std logging (SSE handler will pick it up)
         with redirect_std_to_logger():
-                # Also persist logs to a per-run file so logs can be inspected later.
+            # Also persist logs to a per-run file so logs can be inspected later.
             # A FileHandler is attached to the root logger for the duration of this run.
             fh = None
             root_logger = logging.getLogger()
@@ -2624,26 +2778,28 @@ async def api_train(
                 pvrt_logger = logging.getLogger("pvrt")
                 pvrt_logger.addHandler(fh)
                 root_logger.debug(f"Per-run logging started -> {train_log_path}")
-                train_dir = get_project_train_dir()
-                valid_dir = get_project_valid_dir()
                 return train_entry(
-    backend=backend,
-    train_dir=train_dir,
-    val_dir=valid_dir,
-    out_dir=run_dir,
-    use_thermal_request=use_thermal,
-    max_iter=max_iter,
-    base_lr=base_lr,
-    ims_per_batch=ims_per_batch,
-    run_name=run_dir.name,
-    model_type=model_type,
-    yolo_family=yolo_family,
-    yolo_seg=yolo_seg,
-    yolo_size=yolo_size,
-    selected_bands=[b.strip() for b in (selected_bands.split(',') if selected_bands else [])] or None,
-    channel_count=int(channel_count or 3),
-
-            )
+                    backend=backend,
+                    train_dir=train_dir,
+                    val_dir=valid_dir,
+                    out_dir=run_dir,
+                    use_thermal_request=use_thermal,
+                    max_iter=max_iter,
+                    base_lr=base_lr,
+                    ims_per_batch=ims_per_batch,
+                    run_name=run_dir.name,
+                    model_type=model_type,
+                    yolo_family=yolo_family,
+                    yolo_seg=yolo_seg,
+                    yolo_size=yolo_size,
+                    selected_bands=[b.strip() for b in (selected_bands.split(',') if selected_bands else [])] or None,
+                    channel_count=int(channel_count or 3),
+                    dataset_id=str(dataset_entry["id"]),
+                    dataset_name=str(dataset_entry.get("display_name") or ""),
+                    dataset_path=str(dataset_entry.get("storage_path") or ""),
+                    dataset_format=str(resolved_dataset.get("dataset_format") or ""),
+                    dataset_yaml=resolved_dataset.get("dataset_yaml"),
+                )
             finally:
                 try:
                     if fh:

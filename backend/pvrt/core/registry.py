@@ -39,6 +39,12 @@ class TrainConfig:
     channel_count: int = 3
     # augmentation options passed from frontend
     augment_options: TDict[str, Any] = None
+    # Stable training-dataset provenance and optional native YOLO descriptor.
+    dataset_id: str = ""
+    dataset_name: str = ""
+    dataset_path: str = ""
+    dataset_format: str = ""
+    dataset_yaml: Optional[Path] = None
 
 
 @dataclass

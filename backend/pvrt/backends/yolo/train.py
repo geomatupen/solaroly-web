@@ -17,7 +17,6 @@ from statistics import median
 # will surface at import-time (fail-fast) which is the desired behavior.
 from ultralytics import YOLO
 import yaml
-from PIL import Image
 import shutil
 import threading
 import time
@@ -56,7 +55,25 @@ def _discover_class_names_from_coco(train_dir: Path) -> List[str]:
     return []
 
 
-def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, max_iter: int, base_lr: float, ims_per_batch: int, run_name: str = "yolo_run", yolo_family: str = "v8", yolo_seg: bool = False, yolo_size: str = "s", requested_channels: int = 3) -> Dict[str, Any]:
+def _discover_class_names_from_yaml(dataset_yaml: Path | None) -> List[str]:
+    if not dataset_yaml:
+        return []
+    try:
+        data = yaml.safe_load(Path(dataset_yaml).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return []
+    names = data.get("names") if isinstance(data, dict) else None
+    if isinstance(names, list):
+        return [str(value) for value in names]
+    if isinstance(names, dict):
+        try:
+            return [str(value) for _, value in sorted(names.items(), key=lambda item: int(item[0]))]
+        except (TypeError, ValueError):
+            return [str(value) for value in names.values()]
+    return []
+
+
+def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, max_iter: int, base_lr: float, ims_per_batch: int, run_name: str = "yolo_run", yolo_family: str = "v8", yolo_seg: bool = False, yolo_size: str = "s", requested_channels: int = 3, dataset_yaml: Path | None = None) -> Dict[str, Any]:
     """Run a YOLO training job.
 
     Returns a dict with keys: best_weights, final_weights, model_name, num_classes, class_names
@@ -75,7 +92,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     requested_channels = 3
 
     # Attempt to find classes
-    class_names = _discover_class_names_from_coco(train_dir)
+    class_names = _discover_class_names_from_yaml(dataset_yaml) or _discover_class_names_from_coco(train_dir)
     num_classes = len(class_names) or _discover_num_classes_from_coco(train_dir)
 
     # Choose model checkpoint from family + seg flag
@@ -105,6 +122,24 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
 
     # If thermal is requested for a 3-channel run, prepare merged thermal-as-RGB
     if use_thermal:
+        thermal_folder_names = {"thermal", "ir", "t", "temp"}
+
+        def is_thermal_child(path: Path, root: Path) -> bool:
+            return any(part.lower() in thermal_folder_names for part in path.relative_to(root).parts[:-1])
+
+        def find_label_for_src(src: Path):
+            sidecar = src.with_suffix('.txt')
+            if sidecar.exists():
+                return sidecar
+            parts = list(src.parts)
+            image_indexes = [index for index, part in enumerate(parts) if part.lower() == 'images']
+            if image_indexes:
+                parts[image_indexes[-1]] = 'labels'
+                candidate = Path(*parts).with_suffix('.txt')
+                if candidate.exists():
+                    return candidate
+            return None
+
         # Prepare symlinked dataset with thermal-as-RGB images
         def _load_pairs_json(images_dir: Path):
             pj = images_dir / "thermal" / "pairs.json"
@@ -167,12 +202,14 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                     continue
                 if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
                     continue
+                if is_thermal_child(p, folder):
+                    continue
                 t = find_thermal_for_src(p, folder)
                 if t and t.exists():
                     out.append(str(t.resolve()))
                 else:
                     missing += 1
-                    log.getLogger("pvrt").warning(f"YOLO preproc: no decoded thermal preview for {p.name}; skipping")
+                    logging.getLogger("pvrt").warning(f"YOLO preproc: no decoded thermal preview for {p.name}; skipping")
             return out, missing
 
         train_paths, train_missing = collect_thermal_as_rgb(train_dir)
@@ -181,16 +218,21 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         if train_paths or val_paths:
             # Create a per-run images folder with symlinks named as the
             # original RGB filenames but pointing to the decoded thermal previews
-            def _prepare_symlink_tree(src_root: Path, dst_root: Path):
-                dst_root.mkdir(parents=True, exist_ok=True)
+            def _prepare_symlink_tree(src_root: Path, dst_images: Path, dst_labels: Path):
+                dst_images.mkdir(parents=True, exist_ok=True)
+                dst_labels.mkdir(parents=True, exist_ok=True)
                 for p in sorted(src_root.rglob("*")):
                     if not p.is_file():
                         continue
                     if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
                         continue
+                    if is_thermal_child(p, src_root):
+                        continue
                     t = find_thermal_for_src(p, src_root)
                     if t and t.exists():
-                        dst_img = dst_root / p.name
+                        relative = p.relative_to(src_root)
+                        dst_img = dst_images / relative
+                        dst_img.parent.mkdir(parents=True, exist_ok=True)
                         try:
                             if dst_img.exists():
                                 dst_img.unlink()
@@ -203,9 +245,10 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                             except Exception:
                                 log.debug(f"YOLO preproc: failed to link or copy {t} -> {dst_img}")
                         # also link labels if found next to original RGB
-                        label_src = p.with_suffix('.txt')
-                        if label_src.exists():
-                            dst_lbl = dst_root / label_src.name
+                        label_src = find_label_for_src(p)
+                        if label_src:
+                            dst_lbl = (dst_labels / relative).with_suffix('.txt')
+                            dst_lbl.parent.mkdir(parents=True, exist_ok=True)
                             try:
                                 if dst_lbl.exists():
                                     dst_lbl.unlink()
@@ -217,15 +260,16 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                 except Exception:
                                     log.debug(f"YOLO preproc: failed to link or copy label {label_src} -> {dst_lbl}")
 
-            train_dst = run_dir / "images_train"
-            val_dst = run_dir / "images_val"
-            _prepare_symlink_tree(train_dir, train_dst)
-            _prepare_symlink_tree(val_dir, val_dst)
+            prepared_root = run_dir / "prepared_dataset"
+            train_dst = prepared_root / "images" / "train"
+            val_dst = prepared_root / "images" / "val"
+            _prepare_symlink_tree(train_dir, train_dst, prepared_root / "labels" / "train")
+            _prepare_symlink_tree(val_dir, val_dst, prepared_root / "labels" / "val")
 
             # Point ultralytics data.yaml to the per-run folders
-            data_root = run_dir
-            train_rel = str(train_dst.relative_to(run_dir))
-            val_rel = str(val_dst.relative_to(run_dir))
+            data_root = prepared_root
+            train_rel = str(train_dst.relative_to(prepared_root))
+            val_rel = str(val_dst.relative_to(prepared_root))
             log.info(f"YOLO preproc: prepared symlinked thermal-as-RGB dataset ({train_rel}, {val_rel}); skipped {train_missing}+{val_missing} missing previews")
         else:
             # No thermal previews found; fall back to RGB-only lists
@@ -240,11 +284,10 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                     continue
                 if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
                     continue
-                with Image.open(p) as im:
-                    bands = im.getbands()
-                    if not bands or len(bands) == 1:
-                        continue
-                    out.append(str(p.resolve()))
+                relative_folders = {part.lower() for part in p.relative_to(folder).parts[:-1]}
+                if relative_folders.intersection({"thermal", "ir", "t", "temp"}):
+                    continue
+                out.append(str(p.resolve()))
             return out
 
         train_list = collect_rgb_only(train_dir)
@@ -336,30 +379,34 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     poller = threading.Thread(target=_tail_results_csv, daemon=True)
     poller.start()
 
-    results = model.train(
-        data=str(yaml_path),
-        imgsz=512,
-        epochs=epochs,
-        batch=ims_per_batch or 8,
-        workers=4,
-        device=0,
-        optimizer="AdamW",
-        lr0=base_lr or 0.001,
-        # Use basic per-image augmentations (HSV, flip, scale, etc.) but disable
-        # mosaic/mixup which compose multiple images and can fail when images
-        # have different channel counts (e.g., RGB vs grayscale or RGBA).
-        augment=True,
-        mosaic=False,
-        mixup=False,
-        # Ask Ultralytics to write outputs directly into the provided
-        # `out_dir` by passing the parent as `project` and the run folder
-        # name as `name`. This ensures ultralytics will create
-        # project/name == out_dir and not an extra nested folder like
-        # out_dir/train.
-        project=str(out_dir.parent),
-        name=run_dir.name,
-        exist_ok=True,
-    )
+    try:
+        results = model.train(
+            data=str(yaml_path),
+            imgsz=512,
+            epochs=epochs,
+            batch=ims_per_batch or 8,
+            workers=4,
+            device=0,
+            optimizer="AdamW",
+            lr0=base_lr or 0.001,
+            # Use basic per-image augmentations (HSV, flip, scale, etc.) but disable
+            # mosaic/mixup which compose multiple images and can fail when images
+            # have different channel counts (e.g., RGB vs grayscale or RGBA).
+            augment=True,
+            mosaic=False,
+            mixup=False,
+            # Ask Ultralytics to write outputs directly into the provided
+            # `out_dir` by passing the parent as `project` and the run folder
+            # name as `name`. This ensures ultralytics will create
+            # project/name == out_dir and not an extra nested folder like
+            # out_dir/train.
+            project=str(out_dir.parent),
+            name=run_dir.name,
+            exist_ok=True,
+        )
+    finally:
+        stop_event.set()
+        poller.join(timeout=3.0)
 
     # locate where ultralytics saved results (if results contains files use that,
     # otherwise assume it wrote directly into run_dir)

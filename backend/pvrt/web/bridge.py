@@ -82,6 +82,11 @@ def train_entry(
     selected_bands: list | None = None,
     channel_count: int = 3,
     augment_options: dict | None = None,
+    dataset_id: str = "",
+    dataset_name: str = "",
+    dataset_path: str = "",
+    dataset_format: str = "",
+    dataset_yaml: Path | None = None,
 ) -> dict:
     """
     Decide RGB vs thermal-as-RGB (based on data availability + user request), then train.
@@ -119,6 +124,11 @@ def train_entry(
             selected_bands=selected_bands,
             channel_count=int(channel_count),
             augment_options=augment_options,
+            dataset_id=dataset_id,
+            dataset_name=dataset_name,
+            dataset_path=dataset_path,
+            dataset_format=dataset_format,
+            dataset_yaml=dataset_yaml,
         )
     )
     meta = load_model_meta(run_dir)
@@ -213,5 +223,4 @@ def predict_entry(
         "final_mode": final_mode,
         "score_thresh": chosen_thresh,
     }
-
 

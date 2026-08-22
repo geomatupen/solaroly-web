@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="css/styles.css?v=20260822a" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -166,14 +166,24 @@
         <div class="trainLayout">
         <div class="trainFormPane">
         <!-- Keep advanced hyperparams -->
-         <div class="row">
+          <div class="row">
             <label for="selBackendTrain">Backend</label>
             <select id="selBackendTrain">
               <option value="detectron">Detectron</option>
               <option value="yolo">YOLO</option>
             </select>
           </div>
-        
+
+          <div class="row">
+            <label for="selTrainingDataset">Training data</label>
+            <div class="trainingDatasetSelectRow">
+              <select id="selTrainingDataset" aria-describedby="trainingDatasetHint">
+                <option value="">Loading validated training data…</option>
+              </select>
+              <button id="btnRefreshTrainingDatasetOptions" class="iconBtn" type="button" title="Refresh training data" aria-label="Refresh training data">↻</button>
+            </div>
+            <small id="trainingDatasetHint" class="muted tiny">Choose the validated dataset to use for this run.</small>
+          </div>
 
           <div class="formGrid">
           <div class="row" id="yoloOptions" style="display:none;">
@@ -236,17 +246,35 @@
         </p>
         </div>
 
-        <aside class="trainedModelsPane" aria-labelledby="trainedModelsTitle">
+        <aside class="trainedModelsPane" aria-labelledby="trainingAssetsTitle">
           <div class="trainedModelsHeader">
             <div>
-              <h3 id="trainedModelsTitle">Trained models</h3>
-              <p class="muted tiny">Models available in this project</p>
+              <h3 id="trainingAssetsTitle">Training assets</h3>
+              <p class="muted tiny">Models and validated training data</p>
             </div>
-            <button id="btnRefreshTrainedModels" class="iconBtn" type="button" title="Refresh trained models" aria-label="Refresh trained models">↻</button>
           </div>
-          <div id="trainedModelsList" class="trainedModelsList" aria-live="polite">
-            <p class="muted tiny">Loading models…</p>
+          <div class="trainingAssetTabs" role="tablist" aria-label="Training assets">
+            <button id="btnAssetData" class="active" type="button" role="tab" aria-selected="true" aria-controls="trainingDataPanel">Training data</button>
+            <button id="btnAssetModels" type="button" role="tab" aria-selected="false" aria-controls="trainingModelsPanel" tabindex="-1">Trained models</button>
           </div>
+          <section id="trainingDataPanel" class="trainingAssetPanel" role="tabpanel" aria-labelledby="btnAssetData">
+            <div class="trainingAssetToolbar">
+              <button id="btnOpenTrainingUpload" type="button">Upload training data</button>
+              <button id="btnRefreshTrainingData" class="iconBtn" type="button" title="Refresh training data" aria-label="Refresh training data">↻</button>
+            </div>
+            <div id="trainingDatasetsList" class="trainedModelsList" aria-live="polite">
+              <p class="muted tiny">Loading training data…</p>
+            </div>
+          </section>
+          <section id="trainingModelsPanel" class="trainingAssetPanel" role="tabpanel" aria-labelledby="btnAssetModels" hidden>
+            <div class="trainingAssetToolbar">
+              <span class="muted tiny">Models available in this project</span>
+              <button id="btnRefreshTrainedModels" class="iconBtn" type="button" title="Refresh trained models" aria-label="Refresh trained models">↻</button>
+            </div>
+            <div id="trainedModelsList" class="trainedModelsList" aria-live="polite">
+              <p class="muted tiny">Loading models…</p>
+            </div>
+          </section>
         </aside>
         </div>
       </div>
@@ -493,6 +521,81 @@
         <button id="btnStartUpload">Start upload</button>
         <button id="btnCancelUpload" class="secondary">Cancel</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Training Dataset Upload Modal -->
+  <div id="trainingUploadModal" class="modal hidden">
+    <div class="modalContent trainingUploadModalContent">
+      <div class="modalHeader">
+        <h3>Upload training data</h3>
+        <button class="iconBtn" id="btnCloseTrainingUpload" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody trainingUploadForm">
+        <div class="trainingUploadLayout">
+          <div class="trainingUploadFields">
+            <p class="muted tiny">Upload one ZIP archive or one dataset folder. Its directory structure is preserved and validated before it is registered.</p>
+            <div class="modalContentField">
+              <label for="inpTrainingDatasetName">Dataset name</label>
+              <input id="inpTrainingDatasetName" type="text" maxlength="128" placeholder="Solar panel training data" />
+            </div>
+            <div class="modalContentField">
+              <label for="inpTrainingDestination">Destination folder</label>
+              <input id="inpTrainingDestination" type="text" placeholder="Absolute new folder path" />
+              <small class="muted tiny">Absolute Windows, WSL, or server path. The final folder must not already exist.</small>
+            </div>
+            <div class="trainingUploadSources">
+              <div class="modalContentField">
+                <label for="fileTrainingZip">ZIP archive</label>
+                <input id="fileTrainingZip" type="file" accept=".zip" />
+              </div>
+              <div class="trainingUploadOr">or</div>
+              <div class="modalContentField">
+                <label>Dataset folder</label>
+                <button id="btnChooseTrainingFolder" class="secondary trainingFolderPicker" type="button">Choose dataset folder</button>
+              </div>
+            </div>
+            <div id="trainingUploadSelection" class="muted tiny"></div>
+            <div id="trainingUploadProgress" class="progressWrap" hidden>
+              <div class="progressBar"><span id="trainingUploadBar" style="width:0%"></span></div>
+              <div class="progressText" id="trainingUploadProgressText">Uploading… 0%</div>
+            </div>
+            <div class="alert err" id="trainingUploadError" hidden></div>
+          </div>
+          <aside class="trainingStructureGuide" aria-labelledby="trainingStructureTitle">
+            <h4 id="trainingStructureTitle">Supported folder structure</h4>
+            <p class="muted tiny">Put the images and available annotation formats together. Select or ZIP the outer <code>dataset/</code> folder. At least one annotation format must validate.</p>
+            <pre>dataset/
+├── train/
+│   ├── _annotations.coco.json <span class="muted">(COCO)</span>
+│   ├── image_001.jpg
+│   ├── image_001.txt <span class="muted">(YOLO)</span>
+│   └── …
+└── valid/ <span class="muted">(or val/)</span>
+    ├── _annotations.coco.json <span class="muted">(COCO)</span>
+    ├── image_101.jpg
+    ├── image_101.txt <span class="muted">(YOLO)</span>
+    └── …</pre>
+            <p class="muted tiny">Valid COCO annotations enable Detectron. Valid YOLO sidecars enable YOLO. Include valid versions of both to use the same dataset with both backends. YOLO labels use the same base filename: <code>image_001.jpg</code> → <code>image_001.txt</code>.</p>
+            <p class="trainingStructureReady">The upload is accepted when at least one supported format is valid.</p>
+          </aside>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button id="btnStartTrainingUpload" type="button">Upload and validate</button>
+        <button id="btnCancelTrainingUpload" class="secondary" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Training Dataset Summary Modal -->
+  <div id="trainingDatasetSummaryModal" class="modal hidden">
+    <div class="modalContent trainingDatasetSummaryContent">
+      <div class="modalHeader">
+        <h3 id="trainingDatasetSummaryTitle">Training dataset</h3>
+        <button class="iconBtn" id="btnCloseTrainingDatasetSummary" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div id="trainingDatasetSummaryBody" class="modalBody"></div>
     </div>
   </div>
 
@@ -810,7 +913,7 @@
   <script src="js/map.js?v=20260301b"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260301b"></script>
-  <script src="js/main.js?v=20260301b"></script>
+  <script src="js/main.js?v=20260822f"></script>
   <script>
     // Hard fallback: wire upload button directly on this page, independent of main.js initialization.
     document.addEventListener("DOMContentLoaded", () => {

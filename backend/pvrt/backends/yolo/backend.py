@@ -76,7 +76,11 @@ class YOLOBackend(Backend):
             base_lr=cfg_in.base_lr,
             ims_per_batch=cfg_in.ims_per_batch,
             run_name=getattr(cfg_in, "run_name", ""),
+            yolo_family=getattr(cfg_in, "yolo_family", "v8"),
+            yolo_seg=bool(getattr(cfg_in, "yolo_seg", False)),
+            yolo_size=getattr(cfg_in, "yolo_size", "s"),
             requested_channels=effective_channels,
+            dataset_yaml=getattr(cfg_in, "dataset_yaml", None),
         )
 
         # Normalize and write model_meta.json (keep keys compatible with Detectron meta)
@@ -121,6 +125,12 @@ class YOLOBackend(Backend):
             "num_classes": int(res.get("num_classes", 0)),
             "class_names": res.get("class_names", []),
             "score_thresh_test": float(res.get("score_thresh_test", 0.25)),
+            "training_dataset": {
+                "id": getattr(cfg_in, "dataset_id", ""),
+                "name": getattr(cfg_in, "dataset_name", ""),
+                "path": getattr(cfg_in, "dataset_path", ""),
+                "format": getattr(cfg_in, "dataset_format", ""),
+            },
             "train_params": {
                 "max_iter": int(cfg_in.max_iter or 0),
                 "base_lr": float(cfg_in.base_lr or 0.0),

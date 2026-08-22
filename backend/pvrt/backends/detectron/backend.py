@@ -404,6 +404,12 @@ class DetectronBackend(Backend):
             "num_classes": num_classes,
             "class_names": class_names,
             "score_thresh_test": float(cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST),
+            "training_dataset": {
+                "id": getattr(cfg_in, "dataset_id", ""),
+                "name": getattr(cfg_in, "dataset_name", ""),
+                "path": getattr(cfg_in, "dataset_path", ""),
+                "format": getattr(cfg_in, "dataset_format", "coco"),
+            },
             "train_params": {                         # NEW (grouped for clarity)
                 "max_iter": int(cfg.SOLVER.MAX_ITER),
                 "base_lr": float(cfg.SOLVER.BASE_LR),

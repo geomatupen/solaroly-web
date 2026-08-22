@@ -3,6 +3,8 @@
 window.api = {
   datasets: "/api/test_datasets",
   models: "/api/models",
+  trainingDatasets: "/api/training-datasets",
+  trainingDatasetUpload: "/api/training-datasets/upload",
   upload: "/api/test_upload",
   testRun: "/api/test_run",
   train: "/api/train",
