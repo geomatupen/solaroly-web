@@ -34,6 +34,7 @@ def _serialize_prediction(r) -> Dict[str, Any]:
         "boxes": [],
         "scores": [],
         "classes": [],
+        "polygons": [],
     }
     boxes = getattr(r, "boxes", None)
     # Ultraytics/YOLO's Result.boxes often exposes batch tensors:
@@ -108,6 +109,17 @@ def _serialize_prediction(r) -> Dict[str, Any]:
     except Exception:
         # worst-case fallback: leave boxes empty
         pass
+    masks = getattr(r, "masks", None)
+    mask_xy = getattr(masks, "xy", None) if masks is not None else None
+    if mask_xy is not None:
+        try:
+            out["polygons"] = [
+                [[float(x), float(y)] for x, y in np.asarray(points).reshape(-1, 2)]
+                if np.asarray(points).size >= 6 else []
+                for points in mask_xy
+            ]
+        except Exception:
+            out["polygons"] = []
     return out
 
 
@@ -305,6 +317,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
     n_images = 0
     total_dets = 0
     images_with_dets = 0
+    has_segmentation = False
 
     for r in results:
         # attempt to resolve path
@@ -312,6 +325,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         n_images += 1
         key = Path(p).name if p else f"img_{len(list(out_json_dir.iterdir()))}"
         js = _serialize_prediction(r)
+        has_segmentation = has_segmentation or any(len(poly) >= 3 for poly in js.get("polygons", []))
         dets = len(js.get("boxes", []) or [])
         total_dets += dets
         if dets:
@@ -359,6 +373,16 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
         boxes = js.get("boxes", [])
         scores = js.get("scores", [])
         classes = js.get("classes", [])
+        polygons = js.get("polygons", [])
+        mask_layer = vis.copy()
+        for index, polygon in enumerate(polygons):
+            if len(polygon) < 3:
+                continue
+            pts = np.asarray(polygon, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(mask_layer, [pts], (0, 0, 255, 255))
+            cv2.polylines(vis, [pts], True, (0, 0, 255, 255), 2)
+        if polygons:
+            vis = cv2.addWeighted(mask_layer, 0.25, vis, 0.75, 0)
         for bi, sc, cl in zip(boxes, scores, classes):
             try:
                 x1, y1, x2, y2 = map(int, bi)
@@ -385,6 +409,7 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
 
     metrics = {
         "backend": "yolo",
+        "task": "segment" if has_segmentation else "detect",
         "input_mode": "thermal" if use_thermal else "rgb",
         "use_thermal": bool(use_thermal),
         "device": device,

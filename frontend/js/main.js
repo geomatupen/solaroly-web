@@ -653,10 +653,21 @@ function closeTrainedModelMenus(exceptMenu = null){
   });
 }
 
+function prettyModelType(value){
+  const raw = String(value || '').trim();
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, '');
+  if(normalized.includes('maskrcnn')) return 'Mask R-CNN';
+  if(normalized.includes('fasterrcnn')) return 'Faster R-CNN';
+  if(normalized.startsWith('yolo')) return raw.toUpperCase().replace('-SEG', ' Segmentation');
+  return raw;
+}
+
 function trainedModelType(model){
   const backend = String(model.backend || 'unknown').toUpperCase();
   const type = String(model.model_type || '').trim();
-  return type ? `${backend} · ${type}` : backend;
+  const task = String(model.task || '').toLowerCase();
+  const taskLabel = task === 'segment' ? 'Instance segmentation' : task === 'detect' ? 'Object detection' : '';
+  return [backend, type ? prettyModelType(type) : '', taskLabel].filter(Boolean).join(' · ');
 }
 
 async function refreshModelViews(){
@@ -719,7 +730,8 @@ async function openModelDetails(modelId){
     if(metrics.iteration != null) lossDetails.iteration = metrics.iteration;
     if(metrics.lr != null) lossDetails.lr = metrics.lr;
     Object.entries(metrics).forEach(([key, value]) => {
-      if(key.toLowerCase().includes('loss')) lossDetails[key] = value;
+      const normalized = key.toLowerCase();
+      if(normalized.includes('loss') || normalized.includes('/ap')) lossDetails[key] = value;
     });
     const metaCard = Object.keys(meta).length
       ? `<section class="info-card"><h4>Model Meta</h4>${renderJsonList(meta)}</section>`
@@ -774,7 +786,7 @@ function renderTrainedModels(models){
     const date = model.mtime ? new Date(model.mtime * 1000).toLocaleDateString() : null;
     const details = [];
     if(model.complete === false){
-      details.push('Incomplete', date);
+      details.push('Incomplete', trainedModelType(model), date);
       item.classList.add('incomplete');
     }else{
       const input = model.thermal_used || model.input_mode === 'thermal' ? 'Thermal' : 'RGB';
@@ -1038,16 +1050,20 @@ function populateTrainingDatasetOptions(){
   const trainButton = document.getElementById('btnStartTraining');
   if(!select) return;
   const backend = document.getElementById('selBackendTrain')?.value || getSelectedBackend();
+  const task = document.getElementById('selTrainingTask')?.value || 'detect';
   const previous = preferredTrainingDatasetId || select.value;
   const compatible = trainingDatasetsCache.filter(dataset => {
     const validation = dataset.validation || {};
-    return Boolean(dataset.available && validation.valid && (validation.training_backends || []).includes(backend));
+    const capabilities = validation.training_capabilities || {};
+    const tasks = capabilities[backend];
+    return Boolean(dataset.available && validation.valid && (validation.training_backends || []).includes(backend)
+      && (!Array.isArray(tasks) || tasks.includes(task)));
   });
   select.replaceChildren();
   if(!compatible.length){
     const option = document.createElement('option');
     option.value = '';
-    option.textContent = `No validated data for ${backend === 'yolo' ? 'YOLO' : 'Detectron'}`;
+    option.textContent = `No validated ${task === 'segment' ? 'segmentation' : 'detection'} data for ${backend === 'yolo' ? 'YOLO' : 'Detectron'}`;
     select.appendChild(option);
     select.disabled = true;
     if(hint) hint.textContent = `Upload or repair training data compatible with ${backend === 'yolo' ? 'YOLO' : 'COCO / Detectron'}.`;
@@ -1568,7 +1584,11 @@ async function startTraining(){
   fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append('dataset_id', trainingDatasetId);
   const backend = document.getElementById('selBackendTrain')?.value || getSelectedBackend();
+  const task = document.getElementById('selTrainingTask')?.value || 'detect';
   fd.append("backend", backend);
+  fd.append('task', task);
+  fd.append('model_type', task === 'segment' ? 'maskrcnn' : 'fasterrcnn');
+  fd.append('yolo_seg', task === 'segment' ? 'true' : 'false');
   if(backend === 'yolo'){
     const yo = getYoloOptions();
     fd.append('yolo_family', yo.family);
@@ -3535,9 +3555,22 @@ function setupUI(){
     const elSize = $("#yoloSizeOption");
     if(elOpts) elOpts.style.display = show ? 'block' : 'none';
     if(elSize) elSize.style.display = show ? 'block' : 'none';
+    const task = document.getElementById('selTrainingTask')?.value || 'detect';
+    const hint = document.getElementById('trainingTaskHint');
+    if(hint) hint.textContent = show
+      ? `YOLO will train a ${task === 'segment' ? 'segmentation' : 'detection'} model.`
+      : `Detectron will train ${task === 'segment' ? 'Mask R-CNN' : 'Faster R-CNN'}.`;
+    const family = document.getElementById('selYoloFamily');
+    if(family){
+      if(show && task === 'segment') family.value = 'v8';
+      family.disabled = show && task === 'segment';
+      family.title = family.disabled ? 'YOLO segmentation currently uses YOLOv8.' : '';
+    }
   }
   if(selBackendGlobal) selBackendGlobal.addEventListener('change', _updateYoloUIForTrain);
   if(selBackendTrain) selBackendTrain.addEventListener('change', ()=>{ _updateYoloUIForTrain(); populateTrainingDatasetOptions(); });
+  const selTrainingTask = document.getElementById('selTrainingTask');
+  if(selTrainingTask) selTrainingTask.addEventListener('change', ()=>{ _updateYoloUIForTrain(); populateTrainingDatasetOptions(); });
   _updateYoloUIForTrain();
 
   const chkUseThermalTrain = document.getElementById('chkUseThermalTrain');

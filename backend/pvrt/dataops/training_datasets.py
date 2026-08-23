@@ -192,6 +192,20 @@ def validate_coco(root: Path) -> dict[str, Any]:
     warnings: list[str] = []
     split_info: dict[str, Any] = {}
     category_sets: list[list[str]] = []
+    segmentation_annotations = 0
+    invalid_segmentations = 0
+
+    def _valid_segmentation(value: Any) -> bool:
+        if isinstance(value, dict):
+            return bool(value.get("counts") is not None and value.get("size"))
+        if not isinstance(value, list) or not value:
+            return False
+        polygons = value if isinstance(value[0], list) else [value]
+        return all(
+            isinstance(poly, list) and len(poly) >= 6 and len(poly) % 2 == 0
+            and all(isinstance(coord, (int, float)) for coord in poly)
+            for poly in polygons
+        )
     if not train:
         errors.append("Missing train/ directory.")
     if not valid:
@@ -252,6 +266,9 @@ def validate_coco(root: Path) -> dict[str, Any]:
                 any(not isinstance(value, (int, float)) for value in bbox) or bbox[2] < 0 or bbox[3] < 0
             ):
                 invalid_annotations += 1
+            segmentation_annotations += 1
+            if not _valid_segmentation(item.get("segmentation")):
+                invalid_segmentations += 1
         if missing_files:
             errors.append(f"COCO {label} references {len(missing_files)} missing image files.")
         unreadable = _unreadable_images(existing_files)
@@ -273,6 +290,9 @@ def validate_coco(root: Path) -> dict[str, Any]:
         "detected": detected, "valid": detected and not errors,
         "errors": errors, "warnings": warnings, "splits": split_info,
         "classes": classes,
+        "segmentation_valid": bool(segmentation_annotations) and invalid_segmentations == 0,
+        "segmentation_annotations": segmentation_annotations,
+        "invalid_segmentations": invalid_segmentations,
     }
 
 
@@ -309,6 +329,8 @@ def validate_yolo(root: Path) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
     split_info: dict[str, Any] = {}
+    detection_rows = 0
+    segmentation_rows = 0
     if not yamls:
         return {"detected": False, "valid": False, "errors": ["Missing data.yaml."], "warnings": [], "splits": {}, "classes": []}
     yaml_path = yamls[0]
@@ -377,6 +399,10 @@ def validate_yolo(root: Path) -> dict[str, Any]:
                     valid_shape = len(coords) == 4 or (len(coords) >= 6 and len(coords) % 2 == 0)
                     if not valid_shape or not 0 <= class_id < len(classes) or any(not 0 <= value <= 1 for value in coords):
                         invalid_rows += 1
+                    elif len(coords) == 4:
+                        detection_rows += 1
+                    else:
+                        segmentation_rows += 1
                 except (IndexError, TypeError, ValueError):
                     invalid_rows += 1
         if not label_files:
@@ -396,6 +422,8 @@ def validate_yolo(root: Path) -> dict[str, Any]:
         "detected": detected, "valid": detected and not errors,
         "errors": errors, "warnings": warnings, "splits": split_info,
         "classes": classes, "data_yaml": str(yaml_path.relative_to(root)),
+        "supported_tasks": (["detect"] if detection_rows and not segmentation_rows else [])
+            + (["segment"] if segmentation_rows and not detection_rows else []),
     }
 
 
@@ -408,6 +436,8 @@ def validate_yolo_sidecars(root: Path, coco: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     split_info: dict[str, Any] = {}
     detected_labels = 0
+    detection_rows = 0
+    segmentation_rows = 0
     for label, split in (("train", _split(root, "train")), ("valid", _split(root, "valid", "val", "validation"))):
         if not split:
             continue
@@ -449,6 +479,10 @@ def validate_yolo_sidecars(root: Path, coco: dict[str, Any]) -> dict[str, Any]:
                         row_invalid = True
                     if row_invalid:
                         invalid_rows += 1
+                    elif len(coords) == 4:
+                        detection_rows += 1
+                    else:
+                        segmentation_rows += 1
                 except (IndexError, TypeError, ValueError):
                     unreadable_rows += 1
                     invalid_rows += 1
@@ -489,6 +523,8 @@ def validate_yolo_sidecars(root: Path, coco: dict[str, Any]) -> dict[str, Any]:
         "valid": detected_labels > 0 and not errors,
         "errors": errors, "warnings": warnings, "splits": split_info,
         "classes": coco.get("classes", []),
+        "supported_tasks": (["detect"] if detection_rows and not segmentation_rows else [])
+            + (["segment"] if segmentation_rows and not detection_rows else []),
     }
 
 
@@ -543,6 +579,11 @@ def validate_dataset(root: Path, requested_format: str = "auto") -> dict[str, An
         training_backends.append("detectron")
     if yolo["valid"] or yolo_sidecar["valid"]:
         training_backends.append("yolo")
+    yolo_source = yolo if yolo["valid"] else yolo_sidecar
+    training_capabilities = {
+        "detectron": (["detect"] + (["segment"] if coco.get("segmentation_valid") else [])) if coco["valid"] else [],
+        "yolo": list(yolo_source.get("supported_tasks", [])) if yolo_source.get("valid") else [],
+    }
     return {
         "valid": not errors and bool(compatible),
         "requested_format": requested,
@@ -553,6 +594,7 @@ def validate_dataset(root: Path, requested_format: str = "auto") -> dict[str, An
         "format_details": validators,
         "yolo_sidecar": yolo_sidecar,
         "training_backends": training_backends,
+        "training_capabilities": training_capabilities,
         "file_count": sum(1 for p in root.rglob("*") if p.is_file()),
         "size_bytes": _folder_size(root),
         "validated_at": _now(),
@@ -590,7 +632,10 @@ def list_datasets(project_train_dir: Path) -> list[dict[str, Any]]:
         root = Path(str(entry.get("storage_path", "")))
         entry["available"] = root.is_dir()
         # Upgrade registries created before backend compatibility was recorded.
-        if root.is_dir() and "training_backends" not in entry.get("validation", {}):
+        if root.is_dir() and (
+            "training_backends" not in entry.get("validation", {})
+            or "training_capabilities" not in entry.get("validation", {})
+        ):
             requested = str(entry.get("validation", {}).get("requested_format") or "auto")
             entry["validation"] = validate_dataset(root, requested)
             registry[str(entry.get("id"))] = entry
@@ -680,7 +725,10 @@ def ensure_legacy_dataset(project_train_dir: Path) -> None:
     for dataset_id, entry in registry.items():
         if str(entry.get("storage_path", "")) != resolved:
             continue
-        if "training_backends" not in entry.get("validation", {}):
+        if (
+            "training_backends" not in entry.get("validation", {})
+            or "training_capabilities" not in entry.get("validation", {})
+        ):
             entry["validation"] = validate_dataset(legacy_root, "auto")
             entry["available"] = True
             registry[dataset_id] = entry
@@ -704,6 +752,7 @@ def resolve_dataset_for_training(
     project_train_dir: Path,
     dataset_id: str,
     backend: str,
+    task: str = "detect",
 ) -> dict[str, Any]:
     """Revalidate and resolve concrete split paths for one training backend."""
     project_train_dir = Path(project_train_dir)
@@ -724,6 +773,14 @@ def resolve_dataset_for_training(
     if backend_name not in report.get("training_backends", []):
         raise DatasetUploadError(
             f"Dataset is not valid for {backend_name or 'the selected backend'} training.",
+            report,
+        )
+    requested_task = str(task or "detect").strip().lower()
+    supported_tasks = report.get("training_capabilities", {}).get(backend_name, ["detect"])
+    if requested_task not in supported_tasks:
+        label = "instance-segmentation polygons" if requested_task == "segment" else "detection labels"
+        raise DatasetUploadError(
+            f"Dataset does not contain valid {label} for {backend_name or 'the selected backend'} training.",
             report,
         )
     if backend_name == "detectron":

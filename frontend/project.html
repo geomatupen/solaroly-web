@@ -206,6 +206,15 @@
           </div>
 
           <div class="row">
+            <label for="selTrainingTask">Task</label>
+            <select id="selTrainingTask" aria-describedby="trainingTaskHint">
+              <option value="detect">Object detection</option>
+              <option value="segment">Instance segmentation</option>
+            </select>
+            <small id="trainingTaskHint" class="muted tiny">Detectron will train Faster R-CNN.</small>
+          </div>
+
+          <div class="row">
             <label for="selTrainingDataset">Training data</label>
             <div class="trainingDatasetSelectRow">
               <select id="selTrainingDataset" aria-describedby="trainingDatasetHint">

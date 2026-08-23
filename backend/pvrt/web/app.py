@@ -454,7 +454,11 @@ def _latest_training_metrics(run_dir: Path) -> dict:
             pass
     summary = {
         key: latest.get(key)
-        for key in ("iteration", "lr", "eta_seconds", "bbox/AP", "bbox/AP50", "bbox/AP75")
+        for key in (
+            "iteration", "lr", "eta_seconds",
+            "bbox/AP", "bbox/AP50", "bbox/AP75",
+            "segm/AP", "segm/AP50", "segm/AP75",
+        )
         if latest.get(key) is not None
     }
     summary.update(latest_losses)
@@ -497,6 +501,9 @@ def _list_models(include_incomplete: bool = False) -> List[dict]:
                 "mtime": int(d.stat().st_mtime),
                 "model_name": meta.get("model_name") or None,
                 "model_type": meta.get("model_type") or None,
+                "task": meta.get("task") or (
+                    "segment" if "mask" in str(meta.get("model_type", "")).lower() or bool(meta.get("yolo_seg")) else "detect"
+                ),
                 "input_mode": meta.get("input_mode"),
                 "channel_count": meta.get("channel_count"),
                 "backend": meta.get("backend"),
@@ -1888,6 +1895,7 @@ def _preds_to_geojson(
         boxes   = jd.get("boxes", []) or []
         scores  = jd.get("scores", []) or []
         classes = jd.get("classes", []) or []
+        polygons = jd.get("polygons", []) or []
         srcfile = jd.get("file") or (jpath.stem + ".png")
 
         # Resolve GPS & size for this source image (try exact, then by stem with common extensions)
@@ -1967,12 +1975,15 @@ def _preds_to_geojson(
             else:
                 r0x, r0y, r1x, r1y = dx0_m, dy0_m, dx1_m, dy1_m
 
-            # convert the four box corners (x0,y0),(x1,y0),(x1,y1),(x0,y1)
-            # to rotated geographic polygon points so the anomaly polygon
-            # follows the same image rotation convention as the image
-            # footprints. This produces a rotated polygon (not an axis-aligned bbox).
+            # Prefer the instance-mask outline. Detection models have no mask,
+            # so they continue to use the four bounding-box corners.
             try:
-                corners_px = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                mask_outline = polygons[i] if i < len(polygons) else []
+                corners_px = (
+                    [(float(point[0]), float(point[1])) for point in mask_outline]
+                    if isinstance(mask_outline, list) and len(mask_outline) >= 3
+                    else [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                )
                 poly_pts = []
                 for (px, py) in corners_px:
                     dx_m = (px - cx) * box_mpp
@@ -2799,6 +2810,7 @@ async def api_train(
     ims_per_batch: int = Form(2),
     model_name: str = Form("") ,
     backend: str = Form("detectron"),
+    task: str = Form("detect"),
     model_type: str = Form("fasterrcnn"),
     yolo_family: str = Form("v8"),
     yolo_seg: bool = Form(False),
@@ -2813,6 +2825,14 @@ async def api_train(
 
     if backend not in settings.enabled_backends:
         raise HTTPException(status_code=400, detail=f"Backend '{backend}' is not available on this server.")
+
+    task = str(task or "detect").strip().lower()
+    if task not in {"detect", "segment"}:
+        raise HTTPException(status_code=400, detail="Training task must be object detection or instance segmentation.")
+    model_type = "maskrcnn" if task == "segment" else "fasterrcnn"
+    yolo_seg = task == "segment"
+    if backend == "yolo" and yolo_seg and str(yolo_family).lower() != "v8":
+        raise HTTPException(status_code=400, detail="YOLO instance segmentation currently uses the YOLOv8 family.")
 
     if use_thermal:
         _require_thermal_enabled("train models that rely on thermal decoding")
@@ -2834,6 +2854,7 @@ async def api_train(
             project.get_train_dir(),
             selected_dataset_id,
             backend,
+            task,
         )
     except DatasetUploadError as exc:
         detail = str(exc)
@@ -2859,19 +2880,35 @@ async def api_train(
             logger.warning(f"[train] Failed to clear existing directory: {e}")
     
     run_dir.mkdir(parents=True, exist_ok=True)
+    _write_model_meta(run_dir, {
+        "model_name": run_dir.name,
+        "backend": backend,
+        "task": task,
+        "model_type": (
+            f"yolo{str(yolo_family).lower()}{str(yolo_size).lower()}{'-seg' if yolo_seg else ''}"
+            if backend == "yolo" else model_type
+        ),
+        "yolo_seg": bool(yolo_seg),
+        "training_dataset": {
+            "id": str(dataset_entry["id"]),
+            "name": str(dataset_entry.get("display_name") or ""),
+            "path": str(dataset_entry.get("storage_path") or ""),
+        },
+    })
     _write_run_status(
         run_dir,
         "running",
         backend=backend,
         requested_iterations=max_iter,
         dataset_id=str(dataset_entry["id"]),
+        task=task,
     )
 
     CANCEL_FLAGS["train"] = False
     logger.info("UI:OK:train: Training started…")
     logger.info(
         f"[train] run={run_dir.name} backend={backend} "
-        f"dataset={dataset_entry['id']} use_thermal={use_thermal} "
+        f"dataset={dataset_entry['id']} task={task} use_thermal={use_thermal} "
         f"iters={max_iter} lr={base_lr} batch={ims_per_batch}"
     )
 
@@ -2913,6 +2950,7 @@ async def api_train(
                     base_lr=base_lr,
                     ims_per_batch=ims_per_batch,
                     run_name=run_dir.name,
+                    task=task,
                     model_type=model_type,
                     yolo_family=yolo_family,
                     yolo_seg=yolo_seg,
@@ -2951,7 +2989,7 @@ async def api_train(
     try:
         resp = await asyncio.to_thread(_do_train)  # <-- key change
         meta = resp.get("meta", {})
-        _write_run_status(run_dir, "complete", backend=backend, requested_iterations=max_iter)
+        _write_run_status(run_dir, "complete", backend=backend, task=task, requested_iterations=max_iter)
         logger.info(f"[train] complete: run={run_dir.name}")
         logger.info("UI:OK:train: Training completed.")
         return {"ok": True, "run": run_dir.name, "meta": meta}
@@ -2963,6 +3001,7 @@ async def api_train(
             run_dir,
             "cancelled" if CANCEL_FLAGS.get("train") else "failed",
             backend=backend,
+            task=task,
             requested_iterations=max_iter,
             error=str(e),
         )

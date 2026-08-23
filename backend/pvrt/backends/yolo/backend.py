@@ -86,6 +86,7 @@ class YOLOBackend(Backend):
         # Normalize and write model_meta.json (keep keys compatible with Detectron meta)
         model_name = res.get("model_name", "yolo")
         model_zoo = getattr(cfg_in, "yolo_family", "v8")
+        yolo_seg = bool(getattr(cfg_in, "yolo_seg", False) or getattr(cfg_in, "task", "detect") == "segment")
         # All models are 3-channel (no channel suffix needed)
         # prepend the run name (if provided) so the UI shows runs similarly to Detectron
         run_prefix = getattr(cfg_in, "run_name", "") or out_dir.name
@@ -110,7 +111,9 @@ class YOLOBackend(Backend):
 
         meta = {
             "backend": "yolo",
-            "model_type": f"yolo{model_zoo}{cfg_in.yolo_size}",
+            "task": "segment" if yolo_seg else "detect",
+            "model_type": f"yolo{model_zoo}{cfg_in.yolo_size}{'-seg' if yolo_seg else ''}",
+            "yolo_seg": yolo_seg,
             "input_mode": "thermal" if thermal_ok else "rgb",
             # Record whether this model was trained with thermal data present
             # and enabled. For some runs thermal may be used but the effective

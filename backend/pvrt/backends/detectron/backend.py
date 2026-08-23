@@ -184,12 +184,20 @@ class DetectronBackend(Backend):
                 log.debug("non-numeric category ids encountered while sorting categories")
             class_names = [str(c.get("name", f"class_{i}")) for i, c in enumerate(cats)]
 
-        # Build cfg (always) - using Faster R-CNN for bounding boxes only
-        MODEL_YAML = "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
-        mask_on = False
+        requested_task = str(getattr(cfg_in, "task", "") or "").strip().lower()
+        requested_type = str(getattr(cfg_in, "model_type", "fasterrcnn") or "").strip().lower()
+        mask_on = requested_task == "segment" or requested_type in {"maskrcnn", "mask_rcnn", "mask-r-cnn"}
+        task = "segment" if mask_on else "detect"
+        model_type = "maskrcnn" if mask_on else "fasterrcnn"
+        MODEL_YAML = (
+            "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
+            if mask_on else "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
+        )
         cfg = get_cfg()
         cfg.merge_from_file(model_zoo.get_config_file(MODEL_YAML))
         cfg.MODEL.MASK_ON = mask_on
+        if mask_on:
+            cfg.INPUT.MASK_FORMAT = "polygon"
 
         cfg.DATASETS.TRAIN = ("pv_train",)
         cfg.DATASETS.TEST  = ("pv_val",)
@@ -197,6 +205,7 @@ class DetectronBackend(Backend):
         cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 128
         cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(MODEL_YAML)
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5
+        cfg.TEST.DETECTIONS_PER_IMAGE = 600
 
         cfg.SOLVER.IMS_PER_BATCH = int(cfg_in.ims_per_batch or 2)
         cfg.SOLVER.BASE_LR       = float(cfg_in.base_lr or 0.00025)
@@ -222,6 +231,7 @@ class DetectronBackend(Backend):
 
         # --- critical: make resize settings coherent to avoid 'range'+[800] ---
         _coherent_input_resize(cfg)
+        (out_dir / "config.yaml").write_text(cfg.dump(), encoding="utf-8")
 
         # Train
         setup_logger()
@@ -266,12 +276,14 @@ class DetectronBackend(Backend):
         _best = {"ap50": float("-inf")} #AP50 - Average Precision at IoU 0.50. ie. area under the entire precision–recall curve
         _latest = {"ap50": None}
 
+        eval_metric = "segm" if mask_on else "bbox"
+
         def _ap50_pct_from_results(res) -> float:
             """Return AP50 in PERCENT (0..100) from COCOEvaluator results; NaN if missing."""
-            bbox = res.get("bbox")
-            if isinstance(bbox, dict):
+            metric_result = res.get(eval_metric)
+            if isinstance(metric_result, dict):
                 try:
-                    val = float(bbox.get("AP50"))
+                    val = float(metric_result.get("AP50"))
                     return val if 0.0 <= val <= 100.0 else float("nan")
                 except (TypeError, ValueError):
                     pass
@@ -329,7 +341,8 @@ class DetectronBackend(Backend):
                 _normalize_and_save_meta(out_dir, {
                     "best_model": {
                         "iter": int(trainer.iter),
-                        "val_bbox_AP50": round(ap50_pct, 4),    # percent
+                        "val_AP50": round(ap50_pct, 4),
+                        f"val_{eval_metric}_AP50": round(ap50_pct, 4),
                         "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
                         "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
                         "path": str(Path(out_dir.name) / "model_best.pth"),
@@ -373,16 +386,16 @@ class DetectronBackend(Backend):
                 final_ap50_pct = float(getattr(s, "value", s))
             except (TypeError, ValueError, AttributeError):
                 final_ap50_pct = None
-
-            _normalize_and_save_meta(out_dir, {
-                "final_model": {
-                    "iter": int(trainer.iter),
-                    "val_bbox_AP50": None if final_ap50_pct is None else round(final_ap50_pct, 4),
-                    "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
-                    "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
-                    "path": str(Path(out_dir.name) / "model_final.pth"),
-                }
-            })
+        _normalize_and_save_meta(out_dir, {
+            "final_model": {
+                "iter": int(trainer.iter),
+                "val_AP50": None if final_ap50_pct is None else round(final_ap50_pct, 4),
+                f"val_{eval_metric}_AP50": None if final_ap50_pct is None else round(final_ap50_pct, 4),
+                "total_loss_med20": None if loss_tap.last_med20 is None else float(loss_tap.last_med20),
+                "total_loss_raw":   None if loss_tap.last_raw   is None else float(loss_tap.last_raw),
+                "path": str(Path(out_dir.name) / "model_final.pth"),
+            }
+        })
 
         
         MODEL_NAME = Path(MODEL_YAML).stem
@@ -392,7 +405,8 @@ class DetectronBackend(Backend):
         # Save normalized meta for the run
         _normalize_and_save_meta(out_dir, {
             "backend": "detectron",
-            "model_type": "fasterrcnn",
+            "task": task,
+            "model_type": model_type,
             "input_mode": "thermal" if thermal_ok else "rgb",
             # Record whether this model used thermal data during training so
             # test-time selection can prefer decoded thermal when available.

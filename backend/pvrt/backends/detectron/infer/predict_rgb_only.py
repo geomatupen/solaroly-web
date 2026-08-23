@@ -45,13 +45,38 @@ def _resolve_weights(d: Path) -> Path:
         if p.exists(): return p
     return d / "model_final.pth"
 
-def _cfg_like_before():
+def _cfg_for_model(weights: Path, meta: dict):
     cfg = get_cfg()
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
-    cfg.MODEL.MASK_ON = False
+    saved_cfg = weights / "config.yaml"
+    if saved_cfg.is_file():
+        cfg.merge_from_file(str(saved_cfg))
+    else:
+        is_mask = str(meta.get("task", "")).lower() == "segment" or "mask" in str(meta.get("model_type", "")).lower()
+        model_yaml = (
+            "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
+            if is_mask else "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
+        )
+        cfg.merge_from_file(model_zoo.get_config_file(model_yaml))
+        cfg.MODEL.MASK_ON = is_mask
     return cfg
 
-def _draw_overlay(bgr, boxes, scores, classes, names):
+
+def _mask_polygons(inst) -> list[list[list[float]]]:
+    if inst is None or not inst.has("pred_masks"):
+        return []
+    polygons = []
+    for mask in inst.pred_masks.numpy().astype(np.uint8):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            polygons.append([])
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        epsilon = max(1.0, 0.002 * cv2.arcLength(contour, True))
+        contour = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
+        polygons.append([[float(x), float(y)] for x, y in contour] if len(contour) >= 3 else [])
+    return polygons
+
+def _draw_overlay(bgr, boxes, scores, classes, names, polygons=None):
     from PIL import Image, ImageDraw, ImageFont
     
     # Convert BGR to RGB/RGBA for PIL, preserving alpha if present
@@ -67,7 +92,7 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         base = Image.fromarray(rgb, mode='RGB')
     
-    draw = ImageDraw.Draw(base)
+    draw = ImageDraw.Draw(base, "RGBA")
     pal_rgb = _palette_rgb()
     
     # thickness scales with image size
@@ -79,7 +104,8 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
     
     pad = 4  # label padding inside the pill
 
-    for bx, sc, cl in zip(boxes, scores, classes):
+    polygons = polygons or []
+    for index, (bx, sc, cl) in enumerate(zip(boxes, scores, classes)):
         if not bx:
             continue
         try:
@@ -103,6 +129,10 @@ def _draw_overlay(bgr, boxes, scores, classes, names):
 
         # vivid color per class (RGB for PIL)
         color_rgb = pal_rgb[int(cl) % len(pal_rgb)] if isinstance(cl, int) else pal_rgb[0]
+
+        if index < len(polygons) and len(polygons[index]) >= 3:
+            poly = [tuple(point) for point in polygons[index]]
+            draw.polygon(poly, fill=(*color_rgb, 72), outline=(*color_rgb, 255))
 
         # draw the detection box outline
         draw.rectangle([x1, y1, x2, y2], outline=color_rgb, width=thickness)
@@ -166,7 +196,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     overlay_dir = layout["overlays"]
 
     meta = _load_meta(weights)
-    cfg  = _cfg_like_before()
+    cfg  = _cfg_for_model(weights, meta)
     wpth = _resolve_weights(weights)
     cfg.MODEL.WEIGHTS = str(wpth)
     cfg.MODEL.DEVICE  = _pick_device()
@@ -224,19 +254,20 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
         inst = inst.to("cpu") if inst is not None else None
 
         if inst is None or len(inst) == 0:
-            boxes, scores, classes = [], [], []
+            boxes, scores, classes, polygons = [], [], [], []
         else:
             boxes   = inst.pred_boxes.tensor.numpy().tolist()
             scores  = inst.scores.numpy().tolist()
             classes = inst.pred_classes.numpy().tolist()
+            polygons = _mask_polygons(inst)
 
         k = len(scores); total += k;  with_dets += int(k>0)
 
         write_pred_json(
             preds_dir, p.stem, boxes, scores, classes,
-            extra={"file": p.name}
+            extra={"file": p.name, "polygons": polygons, "task": meta.get("task", "detect")}
         )
-        overlay = _draw_overlay(overlay_base, boxes, scores, classes, names)
+        overlay = _draw_overlay(overlay_base, boxes, scores, classes, names, polygons)
         save_overlay_png(overlay_dir, p.stem, overlay)   # PNG preserves RGBA/alpha channel
         # save_overlay_jpg(overlay_dir, p.stem, overlay, exif_source=images_dir)
 
@@ -247,6 +278,7 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     # log.info(f"UI:INFO:test: model path={weights.name}")
     metrics = {
         "backend": "detectron",
+        "task": meta.get("task") or ("segment" if "mask" in str(meta.get("model_type", "")).lower() else "detect"),
         "input_mode": "rgb",
         "use_thermal": False,
         "device": cfg.MODEL.DEVICE,

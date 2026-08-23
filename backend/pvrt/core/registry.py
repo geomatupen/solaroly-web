@@ -28,6 +28,7 @@ class TrainConfig:
     ims_per_batch: int
     # optional name to store alongside artifacts
     run_name: str = ""
+    task: str = "detect"
     model_type: str = "fasterrcnn"
     # YOLO-specific options (optional)
     yolo_family: str = "v8"

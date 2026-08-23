@@ -75,6 +75,7 @@ def train_entry(
     base_lr: float,
     ims_per_batch: int,
     run_name: str = "",
+    task: str = "detect",
     model_type: str = "fasterrcnn",
     yolo_family: str = "v8",
     yolo_seg: bool = False,
@@ -117,6 +118,7 @@ def train_entry(
             base_lr=float(base_lr),
             ims_per_batch=int(ims_per_batch),
             run_name=run_name,
+            task=task,
             model_type=model_type,
             yolo_family=yolo_family,
             yolo_seg=bool(yolo_seg),
@@ -223,4 +225,3 @@ def predict_entry(
         "final_mode": final_mode,
         "score_thresh": chosen_thresh,
     }
-
