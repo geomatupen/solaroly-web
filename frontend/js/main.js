@@ -1743,7 +1743,10 @@ async function runTest(){
       ? js.manifest.reduce((sum, it) => sum + (it.n || 0), 0)
       : 0;
 
-    if(!js.ok) throw new Error("test failed");
+    if(!res.ok || !js.ok){
+      const detail = typeof js.detail === 'string' ? js.detail : js.detail?.message;
+      throw new Error(detail || "Test failed.");
+    }
 
     // If backend reports which channel configuration it actually used, show it briefly
     try{

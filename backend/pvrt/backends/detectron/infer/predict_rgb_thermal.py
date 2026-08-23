@@ -60,7 +60,12 @@ def _load_cfg(d: Path):
     cfg = get_cfg()
     yml = d / "config.yaml"
     if yml.exists():
-        cfg.merge_from_file(str(yml)); cfg._pvrt_cfg_source = "run_config.yaml"
+        cfg.set_new_allowed(True)
+        try:
+            cfg.merge_from_file(str(yml))
+        finally:
+            cfg.set_new_allowed(False)
+        cfg._pvrt_cfg_source = "run_config.yaml"
     else:
         cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
         cfg._pvrt_cfg_source = "fallback_frcnn_zoo"

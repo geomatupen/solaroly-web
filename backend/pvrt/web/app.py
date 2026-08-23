@@ -3697,6 +3697,7 @@ async def api_test_run(
         presp = await asyncio.to_thread(_do_predict)  # <-- offload
     except Exception as e:
         _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=str(e))
+        test_logger.error("UI:ERR:test: Inference failed: %s", e)
         logger.exception("Inference failed.")
         raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
 

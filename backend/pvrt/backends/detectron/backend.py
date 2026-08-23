@@ -221,7 +221,7 @@ class DetectronBackend(Backend):
         cfg.SOLVER.STEPS = [int(s) for s in raw_steps if 0 < int(s) < int(cfg.SOLVER.MAX_ITER)]
         # cfg.SOLVER.CHECKPOINT_PERIOD = max(1001, int(cfg.SOLVER.MAX_ITER / 6))
         cfg.SOLVER.CHECKPOINT_PERIOD = 10**9  # disabled time-based checkpoints
-        cfg.SOLVER.LOG_PERIOD    = 1
+        log_period = 1
 
         cfg.DATALOADER.NUM_WORKERS = 2
         cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
@@ -243,7 +243,7 @@ class DetectronBackend(Backend):
 
         class _RawLossLogger(hooks.HookBase):
             def after_step(self):
-                if self.trainer.iter % cfg.SOLVER.LOG_PERIOD == 0:
+                if self.trainer.iter % log_period == 0:
                     hb = self.trainer.storage.history("total_loss")
                     s = hb.latest()
                     raw = float(getattr(s, "value", s))

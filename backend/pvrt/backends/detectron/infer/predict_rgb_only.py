@@ -49,7 +49,14 @@ def _cfg_for_model(weights: Path, meta: dict):
     cfg = get_cfg()
     saved_cfg = weights / "config.yaml"
     if saved_cfg.is_file():
-        cfg.merge_from_file(str(saved_cfg))
+        # Older PVRT runs stored training-only keys such as
+        # SOLVER.LOG_PERIOD. Accept those trusted run-local keys while merging;
+        # Detectron inference simply ignores values it does not consume.
+        cfg.set_new_allowed(True)
+        try:
+            cfg.merge_from_file(str(saved_cfg))
+        finally:
+            cfg.set_new_allowed(False)
     else:
         is_mask = str(meta.get("task", "")).lower() == "segment" or "mask" in str(meta.get("model_type", "")).lower()
         model_yaml = (
