@@ -684,7 +684,7 @@ def _tile_tif_to_dir(tif_path, tiles_dir, tile_size=1024, stride=None):
         epsg = crs.to_epsg()
         return f"EPSG:{epsg}" if epsg else crs.to_string()
 
-    logger = logging.getLogger("pvrt")
+    logger = logging.getLogger("pvrt.test")
     tiles_dir = Path(tiles_dir)
     tiles_dir.mkdir(parents=True, exist_ok=True)
 
@@ -692,7 +692,15 @@ def _tile_tif_to_dir(tif_path, tiles_dir, tile_size=1024, stride=None):
     written = []
 
     with rasterio.open(tif_path) as src:
-        logger.info(f"Tiler: source='{Path(tif_path).name}' CRS={_crs_id(src.crs)} size={src.width}x{src.height}")
+        x_offsets = [x for x in range(0, src.width, stride) if min(tile_size, src.width - x) > 1]
+        y_offsets = [y for y in range(0, src.height, stride) if min(tile_size, src.height - y) > 1]
+        total_tiles = max(1, len(x_offsets) * len(y_offsets))
+        progress_step = max(1, total_tiles // 10)
+        logger.info(
+            "UI:INFO:test: Splitting orthomosaic %s (%sx%s, %s bands) into %s tiles…",
+            Path(tif_path).name, src.width, src.height, src.count, total_tiles,
+        )
+        logger.info(f"UI:INFO:test: Orthomosaic CRS={_crs_id(src.crs)} tile_size={tile_size}px")
         W, H = src.width, src.height
 
         for y0 in range(0, H, stride):
@@ -721,13 +729,23 @@ def _tile_tif_to_dir(tif_path, tiles_dir, tile_size=1024, stride=None):
                         dst.write(src.read(b, window=window), b)
                 written.append(outp)
 
+                completed = len(written)
+                if completed == 1 or completed == total_tiles or completed % progress_step == 0:
+                    percent = min(100, int(round(completed * 100 / total_tiles)))
+                    logger.info(
+                        "UI:INFO:test: Orthomosaic split progress: %s/%s tiles (%s%%)",
+                        completed, total_tiles, percent,
+                    )
+
                 # Log a few tiles to verify CRS & transform persisted
                 if (x0, y0) in [(0, 0), (tile_size, 0), (0, tile_size)]:
                     with rasterio.open(outp) as chk:
-                        logger.info(
-                            f"Tiler: wrote '{outp.name}' CRS={_crs_id(chk.crs)} transform={chk.transform}"
+                        logger.debug(
+                            "Tiler: wrote '%s' CRS=%s transform=%s",
+                            outp.name, _crs_id(chk.crs), chk.transform,
                         )
 
+    logger.info("UI:OK:test: Orthomosaic split complete: %s tiles ready.", len(written))
     return written
 
 
@@ -3367,9 +3385,18 @@ async def api_test_run(
     out_root = get_project_sessions_dir() / session
     out_root.mkdir(parents=True, exist_ok=True)
     _write_result_status(out_root, "running", dataset=dataset, model=model_dir.name)
+    test_logger = logging.getLogger("pvrt.test")
+    test_logger.info(
+        "UI:INFO:test: Preparing test run '%s' with dataset '%s' and model '%s'…",
+        session, dataset, model_dir.name,
+    )
 
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
     input_type = _detect_image_input_type(ds_dir)
+    test_logger.info(
+        "UI:INFO:test: Input detected: %s.",
+        "orthomosaic GeoTIFF" if input_type == "tif" else "image folder",
+    )
 
     accurate_locations = bool(accurate_locations)
     if accurate_locations and input_type != "images":
@@ -3395,13 +3422,19 @@ async def api_test_run(
             raise HTTPException(status_code=400, detail="No GeoTIFF found in dataset.")
         tif_src = tifs[0]
 
-        # Tile the GeoTIFF; inference runs on *tiles_dir*
+        # Tile in a worker thread so the event loop remains free to deliver
+        # progress messages to both SSE log panes while disk work is running.
         tiles_dir = out_root / "tiles"
-        _tile_tif_to_dir(tif_src, tiles_dir, tile_size=1024, stride=1024)
+        test_logger.info("UI:INFO:test: Preparing orthomosaic tiles for inference…")
+        await asyncio.to_thread(
+            _tile_tif_to_dir, tif_src, tiles_dir, 1024, 1024,
+        )
         run_images_dir = tiles_dir
 
         # small preview (optional)
-        thumb_path = _save_tif_thumbnail(tif_src, out_root / "thumbs")
+        test_logger.info("UI:INFO:test: Creating orthomosaic preview…")
+        thumb_path = await asyncio.to_thread(_save_tif_thumbnail, tif_src, out_root / "thumbs")
+        test_logger.info("UI:OK:test: Orthomosaic preview ready.")
 
         # Discover if the TIF has band-4 thermal (no DIRP step for mosaics)
         try:
@@ -3618,7 +3651,9 @@ async def api_test_run(
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Traceback: {traceback.format_exc()}")
 
     # ===== PRE-INFERENCE IMAGE ROTATION & OPTIONAL MOSAIC =====
-    rotation_result = prepare_rotation_and_mosaic(
+    test_logger.info("UI:INFO:test: Finalizing prepared inputs…")
+    rotation_result = await asyncio.to_thread(
+        prepare_rotation_and_mosaic,
         input_type=input_type,
         session_dir=session_dir,
         out_root=out_root,
@@ -3635,6 +3670,11 @@ async def api_test_run(
     run_images_dir = rotation_result.run_images_dir
     tiles_dir = rotation_result.tiles_dir
     tif_src = rotation_result.tif_src
+    prepared_count = sum(
+        1 for path in run_images_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    ) if run_images_dir and run_images_dir.is_dir() else 0
+    test_logger.info("UI:OK:test: Prepared %s inference images.", prepared_count)
 
     def _do_predict():
         with redirect_std_to_logger():
@@ -3653,6 +3693,7 @@ async def api_test_run(
 
 
     try:
+        test_logger.info("UI:OK:test: Preparation complete. Starting model inference…")
         presp = await asyncio.to_thread(_do_predict)  # <-- offload
     except Exception as e:
         _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=str(e))

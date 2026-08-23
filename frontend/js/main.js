@@ -1707,7 +1707,10 @@ async function runTest(){
   const testThreshold = (document.getElementById("testThreshold")?.value);
 
   setHidden($("#spinTest"), false);
-  setText("#testStatus","Running inference…");
+  setText("#testStatus","Preparing test data…");
+  const preparingLine = `[test] Preparing dataset "${ds}" for model inference…`;
+  appendMiniLog("#testMiniLog", preparingLine);
+  appendLog(preparingLine);
 
   const fd = new FormData();
   fd.append("dataset", ds);
@@ -3262,6 +3265,16 @@ function connectLogs(){
 
     const isTestLine = (line.includes("[test]") || line.includes("UI:INFO:test") || line.includes("UI:OK:test") || line.includes("UI:ERR:test"));
     if(isTestLine){ appendMiniLog("#testMiniLog", line); }
+    if(line.includes("Orthomosaic split progress:")){
+      const progress = line.split("Orthomosaic split progress:").pop().trim();
+      setText("#testStatus", `Splitting orthomosaic: ${progress}`);
+    }else if(line.includes("Creating orthomosaic preview")){
+      setText("#testStatus", "Creating orthomosaic preview…");
+    }else if(line.includes("Finalizing prepared inputs")){
+      setText("#testStatus", "Finalizing prepared inputs…");
+    }else if(line.includes("Starting model inference")){
+      setText("#testStatus", "Running inference…");
+    }
 
     // Surface server-side warnings to the frontend warning panels so users
     // see when thermal was requested but data is missing (or other test warnings).
