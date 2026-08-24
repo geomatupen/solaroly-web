@@ -362,6 +362,47 @@ async function uploadTifOverlay() {
   }
 }
 
+async function addSavedGeoJsonOverlay(overlay, options = {}) {
+  if (!overlay?.path) throw new Error('Overlay path is missing.');
+  const response = await fetch(overlay.path, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Could not load overlay (${response.status}).`);
+  const geojson = await response.json();
+  const name = overlay.name || 'GeoJSON overlay';
+  const previous = overlayRegistry[name];
+  if (previous?.layer) {
+    try { MAP.removeLayer(previous.layer); } catch (_) {}
+  }
+  const bounds = computeLayerBounds(geojson);
+  const layer = L.geoJSON(geojson, {
+    style: { color: '#22c55e', weight: 2, fillColor: '#22c55e', fillOpacity: 0.2 },
+    onEachFeature: (feature, featureLayer) => {
+      if (!feature?.properties) return;
+      const rows = Object.entries(feature.properties)
+        .slice(0, 20)
+        .map(([key, value]) => `<b>${escapeHtml(key)}:</b> ${escapeHtml(String(value))}<br>`)
+        .join('');
+      if (rows) featureLayer.bindPopup(`<div class="mini">${rows}</div>`);
+    },
+  });
+  overlayRegistry[name] = {
+    layer,
+    type: 'geojson',
+    data: geojson,
+    bounds,
+    temporary: false,
+    overlay_id: overlay.overlay_id,
+  };
+  if (options.show) layer.addTo(MAP);
+  refreshLayersPanel();
+  if (options.focus) {
+    const layerBounds = layer.getBounds?.();
+    if (layerBounds?.isValid()) MAP.fitBounds(layerBounds, { padding: [20, 20], maxZoom: 21 });
+  }
+  return overlayRegistry[name];
+}
+
+window.addSavedGeoJsonOverlay = addSavedGeoJsonOverlay;
+
 /**
  * Load saved overlays from backend
  */
@@ -374,24 +415,7 @@ async function loadSavedOverlays() {
     
     for (const overlay of data.overlays) {
       if (overlay.type === 'geojson') {
-        // Load GeoJSON overlay
-        const gjResp = await fetch(overlay.path);
-        const gjData = await gjResp.json();
-        
-        const bounds = computeLayerBounds(gjData);
-        const layer = L.geoJSON(gjData, {
-          style: { color: '#2b87ff', weight: 2, fillOpacity: 0.2 }
-        });
-        // Do NOT add to map by default
-        
-        overlayRegistry[overlay.name] = {
-          layer,
-          type: 'geojson',
-          data: gjData,
-          bounds,
-          temporary: false,
-          overlay_id: overlay.overlay_id
-        };
+        await addSavedGeoJsonOverlay(overlay, { show: false, focus: false });
       } else if (overlay.type === 'tif') {
         // Load GeoTIFF overlay - need to get tile info
         const tileResp = await fetch(`/api/get_overlay_tiles?overlay_id=${overlay.overlay_id}`);

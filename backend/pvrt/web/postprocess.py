@@ -48,6 +48,15 @@ class RenameWorkflowRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+class ShareLayerRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+
+
+class EditLayerRequest(BaseModel):
+    geojson: dict[str, Any]
+    name: str | None = Field(default=None, max_length=80)
+
+
 def _safe_name(value: str, fallback: str) -> str:
     safe = _SAFE_NAME_RE.sub("_", str(value or "").strip()).strip("._-")
     return (safe or fallback)[:80]
@@ -62,6 +71,7 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 def create_postprocess_router(
     get_sessions_dir: Callable[[], Path],
+    get_overlays_dir: Callable[[], Path],
     media_url: Callable[[Path], str],
     logger: logging.Logger | None = None,
 ) -> APIRouter:
@@ -183,6 +193,8 @@ def create_postprocess_router(
                 stage = "combined"
             elif path.name == "regularized.geojson":
                 stage = "regularized"
+            elif path.name.startswith("edited_"):
+                stage = "edited"
             items.append(
                 {
                     "name": path.name,
@@ -364,6 +376,118 @@ def create_postprocess_router(
         shutil.rmtree(workflow_dir)
         log.info("UI:OK:postprocess: Deleted workflow %s for %s", workflow_id, result_id)
         return {"ok": True, "deleted": workflow_id}
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/{stage}/share")
+    async def share_workflow_layer(
+        result_id: str,
+        workflow_id: str,
+        stage: str,
+        request: ShareLayerRequest,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        if stage not in {"combined", "regularized", "edited"}:
+            raise HTTPException(status_code=400, detail="Only generated post-processing outputs can be sent to Map.")
+        status = read_status(workflow_dir)
+        output = (status.get("outputs") or {}).get(stage) or {}
+        source = (
+            (result_dir / str(output.get("path") or "")).resolve()
+            if output.get("path")
+            else workflow_dir / f"{stage}.geojson"
+        )
+        try:
+            source.relative_to(workflow_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid workflow output path.") from exc
+        if not source.is_file():
+            raise HTTPException(status_code=404, detail=f"The {stage} GeoJSON is not available.")
+        base_name = request.name or status.get("display_name") or status.get("parameters", {}).get("output_name") or workflow_id
+        display_name = f"{str(base_name).strip()} — {stage.title()}"
+        overlay_id = _safe_name(f"postprocess-{workflow_id[:54]}-{stage}", f"postprocess-{uuid.uuid4().hex[:10]}")
+        overlay_dir = (Path(get_overlays_dir()).resolve() / overlay_id).resolve()
+        if overlay_dir.parent != Path(get_overlays_dir()).resolve():
+            raise HTTPException(status_code=400, detail="Invalid overlay destination.")
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        destination = overlay_dir / "layer.geojson"
+        shutil.copy2(source, destination)
+        _atomic_json(
+            overlay_dir / ".overlay_meta.json",
+            {
+                "display_name": display_name,
+                "source_result": result_id,
+                "workflow_id": workflow_id,
+                "stage": stage,
+            },
+        )
+        log.info("UI:OK:postprocess: Sent %s/%s to Map overlays", workflow_id, stage)
+        return {
+            "ok": True,
+            "overlay": {
+                "type": "geojson",
+                "name": display_name,
+                "overlay_id": overlay_id,
+                "path": media_url(destination),
+            },
+        }
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/{stage}/revisions")
+    async def save_edited_revision(
+        result_id: str,
+        workflow_id: str,
+        stage: str,
+        request: EditLayerRequest,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        if stage not in {"combined", "regularized", "edited"}:
+            raise HTTPException(status_code=400, detail="This layer cannot be edited.")
+        geojson = request.geojson
+        features = geojson.get("features") if isinstance(geojson, dict) else None
+        if geojson.get("type") != "FeatureCollection" or not isinstance(features, list):
+            raise HTTPException(status_code=400, detail="Edited data must be a GeoJSON FeatureCollection.")
+        if len(features) > 500_000:
+            raise HTTPException(status_code=400, detail="Edited GeoJSON contains too many features.")
+        cleaned_features = []
+        for index, feature in enumerate(features):
+            if not isinstance(feature, dict) or feature.get("type") != "Feature":
+                raise HTTPException(status_code=400, detail=f"Feature {index} is invalid.")
+            geometry = feature.get("geometry") or {}
+            if geometry.get("type") not in {"Polygon", "MultiPolygon"} or not geometry.get("coordinates"):
+                raise HTTPException(status_code=400, detail=f"Feature {index} is not a polygon.")
+            cleaned = dict(feature)
+            properties = dict(cleaned.get("properties") or {})
+            properties["manual_edit_source_stage"] = stage
+            cleaned["properties"] = properties
+            cleaned_features.append(cleaned)
+        revision_id = f"edit_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        output_path = workflow_dir / f"edited_{revision_id}.geojson"
+        _atomic_json(output_path, {"type": "FeatureCollection", "features": cleaned_features})
+        relative = output_path.relative_to(result_dir).as_posix()
+        current = read_status(workflow_dir)
+        outputs = dict(current.get("outputs") or {})
+        outputs["edited"] = {"path": relative}
+        revisions = list(current.get("manual_revisions") or [])
+        revision_name = request.name or f"{current.get('display_name') or workflow_id} — Edited"
+        revisions.append(
+            {
+                "id": revision_id,
+                "name": revision_name,
+                "source_stage": stage,
+                "path": relative,
+                "feature_count": len(cleaned_features),
+                "created_at": datetime.now().isoformat(),
+            }
+        )
+        update_status(
+            workflow_dir,
+            status="complete",
+            stage="manual_edit",
+            progress=100,
+            message="Edited GeoJSON revision is ready.",
+            outputs=outputs,
+            manual_revisions=revisions,
+        )
+        return read_status(workflow_dir)
 
     @router.get("/{result_id}/postprocess")
     async def list_workflows(result_id: str) -> dict[str, Any]:

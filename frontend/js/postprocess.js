@@ -13,12 +13,14 @@
     previewLoading: new Set(),
     workflows: [],
     scanComplete: false,
+    editing: null,
   };
 
   const PREVIEW_STYLES = {
     source: { label: "Source", color: "#38bdf8", weight: 1, fillOpacity: 0.08 },
     combined: { label: "Combined", color: "#f59e0b", weight: 2, fillOpacity: 0.13 },
     regularized: { label: "Regularized", color: "#22c55e", weight: 2, fillOpacity: 0.16 },
+    edited: { label: "Edited revision", color: "#a855f7", weight: 2, fillOpacity: 0.18 },
   };
 
   const byId = id => document.getElementById(id);
@@ -90,6 +92,7 @@
   }
 
   function clearPreviewLayers() {
+    stopEditing(false);
     if (state.map) {
       for (const item of state.previewLayers.values()) {
         if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
@@ -100,6 +103,39 @@
     byId("ppFitLayers").disabled = true;
     byId("ppLayerList").innerHTML = '<div class="muted tiny">No preview layers loaded.</div>';
     byId("ppMapStatus").textContent = "Scan a GeoJSON to preview it.";
+  }
+
+  function createPreviewGeoJsonLayer(stage, geojson) {
+    const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
+    const baseStyle = {
+      color: style.color,
+      weight: style.weight,
+      fillColor: style.color,
+      fillOpacity: style.fillOpacity,
+      opacity: 1,
+    };
+    const layer = window.L.geoJSON(geojson, {
+      renderer: window.L.canvas({ padding: 0.5 }),
+      pmIgnore: true,
+      style: () => baseStyle,
+      onEachFeature: (_feature, polygonLayer) => {
+        polygonLayer.options.pmIgnore = true;
+        polygonLayer.on("mouseover", event => {
+          if (state.editing) return;
+          event.target.setStyle({
+            color: "#ffffff",
+            weight: style.weight + 2,
+            fillColor: style.color,
+            fillOpacity: 0.38,
+          });
+          event.target.bringToFront?.();
+        });
+        polygonLayer.on("mouseout", event => {
+          if (!state.editing) event.target.setStyle(baseStyle);
+        });
+      },
+    });
+    return { layer, baseStyle };
   }
 
   function fitVisibleLayers() {
@@ -118,15 +154,242 @@
     }
   }
 
+  async function sendLayerToMap(stage, button) {
+    if (!state.workflowId || !["combined", "regularized", "edited"].includes(stage)) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "Sending…";
+    try {
+      const resultId = byId("ppResult").value;
+      const payload = await requestJson(
+        `/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(state.workflowId)}/${encodeURIComponent(stage)}/share`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (typeof window.showSharedOverlayOnMap !== "function") {
+        throw new Error("Map integration is not available.");
+      }
+      await window.showSharedOverlayOnMap(payload.overlay);
+    } catch (error) {
+      setMessage(error.message, "err");
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  function setEditDirty(dirty = true) {
+    if (!state.editing) return;
+    const changed = dirty !== false;
+    state.editing.dirty = changed;
+    byId("ppUndoEdits").disabled = !changed;
+    byId("ppSaveEdits").disabled = !changed;
+    if (changed) byId("ppEditStatus").textContent = "Unsaved changes. Save a new revision or undo them.";
+  }
+
+  function lockProcessingControls(locked) {
+    byId("ppResult").disabled = locked;
+    byId("ppGeojson").disabled = locked || !byId("ppResult").value;
+    byId("ppAnalyze").disabled = locked || !byId("ppGeojson").value;
+    byId("ppRefresh").disabled = locked;
+    byId("ppRegularizeSource").disabled = locked || !state.workflows.some(item => item.outputs?.combined);
+    if (locked) {
+      byId("ppCombine").disabled = true;
+      byId("ppRegularize").disabled = true;
+    } else {
+      byId("ppCombine").disabled = !state.analysis;
+      const workflow = state.workflows.find(item => item.id === state.workflowId);
+      byId("ppRegularize").disabled = !workflow?.outputs?.combined;
+    }
+  }
+
+  function disableEditingTools() {
+    const editing = state.editing;
+    if (!editing) return;
+    for (const entry of editing.deleteHandlers || []) {
+      entry.layer.off("click", entry.handler);
+    }
+    editing.deleteHandlers = [];
+    editing.item.layer.eachLayer(layer => {
+      try { layer.pm?.disable(); } catch (_) {}
+      layer.off("pm:edit", setEditDirty);
+      layer.off("pm:update", setEditDirty);
+    });
+    byId("ppMap").classList.remove("deleteMode");
+    byId("ppEditVertices").classList.remove("active");
+    byId("ppDeletePolygons").classList.remove("active");
+  }
+
+  function applyEditingEmphasis() {
+    for (const [stage, item] of state.previewLayers) {
+      const selected = state.editing?.stage === stage;
+      item.layer.eachLayer(layer => {
+        if (!layer.setStyle) return;
+        layer.setStyle(selected
+          ? { ...item.baseStyle, weight: item.baseStyle.weight + 1, fillOpacity: 0.28, opacity: 1 }
+          : { ...item.baseStyle, fillOpacity: 0.02, opacity: 0.18 });
+      });
+    }
+  }
+
+  function beginEditing(stage) {
+    if (!["combined", "regularized", "edited"].includes(stage)) return;
+    const item = state.previewLayers.get(stage);
+    if (!item || !state.workflowId) return;
+    if (state.editing?.dirty && !window.confirm("Discard the unsaved edits on the current layer?")) return;
+    stopEditing(false);
+    if (!state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
+    state.editing = {
+      stage,
+      item,
+      snapshot: JSON.parse(JSON.stringify(item.layer.toGeoJSON())),
+      dirty: false,
+      deleteHandlers: [],
+    };
+    lockProcessingControls(true);
+    byId("ppEditPanel").hidden = false;
+    const workflow = state.workflows.find(candidate => candidate.id === state.workflowId);
+    byId("ppEditLayerName").textContent = `${workflow ? workflowDisplayName(workflow) : state.workflowId} · ${item.label}`;
+    byId("ppEditLayerIdentity").textContent = `Workflow ID: ${state.workflowId} · Stage: ${stage}`;
+    byId("ppEditStatus").textContent = "Only this highlighted layer is editable. All other layers are locked.";
+    byId("ppUndoEdits").disabled = true;
+    byId("ppSaveEdits").disabled = true;
+    applyEditingEmphasis();
+    renderPreviewLayers();
+    enableVertexEditing();
+  }
+
+  function enableVertexEditing() {
+    if (!state.editing) return;
+    disableEditingTools();
+    let supported = false;
+    state.editing.item.layer.eachLayer(layer => {
+      layer.options.pmIgnore = false;
+      try { window.L.PM?.reInitLayer(layer); } catch (_) {}
+      if (layer.pm?.enable) {
+        supported = true;
+        const handler = event => {
+          if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+          state.editing.item.layer.eachLayer(other => {
+            if (other !== layer) {
+              try { other.pm?.disable(); } catch (_) {}
+              other.off("pm:edit", setEditDirty);
+              other.off("pm:update", setEditDirty);
+            }
+          });
+          layer.on("pm:edit", setEditDirty);
+          layer.on("pm:update", setEditDirty);
+          layer.pm.enable({ allowSelfIntersection: false, snappable: true });
+          byId("ppEditStatus").textContent = "Drag this polygon's vertices, or click another polygon in the named layer.";
+        };
+        layer.on("click", handler);
+        state.editing.deleteHandlers.push({ layer, handler });
+      }
+    });
+    byId("ppEditVertices").classList.add("active");
+    byId("ppEditStatus").textContent = supported
+      ? "Vertex mode: click one polygon in the highlighted layer, then drag its vertices."
+      : "Vertex editing support did not load; refresh the page and try again.";
+  }
+
+  function enablePolygonDeletion() {
+    if (!state.editing) return;
+    disableEditingTools();
+    const group = state.editing.item.layer;
+    group.eachLayer(layer => {
+      const handler = event => {
+        if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+        group.removeLayer(layer);
+        setEditDirty(true);
+        byId("ppEditStatus").textContent = "Polygon removed. Continue deleting or save the new revision.";
+      };
+      layer.on("click", handler);
+      state.editing.deleteHandlers.push({ layer, handler });
+    });
+    byId("ppMap").classList.add("deleteMode");
+    byId("ppDeletePolygons").classList.add("active");
+    byId("ppEditStatus").textContent = "Delete mode: click polygons only in the highlighted layer.";
+  }
+
+  function undoEdits() {
+    if (!state.editing) return;
+    disableEditingTools();
+    const editing = state.editing;
+    const wasVisible = state.map.hasLayer(editing.item.layer);
+    if (wasVisible) state.map.removeLayer(editing.item.layer);
+    const created = createPreviewGeoJsonLayer(editing.stage, editing.snapshot);
+    editing.item.layer = created.layer;
+    editing.item.geojson = editing.snapshot;
+    editing.item.baseStyle = created.baseStyle;
+    if (wasVisible) editing.item.layer.addTo(state.map);
+    setEditDirty(false);
+    applyEditingEmphasis();
+    renderPreviewLayers();
+    byId("ppEditStatus").textContent = "Changes restored to the last saved version.";
+  }
+
+  function stopEditing(confirmDiscard = true) {
+    if (!state.editing) return true;
+    if (confirmDiscard && state.editing.dirty && !window.confirm("Exit and discard these unsaved polygon edits?")) return false;
+    disableEditingTools();
+    for (const item of state.previewLayers.values()) {
+      item.layer.eachLayer(layer => {
+        layer.options.pmIgnore = true;
+        layer.setStyle?.(item.baseStyle);
+      });
+    }
+    state.editing = null;
+    byId("ppEditPanel").hidden = true;
+    lockProcessingControls(false);
+    renderPreviewLayers();
+    return true;
+  }
+
+  async function saveEditedRevision() {
+    if (!state.editing?.dirty) return;
+    disableEditingTools();
+    const editing = state.editing;
+    const button = byId("ppSaveEdits");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    byId("ppEditStatus").textContent = "Validating and saving a new GeoJSON revision…";
+    try {
+      const resultId = byId("ppResult").value;
+      const payload = await requestJson(
+        `/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(state.workflowId)}/${encodeURIComponent(editing.stage)}/revisions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ geojson: editing.item.layer.toGeoJSON() }),
+        },
+      );
+      stopEditing(false);
+      applyWorkflow(payload);
+      await restoreLatestWorkflow(resultId, byId("ppGeojson").value, state.workflowId);
+      setMessage("Edited polygons saved as a new revision.", "ok");
+    } catch (error) {
+      byId("ppEditStatus").textContent = error.message;
+      setMessage(error.message, "err");
+    } finally {
+      button.textContent = "Save new revision";
+      if (state.editing) button.disabled = !state.editing.dirty;
+    }
+  }
+
   function renderPreviewLayers() {
     const container = byId("ppLayerList");
     container.replaceChildren();
     for (const [key, item] of state.previewLayers) {
       const row = document.createElement("div");
-      row.className = "postprocessLayerItem";
+      const isEditing = state.editing?.stage === key;
+      row.className = `postprocessLayerItem${isEditing ? " editing" : ""}${state.editing && !isEditing ? " locked" : ""}`;
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = state.map?.hasLayer(item.layer) || false;
+      checkbox.disabled = Boolean(state.editing);
       checkbox.title = `Show ${item.label}`;
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) item.layer.addTo(state.map);
@@ -140,7 +403,7 @@
       const name = document.createElement("strong");
       name.textContent = item.label;
       const detail = document.createElement("small");
-      detail.textContent = `${Number(item.count).toLocaleString()} polygons`;
+      detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Read-only" : ""}`;
       text.append(name, detail);
       const focus = document.createElement("button");
       focus.type = "button";
@@ -156,7 +419,27 @@
       download.download = "";
       download.title = `Download ${item.label} GeoJSON`;
       download.textContent = "Download";
-      row.append(checkbox, swatch, text, focus, download);
+      const actions = document.createElement("div");
+      actions.className = "postprocessLayerActions";
+      actions.appendChild(focus);
+      if (["combined", "regularized", "edited"].includes(key)) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "secondary tiny";
+        edit.textContent = isEditing ? "Editing" : "Edit this layer";
+        edit.disabled = Boolean(state.editing);
+        edit.addEventListener("click", () => beginEditing(key));
+        actions.appendChild(edit);
+        const send = document.createElement("button");
+        send.type = "button";
+        send.className = "secondary tiny";
+        send.textContent = "Send to Map";
+        send.disabled = Boolean(state.editing);
+        send.addEventListener("click", () => sendLayerToMap(key, send));
+        actions.appendChild(send);
+      }
+      actions.appendChild(download);
+      row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
     }
     byId("ppFitLayers").disabled = !state.previewLayers.size;
@@ -176,35 +459,8 @@
       const geojson = await requestJson(url, { cache: "no-store" });
       const existing = state.previewLayers.get(stage);
       if (existing && map.hasLayer(existing.layer)) map.removeLayer(existing.layer);
-      const baseStyle = {
-        color: style.color,
-        weight: style.weight,
-        fillColor: style.color,
-        fillOpacity: style.fillOpacity,
-      };
-      const layer = window.L.geoJSON(geojson, {
-        renderer: window.L.canvas({ padding: 0.5 }),
-        style: () => baseStyle,
-        onEachFeature: (feature, polygonLayer) => {
-          polygonLayer.on("mouseover", event => {
-            event.target.setStyle({
-              color: "#ffffff",
-              weight: style.weight + 2,
-              fillColor: style.color,
-              fillOpacity: 0.38,
-            });
-            event.target.bringToFront?.();
-          });
-          polygonLayer.on("mouseout", event => event.target.setStyle(baseStyle));
-          const fragments = Number(feature.properties?.source_feature_count || 1);
-          const suffix = fragments > 1 ? ` · ${fragments} source fragments` : "";
-          polygonLayer.bindTooltip(`${style.label} panel${suffix}`, {
-            sticky: true,
-            direction: "top",
-            opacity: 0.95,
-          });
-        },
-      });
+      const created = createPreviewGeoJsonLayer(stage, geojson);
+      const layer = created.layer;
       // Show the newest stage by itself initially. Users can turn earlier stages
       // back on for comparison using the layer list.
       for (const item of state.previewLayers.values()) {
@@ -217,6 +473,8 @@
         count: expectedCount ?? geojson.features?.length ?? 0,
         layer,
         url,
+        geojson,
+        baseStyle: created.baseStyle,
       });
       renderPreviewLayers();
       const bounds = layer.getBounds();
@@ -235,6 +493,10 @@
     }
     if (status.outputs?.regularized?.url) {
       void loadPreviewLayer("regularized", status.outputs.regularized.url, status.regularize_stats?.output_features);
+    }
+    if (status.outputs?.edited?.url) {
+      const latest = (status.manual_revisions || []).at(-1);
+      void loadPreviewLayer("edited", status.outputs.edited.url, latest?.feature_count);
     }
   }
 
@@ -292,6 +554,7 @@
       info.tabIndex = 0;
       info.setAttribute("role", "button");
       const open = () => {
+        if (state.editing) return;
         state.workflowId = workflow.id;
         applyWorkflow(workflow);
         if (workflow.outputs?.combined) populateRegularizeSources(workflow.id);
@@ -307,6 +570,7 @@
       dots.className = "iconDots";
       dots.textContent = "⋮";
       dots.setAttribute("aria-label", `Options for ${workflowDisplayName(workflow)}`);
+      dots.disabled = Boolean(state.editing);
       const menu = document.createElement("div");
       menu.className = "postprocessWorkflowMenu";
       menu.hidden = true;
@@ -605,6 +869,7 @@
   }
 
   async function combine() {
+    if (state.editing) return;
     const resultId = byId("ppResult").value;
     const inputPath = byId("ppGeojson").value;
     byId("ppCombine").disabled = true;
@@ -634,6 +899,7 @@
   }
 
   async function regularize() {
+    if (state.editing) return;
     const selectedWorkflow = byId("ppRegularizeSource").value;
     if (!selectedWorkflow) {
       setMessage("Select a combined output to regularize.", "warn");
@@ -661,6 +927,7 @@
   function init() {
     if (state.initialized) return;
     state.initialized = true;
+    try { window.L?.PM?.setOptIn(true); } catch (_) {}
     // Keep activation self-contained. This also works if an older cached copy of
     // the shared tab controller is still present in the browser.
     byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
@@ -689,6 +956,26 @@
     byId("ppRefreshOutputs").addEventListener("click", () =>
       restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value, state.workflowId)
     );
+    byId("ppEditVertices").addEventListener("click", enableVertexEditing);
+    byId("ppDeletePolygons").addEventListener("click", enablePolygonDeletion);
+    byId("ppUndoEdits").addEventListener("click", undoEdits);
+    byId("ppSaveEdits").addEventListener("click", saveEditedRevision);
+    byId("ppExitEditing").addEventListener("click", () => stopEditing(true));
+    document.querySelector(".tabs")?.addEventListener("click", event => {
+      const navigation = event.target.closest("button[data-tab], a[href]");
+      if (!state.editing || !navigation || navigation.id === "btnPostprocess") return;
+      if (state.editing.dirty && !window.confirm("Leave Post-process and discard the unsaved polygon edits?")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      stopEditing(false);
+    }, true);
+    window.addEventListener("beforeunload", event => {
+      if (!state.editing?.dirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
   }
 
   async function activate() {

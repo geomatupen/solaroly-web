@@ -392,6 +392,18 @@ async function ensureMapTabLoaded(force = false){
   return _mapTabLoading;
 }
 
+async function showSharedOverlayOnMap(overlay){
+  switchToTab("tab-map");
+  await ensureMapTabLoaded();
+  if(typeof window.addSavedGeoJsonOverlay !== "function"){
+    throw new Error("Map overlay support is not available.");
+  }
+  await window.addSavedGeoJsonOverlay(overlay, { show: true, focus: true });
+  setTimeout(()=> MAP?.invalidateSize(), 30);
+}
+
+window.showSharedOverlayOnMap = showSharedOverlayOnMap;
+
 function switchToTab(tabId){
   $$(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab === tabId));
   $$(".tabPanel").forEach(p=>p.classList.toggle("active", p.id === tabId));

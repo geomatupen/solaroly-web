@@ -6,11 +6,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260824a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260824c" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260824e" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.18.3/dist/leaflet-geoman.css" />
+  <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.18.3/dist/leaflet-geoman.min.js"></script>
 </head>
 <body>
   <header>
@@ -23,8 +25,8 @@
       <button id="btnTrain" data-tab="tab-train">Train</button>
       <button id="btnOptimize" data-tab="tab-optimize">Optimize</button>
       <button id="btnResults" data-tab="tab-results">Results</button>
-      <button id="btnPostprocess" data-tab="tab-postprocess">Post-process</button>
       <button id="btnMap" data-tab="tab-map">Map</button>
+      <button id="btnPostprocess" data-tab="tab-postprocess">Post-process</button>
       <button id="btnLogs" data-tab="tab-logs">Logs</button>
       <div style="flex:1;"></div>
       <div id="currentProjectInfo" style="margin-right:16px; color:#cdd6df; font-size:12px;">
@@ -543,6 +545,21 @@
           </div>
           <div id="ppMap" class="postprocessMap" aria-label="Post-processing GeoJSON preview"></div>
           <div id="ppMapStatus" class="statusLine tiny">Scan a GeoJSON to preview it.</div>
+          <div id="ppEditPanel" class="postprocessEditPanel" hidden>
+            <div class="postprocessEditIdentity">
+              <span>Editing layer</span>
+              <strong id="ppEditLayerName">—</strong>
+              <small id="ppEditLayerIdentity">—</small>
+            </div>
+            <div class="postprocessEditActions">
+              <button id="ppEditVertices" class="tiny" type="button">Edit vertices</button>
+              <button id="ppDeletePolygons" class="secondary tiny" type="button">Delete polygons</button>
+              <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo changes</button>
+              <button id="ppSaveEdits" class="tiny" type="button" disabled>Save new revision</button>
+              <button id="ppExitEditing" class="secondary tiny" type="button">Exit editing</button>
+            </div>
+            <div id="ppEditStatus" class="muted tiny">Choose an editing tool.</div>
+          </div>
           <div id="ppLayerList" class="postprocessLayerList">
             <div class="muted tiny">No preview layers loaded.</div>
           </div>
@@ -1086,9 +1103,9 @@
   <script src="js/utils.js?v=20260822c"></script>
   <script src="js/map.js?v=20260824b"></script>
   <script src="js/colmap.js?v=20260301b"></script>
-  <script src="js/map-overlay.js?v=20260301b"></script>
-  <script src="js/main.js?v=20260824c"></script>
-  <script src="js/postprocess.js?v=20260824j"></script>
+  <script src="js/map-overlay.js?v=20260824a"></script>
+  <script src="js/main.js?v=20260824d"></script>
+  <script src="js/postprocess.js?v=20260824p"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

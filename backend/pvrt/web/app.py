@@ -4308,13 +4308,22 @@ def api_list_overlays():
     for overlay_dir in overlays_dir.iterdir():
         if not overlay_dir.is_dir():
             continue
+        overlay_display_name = None
+        try:
+            metadata_path = overlay_dir / ".overlay_meta.json"
+            if metadata_path.is_file():
+                overlay_display_name = str(
+                    json.loads(metadata_path.read_text(encoding="utf-8")).get("display_name") or ""
+                ).strip() or None
+        except (OSError, json.JSONDecodeError, AttributeError):
+            overlay_display_name = None
         
         # Look for GeoJSON files
         geojson_files = list(overlay_dir.glob("*.geojson")) + list(overlay_dir.glob("*.json"))
         for gj_file in geojson_files:
             result.append({
                 "type": "geojson",
-                "name": gj_file.stem,
+                "name": overlay_display_name or gj_file.stem,
                 "overlay_id": overlay_dir.name,
                 "file": gj_file.name,
                 "path": _media_url(gj_file)
@@ -4723,7 +4732,9 @@ async def serve_project_file(file_path: str):
         logger.error(f"Error serving project file: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-app.include_router(create_postprocess_router(get_project_sessions_dir, _media_url, logger))
+app.include_router(
+    create_postprocess_router(get_project_sessions_dir, get_project_overlays_dir, _media_url, logger)
+)
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")
 if FRONTEND_DIR.exists():

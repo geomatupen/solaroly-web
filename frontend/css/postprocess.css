@@ -52,7 +52,7 @@
 
 .postprocessLayerItem {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   padding: 8px;
@@ -82,6 +82,14 @@
 
 .postprocessLayerDownload:hover { text-decoration: underline; }
 
+.postprocessLayerActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .postprocessCheck {
   display: flex;
   align-items: flex-start;
@@ -97,6 +105,43 @@
 .postprocessCheck small { color: var(--muted); font-weight: 400; }
 
 .postprocessMap .leaflet-interactive { cursor: pointer; }
+
+.postprocessEditPanel {
+  margin: 8px 0;
+  padding: 10px;
+  border: 2px solid #a855f7;
+  border-radius: 9px;
+  background: rgba(168, 85, 247, .10);
+}
+
+.postprocessEditPanel[hidden] { display: none; }
+.postprocessEditIdentity span,
+.postprocessEditIdentity strong,
+.postprocessEditIdentity small { display: block; }
+.postprocessEditIdentity span { color: #d8b4fe; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.postprocessEditIdentity strong { font-size: 15px; }
+.postprocessEditIdentity small { color: var(--muted); overflow-wrap: anywhere; }
+
+.postprocessEditActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 9px 0 6px;
+}
+
+.postprocessEditActions button.active {
+  border-color: #c084fc;
+  background: #a855f7;
+  color: #fff;
+}
+
+.postprocessLayerItem.editing {
+  border-color: #a855f7;
+  box-shadow: 0 0 0 1px #a855f7 inset;
+}
+
+.postprocessLayerItem.locked { opacity: .48; }
+.postprocessMap.deleteMode .leaflet-interactive { cursor: crosshair; }
 
 .postprocessSavedHeader {
   display: flex;
