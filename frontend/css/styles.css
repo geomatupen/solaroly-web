@@ -209,7 +209,24 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 
 /* Map + right panel */
 .mapWrap{ position:relative; display:flex; gap:10px; }
-#map{ height:70vh; flex:1 1 auto; border:1px solid var(--border); border-radius:8px; }
+.mapCanvasWrap{ position:relative; flex:1 1 auto; min-width:0; }
+#map{ height:70vh; width:100%; border:1px solid var(--border); border-radius:8px; }
+.mapSectionLoading{
+  position:absolute;
+  z-index:500;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  border-radius:8px;
+  background:rgba(11,17,23,.72);
+  color:#e6edf3;
+  font-size:13px;
+  pointer-events:none;
+}
+.mapSectionLoading[hidden]{ display:none; }
+.mapListLoading{ display:flex; align-items:center; gap:7px; color:var(--muted); padding:8px 4px; }
 #layersPanel{ width:280px; background:#0b1117; border:1px solid var(--border); border-radius:8px; padding:8px; flex:0 0 280px; }
 .panelHeader{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
 .layersList{ list-style:none; margin:0; padding:0; }

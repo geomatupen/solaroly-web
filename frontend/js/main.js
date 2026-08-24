@@ -2603,7 +2603,37 @@ async function clearCameraPositions(){
 // }
 
 
+function setMapSectionLoading(loading, message = "Loading map data…"){
+  const overlay = document.getElementById('mapSectionLoading');
+  const text = document.getElementById('mapSectionLoadingText');
+  if(text) text.textContent = message;
+  if(overlay) overlay.hidden = !loading;
+}
+
+function setImagesSectionLoading(message){
+  const list = document.getElementById('imagesList');
+  if(!list) return;
+  list.innerHTML = `<li class="mapListLoading"><span class="spinner" aria-hidden="true"></span><span>${escapeHtml(message)}</span></li>`;
+}
+
+function waitForMapTiles(layers, timeoutMs = 10000){
+  const pending = (layers || []).map(layer => new Promise(resolve => {
+    if(!layer?.once) return resolve();
+    const finish = () => resolve();
+    layer.once('load', finish);
+    layer.once('tileerror', finish);
+  }));
+  if(!pending.length) return Promise.resolve();
+  return Promise.race([
+    Promise.all(pending),
+    new Promise(resolve => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 async function applySessionToMap(sessionName){
+  setMapSectionLoading(true, "Loading result map…");
+  setImagesSectionLoading("Checking geospatial imagery…");
+  try {
   // 0) clear any previous GeoTIFF tiles
   removeTifTiles();
 
@@ -2641,6 +2671,7 @@ async function applySessionToMap(sessionName){
 
   // 2) anomalies polygons (load regardless)
   if (anomaliesUrl){
+    setMapSectionLoading(true, "Loading detection polygons…");
     try { await loadGeoJSON(anomaliesUrl); }
     catch(e){ console.warn('anomalies fetch failed:', e); }
   }
@@ -2652,6 +2683,7 @@ async function applySessionToMap(sessionName){
   }
 
   // 3) Try ORIGINAL GeoTIFF tiles
+  setMapSectionLoading(true, "Checking for an orthophoto…");
   let tiles = null;
   try{
     const r = await fetch(`/api/session_tiles?session=${encodeURIComponent(sessionName)}`, { cache:'no-store' });
@@ -2661,6 +2693,7 @@ async function applySessionToMap(sessionName){
   const hasTifTiles = !!(tiles?.ok && Array.isArray(tiles.layers) && tiles.layers.length);
 
   if (hasTifTiles){
+    setMapSectionLoading(true, "Loading orthophoto tiles…");
     updateMapDetectionFilterVisibility(true);
     updateImageListButtonsVisibility(true);
     const chkMapFilterAnomalies = document.getElementById('chkMapFilterAnomalies');
@@ -2674,6 +2707,8 @@ async function applySessionToMap(sessionName){
 
     // show controller row inside Images list (replaces normal images there)
     installTilesIntoImagesList(sessionName, tiles.layers);
+
+    await waitForMapTiles(b.layers);
 
     // fit to raster on first load
     if (b.firstBounds){
@@ -2703,6 +2738,9 @@ async function applySessionToMap(sessionName){
   }
 
   refreshLayersPanel();
+  } finally {
+    setMapSectionLoading(false);
+  }
 }
 
 function createTifTileGroup(layerDefs, paneName = 'sessionOrthophotoPane'){

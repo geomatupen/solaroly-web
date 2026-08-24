@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260822b" />
+  <link rel="stylesheet" href="css/styles.css?v=20260824a" />
   <link rel="stylesheet" href="css/postprocess.css?v=20260824c" />
 
   <!-- Leaflet -->
@@ -571,7 +571,13 @@
         </div>
 
         <div class="mapWrap">
-          <div id="map"></div>
+          <div class="mapCanvasWrap">
+            <div id="map"></div>
+            <div id="mapSectionLoading" class="mapSectionLoading" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="mapSectionLoadingText">Loading map data…</span>
+            </div>
+          </div>
 
           <!-- Right layers panel -->
           <aside id="layersPanel">
@@ -1078,10 +1084,10 @@
   </div>
 
   <script src="js/utils.js?v=20260822c"></script>
-  <script src="js/map.js?v=20260301b"></script>
+  <script src="js/map.js?v=20260824a"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260301b"></script>
-  <script src="js/main.js?v=20260824a"></script>
+  <script src="js/main.js?v=20260824b"></script>
   <script src="js/postprocess.js?v=20260824i"></script>
   <script>
     // Display active project name in header

@@ -118,7 +118,12 @@ function renderImagesList(){
   if (!ul) return;
 
   if (!imageCatalog.length){
-    ul.innerHTML = `<li class="dim">No geolocated images in this session</li>`;
+    const located = Array.isArray(lastLoadedImagesGJ?.features)
+      ? lastLoadedImagesGJ.features.filter(feature => feature?.geometry?.type === 'Point').length
+      : 0;
+    ul.innerHTML = located
+      ? `<li class="dim">${located} image location${located === 1 ? '' : 's'} loaded. No individual image overlays are available.</li>`
+      : `<li class="dim">No geolocated images in this session</li>`;
     return;
   }
 

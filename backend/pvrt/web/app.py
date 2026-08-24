@@ -4111,7 +4111,9 @@ _TILER_STATS: Dict[tuple, Dict[str, Any]] = {}   # per (session, idx) cached str
 def _session_tifs(session: str) -> List[Path]:
     """
     Prefer absolute source paths recorded in metrics.json under 'source_tifs'.
-    Fallback: look in test_outputs/<session>/images for *.tif.
+    Fall back to the dataset recorded in result_status.json, then to files
+    retained inside the result. This supports interrupted legacy runs whose
+    inference outputs exist but final metrics bookkeeping did not run.
     """
     ses_dir = get_project_sessions_dir() / session
     if not ses_dir.exists():
@@ -4125,7 +4127,22 @@ def _session_tifs(session: str) -> List[Path]:
             if p.exists() and p.suffix.lower() in (".tif", ".tiff"):
                 tifs.append(p)
     if not tifs:
+        try:
+            status_path = ses_dir / "result_status.json"
+            status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.is_file() else {}
+            dataset = str(status.get("dataset") or "").strip()
+            if dataset:
+                dataset_dir = _project_child(get_project_test_dir(), dataset, "Test dataset")
+                tifs = sorted(
+                    path for path in dataset_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() in (".tif", ".tiff")
+                )
+        except (OSError, json.JSONDecodeError, HTTPException):
+            tifs = []
+    if not tifs:
         tifs = [p for p in (ses_dir / "images").glob("*") if p.suffix.lower() in (".tif", ".tiff")]
+    if not tifs:
+        tifs = [p for p in ses_dir.glob("*") if p.suffix.lower() in (".tif", ".tiff")]
     return tifs
 
 def _stitch_tiles_to_tiff(tifs: List[Path], output_path: Path) -> bool:
