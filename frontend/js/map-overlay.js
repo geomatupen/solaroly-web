@@ -170,6 +170,7 @@ async function uploadGeoJsonOverlay() {
         });
       },
       onEachFeature: (feature, layer) => {
+        window.addGeoJsonHoverHighlight?.(feature, layer);
         if (feature.properties) {
           let popupContent = '<div class="mini">';
           for (const [key, val] of Object.entries(feature.properties)) {
@@ -376,6 +377,7 @@ async function addSavedGeoJsonOverlay(overlay, options = {}) {
   const layer = L.geoJSON(geojson, {
     style: { color: '#22c55e', weight: 2, fillColor: '#22c55e', fillOpacity: 0.2 },
     onEachFeature: (feature, featureLayer) => {
+      window.addGeoJsonHoverHighlight?.(feature, featureLayer);
       if (!feature?.properties) return;
       const rows = Object.entries(feature.properties)
         .slice(0, 20)

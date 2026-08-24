@@ -141,7 +141,45 @@
 }
 
 .postprocessLayerItem.locked { opacity: .48; }
+.postprocessMap.vertexMode .leaflet-interactive { cursor: pointer; }
 .postprocessMap.deleteMode .leaflet-interactive { cursor: crosshair; }
+
+.postprocessPolygonPopup .leaflet-popup-content {
+  width: min(300px, calc(100vw - 80px)) !important;
+  margin: 10px 12px;
+  line-height: 1.3;
+}
+
+.postprocessPolygonPopup .leaflet-popup-scrolled {
+  padding-right: 7px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 0;
+  scrollbar-color: #64748b #17212b;
+  scrollbar-width: thin;
+}
+
+.postprocessPolygonPopup .leaflet-popup-scrolled::-webkit-scrollbar { width: 7px; }
+.postprocessPolygonPopup .leaflet-popup-scrolled::-webkit-scrollbar-track {
+  border-radius: 6px;
+  background: #17212b;
+}
+.postprocessPolygonPopup .leaflet-popup-scrolled::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: #64748b;
+}
+.postprocessPolygonPopup .leaflet-popup-scrolled::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+.postprocessPolygonPopup .propTable {
+  margin-top: 7px;
+  font-size: 11px;
+}
+
+.postprocessPolygonPopup .propTable th,
+.postprocessPolygonPopup .propTable td {
+  padding: 3px 5px;
+  vertical-align: top;
+}
 
 .postprocessSavedHeader {
   display: flex;

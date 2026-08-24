@@ -13,6 +13,38 @@ let mapDetectionFilterActive = false;
 let anomaliesFilterActive = false;
 let prevMapDetectionStates = null;
 
+function addGeoJsonHoverHighlight(feature, featureLayer) {
+  const geometryType = feature?.geometry?.type;
+  if (!['Polygon', 'MultiPolygon'].includes(geometryType) || !featureLayer?.setStyle) return;
+  let previousStyle = null;
+  featureLayer.on('mouseover', event => {
+    if (previousStyle) return;
+    const options = event.target.options || {};
+    previousStyle = {
+      color: options.color,
+      weight: options.weight,
+      opacity: options.opacity,
+      fillColor: options.fillColor,
+      fillOpacity: options.fillOpacity,
+    };
+    event.target.setStyle({
+      color: '#ffffff',
+      weight: Number(options.weight || 1) + 2,
+      opacity: 1,
+      fillColor: options.fillColor || options.color,
+      fillOpacity: Math.max(Number(options.fillOpacity || 0), 0.4),
+    });
+    event.target.bringToFront?.();
+  });
+  featureLayer.on('mouseout', event => {
+    if (!previousStyle) return;
+    event.target.setStyle(previousStyle);
+    previousStyle = null;
+  });
+}
+
+window.addGeoJsonHoverHighlight = addGeoJsonHoverHighlight;
+
 // catalog & runtime overlays for photos
 let imageCatalog = [];              // [{ id, name, url, bounds, on }]
 let imageOverlays = new Map();      // id -> L.ImageOverlay
@@ -237,7 +269,10 @@ function filterAnomalyLayer(def, activeStems, filterActive){
       fillColor: base.fillColor,
       fillOpacity: def.pointFill,
     }),
-    onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
+    onEachFeature: (feature, layer) => {
+      addGeoJsonHoverHighlight(feature, layer);
+      try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
+    }
   });
 
   if (wasVisible) {

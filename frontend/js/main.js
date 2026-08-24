@@ -2305,7 +2305,10 @@ async function loadGeoJSON(url){
   const layer = L.geoJSON(gj, {
     style: (f)=> styleForAnomalyFeature(f, base),
     pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
-    onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
+    onEachFeature: (feature, layer) => {
+      window.addGeoJsonHoverHighlight?.(feature, layer);
+      try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
+    }
   });
 
   overlayRegistry["Predictions"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Predictions"]?.categorical || null };
@@ -2337,7 +2340,10 @@ async function loadFinalAnomalies(url){
     const layer = L.geoJSON(gj, {
       style: (f)=> styleForAnomalyFeature(f, base),
       pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: base.color, fillColor: base.fillColor, fillOpacity: 0.6 }),
-      onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
+      onEachFeature: (feature, layer) => {
+        window.addGeoJsonHoverHighlight?.(feature, layer);
+        try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
+      }
     }).addTo(MAP);
 
     overlayRegistry["Filtered predictions"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Filtered predictions"]?.categorical || null };

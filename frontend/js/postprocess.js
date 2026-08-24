@@ -25,6 +25,20 @@
 
   const byId = id => document.getElementById(id);
 
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, character => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[character]);
+  }
+
+  function polygonPopupHtml(feature, label) {
+    const properties = Object.entries(feature?.properties || {}).slice(0, 20);
+    const rows = properties.map(([key, value]) =>
+      `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</td></tr>`
+    ).join("");
+    return `<div class="mini"><strong>${escapeHtml(label)} polygon</strong>${rows ? `<table class="propTable"><tbody>${rows}</tbody></table>` : ""}</div>`;
+  }
+
   async function requestJson(url, options = {}) {
     const response = await fetch(url, options);
     let payload = {};
@@ -107,6 +121,7 @@
 
   function createPreviewGeoJsonLayer(stage, geojson) {
     const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
+    const editableStage = ["combined", "regularized", "edited"].includes(stage);
     const baseStyle = {
       color: style.color,
       weight: style.weight,
@@ -115,13 +130,14 @@
       opacity: 1,
     };
     const layer = window.L.geoJSON(geojson, {
-      renderer: window.L.canvas({ padding: 0.5 }),
-      pmIgnore: true,
+      renderer: window.L.svg({ padding: 0.5 }),
+      pmIgnore: !editableStage,
       style: () => baseStyle,
-      onEachFeature: (_feature, polygonLayer) => {
-        polygonLayer.options.pmIgnore = true;
+      onEachFeature: (feature, polygonLayer) => {
+        polygonLayer.options.pmIgnore = !editableStage;
         polygonLayer.on("mouseover", event => {
-          if (state.editing) return;
+          if (state.editing && state.editing.stage !== stage) return;
+          if (state.editing?.selectedLayer === event.target) return;
           event.target.setStyle({
             color: "#ffffff",
             weight: style.weight + 2,
@@ -131,7 +147,22 @@
           event.target.bringToFront?.();
         });
         polygonLayer.on("mouseout", event => {
+          if (state.editing?.selectedLayer === event.target) return;
           if (!state.editing) event.target.setStyle(baseStyle);
+          else if (state.editing.stage === stage) {
+            event.target.setStyle({ ...baseStyle, weight: baseStyle.weight + 1, fillOpacity: 0.28, opacity: 1 });
+          }
+        });
+        polygonLayer.on("click", event => {
+          if (state.editing) return;
+          window.L.popup({
+            className: "postprocessPolygonPopup",
+            maxWidth: 340,
+            maxHeight: 210,
+          })
+            .setLatLng(event.latlng)
+            .setContent(polygonPopupHtml(feature, style.label))
+            .openOn(state.map);
         });
       },
     });
@@ -213,14 +244,18 @@
       entry.layer.off("click", entry.handler);
     }
     editing.deleteHandlers = [];
+    editing.mode = null;
+    editing.selectedLayer = null;
     editing.item.layer.eachLayer(layer => {
       try { layer.pm?.disable(); } catch (_) {}
       layer.off("pm:edit", setEditDirty);
       layer.off("pm:update", setEditDirty);
     });
     byId("ppMap").classList.remove("deleteMode");
+    byId("ppMap").classList.remove("vertexMode");
     byId("ppEditVertices").classList.remove("active");
     byId("ppDeletePolygons").classList.remove("active");
+    applyEditingEmphasis();
   }
 
   function applyEditingEmphasis() {
@@ -248,6 +283,8 @@
       snapshot: JSON.parse(JSON.stringify(item.layer.toGeoJSON())),
       dirty: false,
       deleteHandlers: [],
+      mode: null,
+      selectedLayer: null,
     };
     lockProcessingControls(true);
     byId("ppEditPanel").hidden = false;
@@ -265,6 +302,7 @@
   function enableVertexEditing() {
     if (!state.editing) return;
     disableEditingTools();
+    state.editing.mode = "vertices";
     let supported = false;
     state.editing.item.layer.eachLayer(layer => {
       layer.options.pmIgnore = false;
@@ -280,6 +318,9 @@
               other.off("pm:update", setEditDirty);
             }
           });
+          applyEditingEmphasis();
+          state.editing.selectedLayer = layer;
+          layer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.42 });
           layer.on("pm:edit", setEditDirty);
           layer.on("pm:update", setEditDirty);
           layer.pm.enable({ allowSelfIntersection: false, snappable: true });
@@ -289,6 +330,7 @@
         state.editing.deleteHandlers.push({ layer, handler });
       }
     });
+    byId("ppMap").classList.add("vertexMode");
     byId("ppEditVertices").classList.add("active");
     byId("ppEditStatus").textContent = supported
       ? "Vertex mode: click one polygon in the highlighted layer, then drag its vertices."
@@ -298,12 +340,15 @@
   function enablePolygonDeletion() {
     if (!state.editing) return;
     disableEditingTools();
+    state.editing.mode = "delete";
     const group = state.editing.item.layer;
     group.eachLayer(layer => {
       const handler = event => {
         if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
         group.removeLayer(layer);
+        state.editing.item.count = group.getLayers().length;
         setEditDirty(true);
+        renderPreviewLayers();
         byId("ppEditStatus").textContent = "Polygon removed. Continue deleting or save the new revision.";
       };
       layer.on("click", handler);
@@ -335,9 +380,9 @@
     if (!state.editing) return true;
     if (confirmDiscard && state.editing.dirty && !window.confirm("Exit and discard these unsaved polygon edits?")) return false;
     disableEditingTools();
-    for (const item of state.previewLayers.values()) {
+    for (const [stage, item] of state.previewLayers) {
       item.layer.eachLayer(layer => {
-        layer.options.pmIgnore = true;
+        layer.options.pmIgnore = !["combined", "regularized", "edited"].includes(stage);
         layer.setStyle?.(item.baseStyle);
       });
     }
