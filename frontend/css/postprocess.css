@@ -1,0 +1,301 @@
+.postprocessHeader h2,
+.postprocessHeader p { margin-bottom: 0; }
+
+.postprocessWorkspace {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.postprocessControls { min-width: 0; }
+
+.postprocessPreview {
+  position: sticky;
+  top: 16px;
+  min-width: 0;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0b1117;
+}
+
+.postprocessPreviewHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.postprocessPreviewHeader h3,
+.postprocessPreviewHeader p { margin: 0; }
+
+.postprocessMap {
+  width: 100%;
+  height: 460px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #111820;
+  overflow: hidden;
+}
+
+.postprocessLayerList {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 210px;
+  overflow: auto;
+  padding-top: 5px;
+}
+
+.postprocessLayerItem {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #101820;
+}
+
+.postprocessLayerSwatch {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.postprocessLayerText { min-width: 0; }
+.postprocessLayerText strong,
+.postprocessLayerText small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.postprocessLayerText small { color: var(--muted); }
+
+.postprocessLayerDownload {
+  color: #7eb8ff;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.postprocessLayerDownload:hover { text-decoration: underline; }
+
+.postprocessCheck {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.postprocessCheck input { margin-top: 3px; }
+.postprocessCheck span,
+.postprocessCheck strong,
+.postprocessCheck small { display: block; }
+.postprocessCheck small { color: var(--muted); font-weight: 400; }
+
+.postprocessMap .leaflet-interactive { cursor: pointer; }
+
+.postprocessSavedHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.postprocessSavedHeader h3 { margin: 0; }
+
+.postprocessWorkflowList {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 250px;
+  overflow: auto;
+  margin-top: 8px;
+}
+
+.postprocessWorkflowItem {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #101820;
+}
+
+.postprocessWorkflowItem.active { border-color: var(--accent); }
+.postprocessWorkflowInfo { min-width: 0; }
+.postprocessWorkflowInfo strong,
+.postprocessWorkflowInfo small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.postprocessWorkflowInfo small { color: var(--muted); }
+
+.postprocessWorkflowMenu {
+  position: absolute;
+  z-index: 1000;
+  top: 36px;
+  right: 7px;
+  display: flex;
+  flex-direction: column;
+  min-width: 105px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #0b1117;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+}
+
+.postprocessWorkflowMenu[hidden] { display: none; }
+.postprocessWorkflowMenu button { background: transparent; color: #cdd6df; text-align: left; }
+.postprocessWorkflowMenu button:hover { background: rgba(43, 135, 255, .14); }
+.postprocessWorkflowMenu button.danger { color: var(--err); }
+
+.postprocessSelection {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0b1117;
+}
+
+.postprocessSelection label,
+.postprocessFields label {
+  display: block;
+  margin-bottom: 5px;
+  color: #cdd6df;
+  font-size: 12px;
+}
+
+.postprocessSelection select,
+.postprocessFields input { width: 100%; }
+
+.postprocessSummary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.postprocessSummary[hidden] { display: none; }
+
+.postprocessMetric {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(11, 17, 23, .65);
+}
+
+.postprocessMetric strong,
+.postprocessMetric span { display: block; }
+.postprocessMetric strong { font-size: 17px; }
+.postprocessMetric span { color: var(--muted); font-size: 11px; }
+
+.postprocessSteps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.postprocessSteps:not(:has(#ppRegularizeStep:not([hidden]))) {
+  grid-template-columns: 1fr;
+}
+
+.postprocessStep {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0e161e;
+}
+
+.postprocessStep[hidden] { display: none; }
+
+.postprocessStepNumber {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.postprocessStepBody { flex: 1; min-width: 0; }
+.postprocessStepBody h3 { margin: 2px 0 4px; }
+.postprocessStepBody p { min-height: 51px; margin: 0 0 12px; }
+.postprocessStepBody > button { margin-top: 12px; }
+
+.postprocessFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.postprocessFields input[type="text"] {
+  background: #0b1117;
+  border: 1px solid var(--border);
+  color: #e6edf3;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.postprocessFieldsCompact { grid-template-columns: 1fr; }
+
+.postprocessOutputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(24, 183, 106, .35);
+  border-radius: 9px;
+  background: rgba(24, 183, 106, .08);
+}
+
+.postprocessOutputs[hidden] { display: none; }
+.postprocessOutputs strong { margin-right: 4px; }
+.postprocessOutputs a { color: #7eb8ff; }
+
+.postprocessLogWrap { margin-top: 12px; }
+.postprocessLogWrap summary { cursor: pointer; color: #cdd6df; }
+.postprocessLogWrap .logPane { height: 180px; margin-top: 8px; }
+
+#ppProgressWrap.ppIndeterminate .progressBar span {
+  width: 35% !important;
+  animation: ppIndeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes ppIndeterminate {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(300%); }
+}
+
+@media (max-width: 850px) {
+  .postprocessWorkspace,
+  .postprocessSelection,
+  .postprocessSteps { grid-template-columns: 1fr; }
+  .postprocessPreview { position: static; }
+  .postprocessSelection button { justify-self: start; }
+}
+
+@media (max-width: 520px) {
+  .postprocessFields { grid-template-columns: 1fr; }
+  .postprocessHeader { align-items: flex-start; flex-direction: column; }
+}

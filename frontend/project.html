@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260822b" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260824c" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -22,6 +23,7 @@
       <button id="btnTrain" data-tab="tab-train">Train</button>
       <button id="btnOptimize" data-tab="tab-optimize">Optimize</button>
       <button id="btnResults" data-tab="tab-results">Results</button>
+      <button id="btnPostprocess" data-tab="tab-postprocess">Post-process</button>
       <button id="btnMap" data-tab="tab-map">Map</button>
       <button id="btnLogs" data-tab="tab-logs">Logs</button>
       <div style="flex:1;"></div>
@@ -433,6 +435,126 @@
           </label>
         </div>
         <div id="resultsGrid" class="grid"></div>
+      </div>
+    </section>
+
+    <!-- POST-PROCESS TAB -->
+    <section id="tab-postprocess" class="tabPanel">
+      <div class="card">
+        <div class="row between postprocessHeader">
+          <div>
+            <h2>Panel post-processing</h2>
+            <p class="muted">Join panel polygons split at inference tile edges, then regularize their shape.</p>
+          </div>
+          <button id="ppRefresh" class="secondary" type="button">Refresh results</button>
+        </div>
+
+        <div class="postprocessWorkspace">
+        <div class="postprocessControls">
+        <div class="postprocessSelection">
+          <div>
+            <label for="ppResult">Test result</label>
+            <select id="ppResult"><option value="">Select a result…</option></select>
+          </div>
+          <div>
+            <label for="ppGeojson">Source GeoJSON</label>
+            <select id="ppGeojson" disabled><option value="">Select a GeoJSON…</option></select>
+          </div>
+          <button id="ppAnalyze" type="button" disabled>Scan GeoJSON</button>
+        </div>
+        <div id="ppMessage" class="statusLine" aria-live="polite"></div>
+        <div id="ppProgressWrap" class="progressWrap" hidden>
+          <div class="progressBar"><span id="ppProgressBar" style="width:0%"></span></div>
+          <div id="ppProgressText" class="progressText">Waiting…</div>
+        </div>
+        <div id="ppSummary" class="postprocessSummary" hidden></div>
+
+        <div class="postprocessSteps">
+          <article id="ppCombineStep" class="postprocessStep" hidden>
+            <div class="postprocessStepNumber">1</div>
+            <div class="postprocessStepBody">
+              <h3>Combine tile fragments</h3>
+              <p class="muted tiny">Only compatible polygons on adjoining tile edges are joined. Image resolution and tile dimensions are read from the selected result.</p>
+              <div class="postprocessFields">
+                <div>
+                  <label for="ppOutputName">Output name</label>
+                  <input id="ppOutputName" type="text" value="solar_panels" maxlength="80" />
+                </div>
+                <div>
+                  <label for="ppEdgeTolerance">Edge tolerance (pixels)</label>
+                  <input id="ppEdgeTolerance" type="number" value="7" min="0" max="50" step="0.5" />
+                </div>
+                <div>
+                  <label for="ppGapTolerance">Join gap (pixels)</label>
+                  <input id="ppGapTolerance" type="number" value="10" min="0" max="100" step="0.5" />
+                </div>
+                <div>
+                  <label for="ppBoundaryOverlap">Minimum edge overlap</label>
+                  <input id="ppBoundaryOverlap" type="number" value="0.20" min="0" max="1" step="0.05" />
+                </div>
+              </div>
+              <label class="postprocessCheck" for="ppRemoveContained">
+                <input id="ppRemoveContained" type="checkbox" checked />
+                <span>
+                  <strong>Remove contained polygons</strong>
+                  <small>Remove same-class polygons that are almost entirely inside a larger polygon.</small>
+                </span>
+              </label>
+              <button id="ppCombine" type="button" disabled>Combine fragments</button>
+            </div>
+          </article>
+
+          <article id="ppRegularizeStep" class="postprocessStep" hidden>
+            <div class="postprocessStepNumber">2</div>
+            <div class="postprocessStepBody">
+              <h3>Regularize polygons</h3>
+              <p class="muted tiny">Replace combined irregular outlines with their minimum-area oriented rectangles. Large shape changes are marked in the output metadata.</p>
+              <div class="postprocessFields postprocessFieldsCompact">
+                <div>
+                  <label for="ppRegularizeSource">Combined output</label>
+                  <select id="ppRegularizeSource" disabled>
+                    <option value="">Select a combined output…</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="ppAreaChange">Flag area change above (%)</label>
+                  <input id="ppAreaChange" type="number" value="35" min="0" max="1000" step="1" />
+                </div>
+              </div>
+              <button id="ppRegularize" type="button" disabled>Regularize polygons</button>
+            </div>
+          </article>
+        </div>
+
+        <div id="ppOutputs" class="postprocessOutputs" hidden></div>
+        <details id="ppLogWrap" class="postprocessLogWrap" hidden>
+          <summary>Processing log</summary>
+          <pre id="ppLog" class="logPane"></pre>
+        </details>
+        </div>
+
+        <aside class="postprocessPreview">
+          <div class="postprocessPreviewHeader">
+            <div>
+              <h3>Stage preview</h3>
+              <p class="muted tiny">Toggle and compare each available product.</p>
+            </div>
+            <button id="ppFitLayers" class="secondary tiny" type="button" disabled>Fit visible</button>
+          </div>
+          <div id="ppMap" class="postprocessMap" aria-label="Post-processing GeoJSON preview"></div>
+          <div id="ppMapStatus" class="statusLine tiny">Scan a GeoJSON to preview it.</div>
+          <div id="ppLayerList" class="postprocessLayerList">
+            <div class="muted tiny">No preview layers loaded.</div>
+          </div>
+          <div class="postprocessSavedHeader">
+            <h3>Saved outputs</h3>
+            <button id="ppRefreshOutputs" class="secondary tiny" type="button">Refresh</button>
+          </div>
+          <div id="ppWorkflowList" class="postprocessWorkflowList">
+            <div class="muted tiny">No saved outputs.</div>
+          </div>
+        </aside>
+        </div>
       </div>
     </section>
 
@@ -959,7 +1081,8 @@
   <script src="js/map.js?v=20260301b"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260301b"></script>
-  <script src="js/main.js?v=20260822k"></script>
+  <script src="js/main.js?v=20260824a"></script>
+  <script src="js/postprocess.js?v=20260824i"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

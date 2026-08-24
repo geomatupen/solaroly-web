@@ -412,6 +412,9 @@ function switchToTab(tabId){
   if(tabId === "tab-results"){
     ensureResultsTabLoaded();
   }
+  if(tabId === "tab-postprocess"){
+    window.PostProcessTab?.activate();
+  }
   if(tabId === "tab-map"){
     ensureMapTabLoaded();
   }

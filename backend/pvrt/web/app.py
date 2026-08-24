@@ -51,6 +51,7 @@ except (ImportError, ModuleNotFoundError):
 # --- Backend-agnostic bridge and registry ---
 from ..core.registry import register_backend
 from .bridge import train_entry, predict_entry
+from .postprocess import create_postprocess_router
 from .settings import settings
 
 if settings.enable_detectron:
@@ -4695,6 +4696,8 @@ async def serve_project_file(file_path: str):
     except Exception as e:
         logger.error(f"Error serving project file: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+app.include_router(create_postprocess_router(get_project_sessions_dir, _media_url, logger))
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")
 if FRONTEND_DIR.exists():
