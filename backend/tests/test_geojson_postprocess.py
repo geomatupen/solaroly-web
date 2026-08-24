@@ -83,7 +83,7 @@ class GeojsonPostprocessTests(unittest.TestCase):
             (boundary_x, split_top), (boundary_x + 0.8, split_top),
             (boundary_x + 0.8, split_top - 1.0), (boundary_x, split_top - 1.0),
         ])
-        source = result_dir / "anomalies.geojson"
+        source = result_dir / "predictions.geojson"
         source.write_text(json.dumps({
             "type": "FeatureCollection",
             "features": [

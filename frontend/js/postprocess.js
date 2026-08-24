@@ -242,6 +242,12 @@
     return workflow.display_name || workflow.parameters?.output_name || workflow.id;
   }
 
+  function sourceIdentity(path) {
+    return String(path || "")
+      .replace(/(^|\/)anomalies\.geojson$/i, "$1predictions.geojson")
+      .replace(/(^|\/)final_anomalies\.geojson$/i, "$1filtered_predictions.geojson");
+  }
+
   function populateRegularizeSources(preferredId = null) {
     const select = byId("ppRegularizeSource");
     const combined = state.workflows.filter(workflow => workflow.outputs?.combined);
@@ -398,7 +404,7 @@
         String(second.created_at || "").localeCompare(String(first.created_at || ""))
       );
       const workflow = state.workflows.find(item => item.id === preferredId)
-        || state.workflows.find(item => item.input_path === inputPath && item.outputs?.combined);
+        || state.workflows.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && item.outputs?.combined);
       renderWorkflowList();
       if (!workflow) {
         byId("ppRegularizeStep").hidden = true;
@@ -436,8 +442,9 @@
       for (const file of state.geojsonFiles) {
         addOption(select, file.path, `${file.name} · ${file.stage}`);
       }
-      const anomalies = [...select.options].find(option => option.value.toLowerCase() === "anomalies.geojson");
-      if (anomalies) select.value = anomalies.value;
+      const predictions = [...select.options].find(option => option.value.toLowerCase() === "predictions.geojson")
+        || [...select.options].find(option => option.value.toLowerCase() === "anomalies.geojson");
+      if (predictions) select.value = predictions.value;
       else if (select.options.length > 1) select.selectedIndex = 1;
       select.disabled = select.options.length <= 1;
       byId("ppAnalyze").disabled = !select.value;

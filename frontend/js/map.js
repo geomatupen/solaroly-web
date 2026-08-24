@@ -179,13 +179,13 @@ function applyAnomaliesFilter(){
 
   const layerDefs = [
     {
-      key: "Anomalies",
+      key: "Predictions",
       fallback: { color: "#ff5722", weight: 1, opacity: 1, fillColor: "#ff5722", fillOpacity: 0.25 },
       pointRadius: 4,
       pointFill: 0.8,
     },
     {
-      key: "Anomalies (high-confidence)",
+      key: "Filtered predictions",
       fallback: { color: "#00cc00", weight: 1.5, opacity: 0.8, fillColor: "#00cc00", fillOpacity: 0.15 },
       pointRadius: 5,
       pointFill: 0.6,

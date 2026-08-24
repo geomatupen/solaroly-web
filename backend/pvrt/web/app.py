@@ -750,7 +750,7 @@ def _tile_tif_to_dir(tif_path, tiles_dir, tile_size=1024, stride=None):
     return written
 
 
-# --- ADD: stitch per-tile JSON predictions into one anomalies.geojson (WGS84) ---
+# --- ADD: stitch per-tile JSON predictions into one predictions.geojson (WGS84) ---
 def _build_anomalies_geojson_from_tiles(
     tiles_dir,            # folder that contains the tile GeoTIFFs
     preds_dir,            # session results dir, contains "preds/*.json"
@@ -760,10 +760,10 @@ def _build_anomalies_geojson_from_tiles(
     score_thresh=0.0,
 ):
     """
-    Build ONE merged anomalies.geojson in EPSG:4326 from per-tile predictions.
+    Build ONE merged predictions.geojson in EPSG:4326 from per-tile predictions.
     Prefers per-instance mask polygons in pixel space (jd['polygons']); falls back to bboxes.
     Clips results to the source TIF footprint. Also writes images.geojson center point.
-    Returns (anomalies_geojson_path, images_geojson_path).
+    Returns (predictions_geojson_path, images_geojson_path).
     """
     import json, logging
     from pathlib import Path
@@ -998,9 +998,9 @@ def _build_anomalies_geojson_from_tiles(
                     }
                 })
 
-    # --- write anomalies.geojson ---
+    # --- write predictions.geojson ---
     anom_fc = {"type": "FeatureCollection", "features": feats}
-    anom_path = out_session / "anomalies.geojson"
+    anom_path = out_session / "predictions.geojson"
     anom_path.write_text(json.dumps(anom_fc, indent=2), encoding="utf-8")
 
     # --- write images.geojson (center point in WGS84) ---
@@ -1709,7 +1709,7 @@ def _preds_to_geojson(
     """
     Build:
       - images.geojson: points at image GPS with useful props (image name, overlay, thumb if available)
-      - anomalies.geojson: bbox polygons converted to WGS84 using center-based pixel→meter→degree math
+      - predictions.geojson: bbox polygons converted to WGS84 using center-based pixel→meter→degree math
     """
     from shapely.geometry import Polygon, mapping
 
@@ -1901,7 +1901,7 @@ def _preds_to_geojson(
         except Exception:
             continue
 
-    # ---------------- anomalies.geojson (bbox → polygon using image center) ----------------
+    # ---------------- predictions.geojson (bbox → polygon using image center) ----------------
     anom_fc = {"type": "FeatureCollection", "features": []}
 
     preds_json_dir = Path(preds_dir) / "preds"
@@ -2042,7 +2042,7 @@ def _preds_to_geojson(
                 }
             })
 
-    anom_path = out_session / "anomalies.geojson"
+    anom_path = out_session / "predictions.geojson"
     anom_path.write_text(json.dumps(anom_fc, indent=2), encoding="utf-8")
 
     return anom_path, imgs_path
@@ -2052,7 +2052,7 @@ def _preds_to_geojson(
 
 
 
-def _merge_anomalies_geojson(anomalies_path: Path, overlap_threshold: float = 0.20) -> Path:
+def _filter_predictions_geojson(predictions_path: Path, overlap_threshold: float = 0.20) -> Path:
     """
     Filter overlapping anomaly features by keeping highest-confidence detections.
     
@@ -2060,26 +2060,26 @@ def _merge_anomalies_geojson(anomalies_path: Path, overlap_threshold: float = 0.
       1. Group features by class (classname property)
       2. For each class, iteratively remove lower-confidence polygons when overlap >threshold% of larger polygon
       3. Iterative: removing one polygon might reveal other overlaps
-      4. Write final_anomalies.geojson in same session directory
+      4. Write filtered_predictions.geojson in the same session directory
     
     Args:
-      anomalies_path: Path to anomalies.geojson
+      predictions_path: Path to predictions.geojson
       overlap_threshold: Remove lower-confidence if overlap > threshold * larger_polygon_area (default 20%)
     
     Returns:
-      Path to final_anomalies.geojson
+      Path to filtered_predictions.geojson
     """
     from shapely.geometry import shape as geom_shape
     from shapely.geometry import mapping
     
-    anomalies_path = Path(anomalies_path)
+    predictions_path = Path(predictions_path)
     
-    # Load anomalies.geojson
+    # Load predictions.geojson
     try:
-        anom_data = json.loads(anomalies_path.read_text(encoding="utf-8"))
+        anom_data = json.loads(predictions_path.read_text(encoding="utf-8"))
     except Exception as e:
-        logger.warning(f"Failed to load anomalies.geojson: {e}, skipping filter")
-        return anomalies_path
+        logger.warning(f"Failed to load predictions.geojson: {e}, skipping filter")
+        return predictions_path
     
     # Group features by classname
     features_by_class: Dict[str, list] = {}
@@ -2174,16 +2174,16 @@ def _merge_anomalies_geojson(anomalies_path: Path, overlap_threshold: float = 0.
             except Exception:
                 pass
     
-    # Write final_anomalies.geojson
+    # Write filtered_predictions.geojson
     final_fc = {
         "type": "FeatureCollection",
         "features": filtered_features
     }
     
-    final_path = anomalies_path.parent / "final_anomalies.geojson"
+    final_path = predictions_path.parent / "filtered_predictions.geojson"
     final_path.write_text(json.dumps(final_fc, indent=2), encoding="utf-8")
     
-    logger.info(f"Generated final_anomalies.geojson: {len(filtered_features)} filtered features from {len(anom_data.get('features', []))} original")
+    logger.info(f"Generated filtered_predictions.geojson: {len(filtered_features)} filtered features from {len(anom_data.get('features', []))} original")
     return final_path
 
 
@@ -2235,8 +2235,9 @@ def _result_run_status(result_dir: Path) -> str:
                 return status
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
             pass
-    required = ("metrics.json", "manifest.json", "anomalies.geojson", "images.geojson")
-    return "complete" if all((result_dir / name).is_file() for name in required) else "incomplete"
+    predictions_exist = any((result_dir / name).is_file() for name in ("predictions.geojson", "anomalies.geojson"))
+    required_exist = all((result_dir / name).is_file() for name in ("metrics.json", "manifest.json", "images.geojson"))
+    return "complete" if predictions_exist and required_exist else "incomplete"
 
 
 def _project_child(root: Path, child_id: str, label: str) -> Path:
@@ -3898,7 +3899,7 @@ async def api_test_run(
             camera_meta=camera_meta,
         )
         # Filter overlapping anomalies: keep highest-confidence when overlap >20%
-        final_anom_gj = _merge_anomalies_geojson(anom_gj, overlap_threshold=0.20)
+        final_anom_gj = _filter_predictions_geojson(anom_gj, overlap_threshold=0.20)
         
         # For images branch, overlays/thumbs are in session dir
         ov_dir = out_root / "overlays"
@@ -3906,7 +3907,7 @@ async def api_test_run(
 
     # Filter anomalies for TIF branch as well (if not already done)
     if final_anom_gj is None and anom_gj:
-        final_anom_gj = _merge_anomalies_geojson(anom_gj, overlap_threshold=0.20)
+        final_anom_gj = _filter_predictions_geojson(anom_gj, overlap_threshold=0.20)
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):
@@ -3949,7 +3950,9 @@ async def api_test_run(
         "ok": True,
         "session": session,
         "geojson": str(anom_gj),  # backward-compat
+        "predictions_geojson": _media_url(anom_gj),
         "anomalies_geojson": _media_url(anom_gj),
+        "filtered_predictions_geojson": _media_url(final_anom_gj) if final_anom_gj else None,
         "final_anomalies_geojson": _media_url(final_anom_gj) if final_anom_gj else None,
         "images_geojson":    _media_url(imgs_gj),
         "results_dir": str(preds_dir),
@@ -4011,7 +4014,9 @@ async def api_session_summary(session: str):
     if not ses.exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
-    gj = ses / "anomalies.geojson"      # existing
+    gj = ses / "predictions.geojson"
+    if not gj.exists():
+        gj = ses / "anomalies.geojson"  # legacy session compatibility
     imgs_gj = ses / "images.geojson"    # NEW
 
     manifest_path = ses / "manifest.json"
@@ -4029,7 +4034,7 @@ async def api_session_summary(session: str):
         marker = f"/{session}/"
         if marker in path:
             rel = path.split(marker, 1)[1]
-            if rel and any(rel.startswith(prefix) for prefix in ("overlays/", "thumbs/", "images/", "rotated_images/", "anomalies.geojson", "images.geojson")):
+            if rel and any(rel.startswith(prefix) for prefix in ("overlays/", "thumbs/", "images/", "rotated_images/", "predictions.geojson", "anomalies.geojson", "images.geojson")):
                 target = ses / rel
                 if target.exists():
                     return _media_url(target)
@@ -4067,14 +4072,18 @@ async def api_session_summary(session: str):
 
     rotated_images_available = bool(assets.get("rotated_images")) or (camera_meta is not None and bool(camera_meta))
 
-    final_gj = ses / "final_anomalies.geojson"
+    final_gj = ses / "filtered_predictions.geojson"
+    if not final_gj.exists():
+        final_gj = ses / "final_anomalies.geojson"  # legacy session compatibility
 
     return {
         "ok": True,
         "session": session,
         # keep old key for backward compatibility (anomalies)
         "geojson_url": _media_url(gj) if gj.exists() else None,
+        "predictions_geojson": _media_url(gj) if gj.exists() else None,
         "anomalies_geojson": _media_url(gj) if gj.exists() else None,
+        "filtered_predictions_geojson": _media_url(final_gj) if final_gj.exists() else None,
         "final_anomalies_geojson": _media_url(final_gj) if final_gj.exists() else None,
         # NEW: where image footprints live (if you created them)
         "images_geojson_url": _media_url(imgs_gj) if imgs_gj.exists() else None,

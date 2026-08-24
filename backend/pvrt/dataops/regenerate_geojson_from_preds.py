@@ -82,7 +82,7 @@ if not IMAGES_DIR.exists():
 PRED_DIR = BASE / 'preds'
 CAM_META = BASE / 'camera_meta.json'
 MANIFEST = BASE / 'manifest.json'
-OUT_ANOM = BASE / 'anomalies.geojson'
+OUT_ANOM = BASE / 'predictions.geojson'
 OUT_IMAGES = BASE / 'images.geojson'
 
 # Default GSD - will be overridden by per-image values from camera_meta
@@ -432,7 +432,7 @@ for fname, (w_px, h_px) in sizes.items():
 OUT_IMAGES.write_text(json.dumps(imgs_fc, indent=2), encoding='utf-8')
 print('Wrote images.geojson features:', len(imgs_fc['features']))
 
-# build anomalies.geojson from preds
+# build predictions.geojson from preds
 anom_fc = {"type": "FeatureCollection", "features": []}
 if PRED_DIR.exists():
     for jpath in sorted(Path(PRED_DIR).glob('*.json')):
@@ -563,6 +563,6 @@ if PRED_DIR.exists():
             anom_fc['features'].append({'type': 'Feature', 'geometry': {'type': 'Polygon', 'coordinates': [poly]}, 'properties': {'score': sc, 'image': srcfile}})
 
     OUT_ANOM.write_text(json.dumps(anom_fc, indent=2), encoding='utf-8')
-    print('Wrote anomalies.geojson features:', len(anom_fc['features']))
+    print('Wrote predictions.geojson features:', len(anom_fc['features']))
 else:
     print('No preds directory found at', PRED_DIR)

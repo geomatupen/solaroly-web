@@ -2095,7 +2095,7 @@ function toHex(c){
 
 
 
-function rebuildCategoryEditors(prop, layerKey = "Anomalies"){
+function rebuildCategoryEditors(prop, layerKey = "Predictions"){
   const rec  = overlayRegistry[layerKey];
   const host = document.getElementById("stCatList");
   if (!rec || !rec.data || !host) return;
@@ -2279,14 +2279,14 @@ async function loadGeoJSON(url){
   const res = await fetch(url);
   const gj = await res.json();
 
-  const base = overlayRegistry["Anomalies"]?.style || {
+  const base = overlayRegistry["Predictions"]?.style || {
     color: "#ff5722", weight: 1, opacity: 1,
     fillColor: "#ff5722", fillOpacity: 0.25
   };
 
-  // remove previous Anomalies layer (if any) so we don't end up with duplicates
+  // remove the previous Predictions layer so we do not create duplicates
   try{
-    const prev = overlayRegistry["Anomalies"];
+    const prev = overlayRegistry["Predictions"];
     if (prev && prev.layer){ try { MAP.removeLayer(prev.layer); } catch(_){} }
   }catch(_){ }
 
@@ -2296,7 +2296,7 @@ async function loadGeoJSON(url){
     onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
   });
 
-  overlayRegistry["Anomalies"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Anomalies"]?.categorical || null };
+  overlayRegistry["Predictions"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Predictions"]?.categorical || null };
   refreshLayersPanel();
   renderLegend();
   // Don't auto-fit bounds here - let applySessionToMap handle it after all layers loaded
@@ -2306,19 +2306,19 @@ async function loadFinalAnomalies(url){
   try {
     const res = await fetch(url);
     if (!res.ok) {
-      console.debug('final_anomalies.geojson not found (expected if just generated)');
+      console.debug('filtered_predictions.geojson not found (optional)');
       return;
     }
     const gj = await res.json();
 
-    const base = overlayRegistry["Anomalies (high-confidence)"]?.style || {
+    const base = overlayRegistry["Filtered predictions"]?.style || {
       color: "#00cc00", weight: 1.5, opacity: 0.8,
       fillColor: "#00cc00", fillOpacity: 0.15
     };
 
     // remove previous layer (if any)
     try{
-      const prev = overlayRegistry["Anomalies (high-confidence)"];
+      const prev = overlayRegistry["Filtered predictions"];
       if (prev && prev.layer){ try { MAP.removeLayer(prev.layer); } catch(_){} }
     }catch(_){ }
 
@@ -2328,7 +2328,7 @@ async function loadFinalAnomalies(url){
       onEachFeature: (feature, layer) => { try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {} }
     }).addTo(MAP);
 
-    overlayRegistry["Anomalies (high-confidence)"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Anomalies (high-confidence)"]?.categorical || null };
+    overlayRegistry["Filtered predictions"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Filtered predictions"]?.categorical || null };
     refreshLayersPanel();
     renderLegend();
   } catch(e) {
@@ -2373,7 +2373,7 @@ function styleForCategoricalFeature(f, fallback, categorical){
 }
 
 function styleForAnomalyFeature(f, fallback){
-  const rec = overlayRegistry["Anomalies"];
+  const rec = overlayRegistry["Predictions"];
   const cat = rec?.categorical;
   return styleForCategoricalFeature(f, fallback, cat);
 }
@@ -2381,7 +2381,7 @@ function styleForAnomalyFeature(f, fallback){
 
 
 function applyCategoricalStyling(prop='class_name'){
-  const rec = overlayRegistry["Anomalies"];
+  const rec = overlayRegistry["Predictions"];
   if (!rec || !rec.data || !rec.layer) { renderLegend(); return; }
 
   anomaliesProp = prop;
@@ -2416,14 +2416,14 @@ function renderLegend(){
   if (!el) return;
   el.innerHTML = '';
 
-  const rec = overlayRegistry["Anomalies"];
+  const rec = overlayRegistry["Predictions"];
   if (!rec || !rec.layer) return;
 
   const title = document.createElement('div');
   title.className = 'legendHeader';
   const by = rec.categorical?.prop && rec.categorical.prop !== '__none__'
     ? ` — <span class="dim">by <b>${escapeHtml(rec.categorical.prop)}</b></span>` : '';
-  title.innerHTML = `<div class="legendTitle">Anomalies${by}</div>`;
+  title.innerHTML = `<div class="legendTitle">Predictions${by}</div>`;
   el.appendChild(title);
 
   const body = document.createElement('div'); body.className = 'legendBody'; el.appendChild(body);
@@ -2651,6 +2651,7 @@ async function applySessionToMap(sessionName){
       sum?.images_geojson,
       sum?.images,
       sum?.images_gj,
+      sum?.predictions_geojson,
       sum?.geojson_url,
       sum?.anomalies_geojson,
       sum?.geojson,
@@ -2665,8 +2666,8 @@ async function applySessionToMap(sessionName){
   };
 
   const sessRoot = _sessionRootFromSummary();
-  const anomaliesUrl = sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot ? (sessRoot + 'anomalies.geojson') : null);
-  const finalAnomaliesUrl = sum.final_anomalies_geojson || (sessRoot ? (sessRoot + 'final_anomalies.geojson') : null);
+  const anomaliesUrl = sum.predictions_geojson || sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot ? (sessRoot + 'predictions.geojson') : null);
+  const finalAnomaliesUrl = sum.filtered_predictions_geojson || sum.final_anomalies_geojson || (sessRoot ? (sessRoot + 'filtered_predictions.geojson') : null);
   const imagesUrl = sum.images_geojson_url || sum.images_geojson || sum.images || sum.images_gj || (sessRoot ? (sessRoot + 'images.geojson') : null);
 
   // 2) anomalies polygons (load regardless)
