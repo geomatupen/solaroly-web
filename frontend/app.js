@@ -1034,7 +1034,7 @@ function updateAccurateUI(){
     if(hint){ hint.textContent = 'Accurate localization disabled on this server.'; }
     setHidden(modeRow, true);
     setHidden(optRow, true);
-    if(mosaicControls){ mosaicControls.hidden = true; }
+    if(mosaicControls){ mosaicControls.hidden = false; }
     return;
   }
   const ready = !!(state && state.ready);
@@ -1143,12 +1143,9 @@ function updateAccurateUI(){
     btn.classList.toggle('disabled', disable);
   }
 
-  // Update mosaic checkbox visibility: show only if camera_meta exists (rotation will happen)
+  // Approximate EXIF/GPS mosaicing is independent of the optional COLMAP feature.
   if(mosaicControls){
-    const cameraMetaExists = wantsAccurate && modeSelected && (
-      modeOptical ? !!opticalProject : (state?.camera_meta && Object.keys(state.camera_meta).length > 0)
-    );
-    mosaicControls.hidden = !cameraMetaExists;
+    mosaicControls.hidden = false;
   }
 }
 
@@ -2834,6 +2831,10 @@ async function cancelTraining(){
 
 // ---------- test run ----------
 async function runTest(){
+  if(testAbort){
+    warn("test", "A test is already running. Wait for it to finish or cancel it first.");
+    return;
+  }
   clearAlerts("test"); wireAlertClose();
   $("#testMiniLog").textContent = "";
   const ds = getSelectedDataset();
@@ -2905,6 +2906,8 @@ async function runTest(){
   const testThreshold = (document.getElementById("testThreshold")?.value);
 
   setHidden($("#spinTest"), false);
+  const runTestButton = document.getElementById('btnRunTest');
+  if(runTestButton) runTestButton.disabled = true;
   setText("#testStatus","Running inference…");
 
   const fd = new FormData();
@@ -2921,8 +2924,19 @@ async function runTest(){
   fd.append("test_threshold", testThreshold);
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
-  const wantsMosaic = document.getElementById("chkMosaicImages")?.checked;
-  if(wantsMosaic) fd.append("mosaic_enabled", "true");
+  const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;
+  const inferenceSource = createMosaic
+    ? (document.querySelector('input[name="inferenceSource"]:checked')?.value || 'mosaic')
+    : 'individual';
+  fd.append('inference_source', inferenceSource);
+  fd.append('create_mosaic', createMosaic ? 'true' : 'false');
+  if(createMosaic){
+    fd.append("mosaic_enabled", "true");
+    fd.append(
+      "refine_mosaic_alignment",
+      document.getElementById("chkRefineMosaicAlignment")?.checked ? "true" : "false"
+    );
+  }
   const backend = getSelectedBackend();
   fd.append('backend', backend);
   if(backend === 'yolo'){
@@ -2976,6 +2990,8 @@ async function runTest(){
   }finally{
     setHidden($("#spinTest"), true);
     testAbort = null;
+    if(typeof updateAccurateUI === 'function') updateAccurateUI();
+    else if(runTestButton) runTestButton.disabled = false;
   }
 }
 function cancelTest(){ if(testAbort){ testAbort.abort(); } }

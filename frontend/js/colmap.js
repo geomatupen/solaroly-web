@@ -426,6 +426,7 @@ function updateAccurateUI(){
   const btn = document.getElementById('btnRunTest');
   const mosaicControls = document.getElementById('mosaicControls');
   const colmapEnabled = !!(window.featureFlags && window.featureFlags.colmap);
+  const testIsRunning = typeof testAbort !== 'undefined' && testAbort !== null;
 
   if(!colmapEnabled){
     if(chk){ chk.checked = false; chk.disabled = true; }
@@ -433,10 +434,13 @@ function updateAccurateUI(){
     if(radOptical){ radOptical.checked = false; radOptical.disabled = true; }
     if(modeRow) setHidden(modeRow, true);
     if(optRow) setHidden(optRow, true);
-    if(mosaicControls) mosaicControls.hidden = true;
+    if(mosaicControls) mosaicControls.hidden = false;
     if(badge){ badge.className = 'pill pill-muted'; badge.textContent = 'Disabled'; }
     if(hint){ hint.textContent = 'Accurate poses disabled on this server.'; }
-    if(btn){ btn.disabled = false; btn.classList.remove('disabled'); }
+    if(btn){
+      btn.disabled = testIsRunning;
+      btn.classList.toggle('disabled', testIsRunning);
+    }
     return;
   }else{
     if(chk) chk.disabled = false;
@@ -540,21 +544,18 @@ function updateAccurateUI(){
   }
 
   if(chk && btn){
-    const disable = wantsAccurate && (
+    const disable = testIsRunning || (wantsAccurate && (
       !modeSelected ||
       (modeColmap && !ready) ||
       (modeOptical && !opticalProject)
-    );
+    ));
     btn.disabled = disable;
     btn.classList.toggle('disabled', disable);
   }
 
-  // Update mosaic checkbox visibility: show only if camera_meta exists (rotation will happen)
+  // Approximate EXIF/GPS mosaicing is independent of the optional COLMAP feature.
   if(mosaicControls){
-    const cameraMetaExists = wantsAccurate && modeSelected && (
-      modeOptical ? !!opticalProject : (state?.camera_meta && Object.keys(state.camera_meta).length > 0)
-    );
-    mosaicControls.hidden = !cameraMetaExists;
+    mosaicControls.hidden = false;
   }
 }
 

@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260825c" />
+  <link rel="stylesheet" href="css/styles.css?v=20260825n" />
   <link rel="stylesheet" href="css/postprocess.css?v=20260825e" />
 
   <!-- Leaflet -->
@@ -136,14 +136,30 @@
             </div>
           </div>
 
-          <div class="row wrap" id="mosaicControls" hidden>
+          <div class="row wrap" id="mosaicControls">
             <label class="switchRow wide">
               <input type="checkbox" id="chkMosaicImages" />
-              <span>
-                Mosaic rotated images before inference
-                <span id="mosaicHint" class="muted tiny hintLine">Stitch rotated images into single orthophoto</span>
-              </span>
+              <span>Create approximate mosaic</span>
             </label>
+            <button id="btnMosaicInfo" type="button" class="infoBtn" aria-label="How approximate mosaicing works" aria-haspopup="dialog" aria-controls="mosaicInfoModal">i</button>
+          </div>
+          <div id="mosaicOptions" hidden style="margin-left: 2em;">
+            <div class="row wrap">
+              <label>Run inference on</label>
+              <div class="radioStack" role="radiogroup" aria-label="Inference source">
+                <label><input type="radio" name="inferenceSource" value="mosaic" checked /> Approximate mosaic only</label>
+                <label><input type="radio" name="inferenceSource" value="individual" /> Individual images only</label>
+              </div>
+            </div>
+            <div class="row wrap" id="mosaicAlignmentControls">
+              <label class="switchRow wide">
+                <input type="checkbox" id="chkRefineMosaicAlignment" checked />
+                <span>
+                  Refine overlapping image alignment
+                  <span class="muted tiny hintLine">Fast GPS-constrained visual matching; unmatched images retain their GPS placement.</span>
+                </span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -928,6 +944,35 @@
     </div>
   </div>
 
+  <div id="mosaicInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="mosaicInfoTitle">
+    <div class="modalContent workflowInfoModalContent">
+      <div class="modalHeader">
+        <h3 id="mosaicInfoTitle">How approximate mosaicing works</h3>
+        <button class="iconBtn" data-close-info-modal type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody workflowInfoBody">
+        <p>This optional workflow creates a quick geolocated mosaic from individual images without COLMAP. It is intended for visual review and inference, not survey-grade orthorectification.</p>
+        <ol class="workflowSteps">
+          <li><b>Prepare images.</b> Apply selected lens correction first, then rotate every image north-up from its heading metadata.</li>
+          <li><b>Place from metadata.</b> Use EXIF GPS centres and estimated ground resolution for the initial layout. At least two geotagged images are required.</li>
+          <li><b>Calculate full-image footprints.</b> Use each image’s metadata-derived ground resolution to place its complete corrected frame on the mosaic canvas. Source images are not cropped before alignment.</li>
+          <li><b>Select likely neighbours.</b> When overlap refinement is enabled, compare each image with at most eight nearby images whose GPS footprints plausibly overlap. Images without predicted overlap are not forced into visual matching.</li>
+          <li><b>Match visual structures.</b> Combine distinctive ORB corners and texture with descriptor points generated along long structural lines. Lines are supporting evidence rather than the only evidence because repeated panel rows are ambiguous.</li>
+          <li><b>Reject unsafe matches.</b> Pixel-identical frames are rejected as independent position constraints. Other matches must agree with GPS, cover enough of the overlap, and pass partial-affine RANSAC limits for scale, residual rotation and reprojection error.</li>
+          <li><b>Require neighbouring support.</b> A single isolated pair cannot move an image. Accepted constraints must form a connected component containing at least three images before positions are refined.</li>
+          <li><b>Solve globally.</b> Fit all accepted pair displacements together with soft GPS anchors. This avoids accumulating error image-by-image along the flight path.</li>
+          <li><b>Keep safe fallbacks.</b> An image without a validated overlap remains at its GPS position. Turning refinement off uses GPS/heading placement for every image.</li>
+          <li><b>Run one inference source.</b> <em>Individual images</em> predicts each prepared frame. <em>Approximate mosaic only</em> builds the mosaic, cuts only the completed mosaic into model-sized tiles, and predicts those tiles. The two modes never run together in one result.</li>
+          <li><b>Blend, then cut.</b> Blend the fully aligned images first. Only after the mosaic is complete is its GeoTIFF cut into model-sized inference tiles. All pair decisions, structural-point counts and image corrections are written to <code>mosaic_alignment.json</code>.</li>
+        </ol>
+        <div class="workflowNote"><b>Limitations:</b> a fast 2-D mosaic cannot fully correct terrain relief, strong camera tilt, parallax, poor GPS, missing overlap or large viewpoint changes. Use COLMAP or a photogrammetry workflow when those effects are significant.</div>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" data-close-info-modal type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="thermalTrainingInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="thermalTrainingInfoTitle">
     <div class="modalContent workflowInfoModalContent">
       <div class="modalHeader">
@@ -1187,11 +1232,11 @@
     </div>
   </div>
 
-  <script src="js/utils.js?v=20260822c"></script>
-  <script src="js/map.js?v=20260825d"></script>
-  <script src="js/colmap.js?v=20260825c"></script>
+  <script src="js/utils.js?v=20260825m"></script>
+  <script src="js/map.js?v=20260825o"></script>
+  <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
-  <script src="js/main.js?v=20260825h"></script>
+  <script src="js/main.js?v=20260825p"></script>
   <script src="js/postprocess.js?v=20260825j"></script>
   <script>
     // Display active project name in header

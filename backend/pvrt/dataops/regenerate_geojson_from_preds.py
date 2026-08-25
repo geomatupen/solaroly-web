@@ -274,19 +274,11 @@ try:
                         except Exception:
                             continue
                 heading = _camera_heading_from_entry(cam_entry, cam_session_meta)
-                
-                # Smart heading source selection:
-                # If gimbal and aircraft headings differ significantly (>90°), they may be 
-                # in different reference frames. Use aircraft heading in that case.
-                # Otherwise use gimbal heading (standard practice).
-                if heading is not None and cam_entry and isinstance(cam_entry, dict):
-                    gimbal = _coerce_float(cam_entry.get('rotation_gimbal'))
-                    aircraft = _coerce_float(cam_entry.get('rotation_aircraft'))
-                    if gimbal is not None and aircraft is not None:
-                        diff = abs(gimbal - aircraft)
-                        # Large difference (>90°) indicates different reference frame
-                        if diff > 90:
-                            heading = _normalize_heading_deg(aircraft)
+
+                # Keep the camera/gimbal orientation selected by
+                # _camera_heading_from_entry. Aircraft yaw describes the flight
+                # body, not necessarily the image's top edge; substituting it can
+                # introduce a 180-degree flip when the gimbal looks backward.
                 
                 rot = _camera_heading_to_overlay_rotation(heading)
                 # Rotate images to north-up orientation

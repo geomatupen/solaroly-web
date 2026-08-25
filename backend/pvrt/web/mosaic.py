@@ -32,6 +32,8 @@ def prepare_rotation_and_mosaic(
     out_root: Path,
     camera_meta: Dict[str, Any],
     mosaic_enabled: bool,
+    inference_source: str = "mosaic",
+    refine_mosaic_alignment: bool = False,
     ds_dir: Path,
     model_is_thermal: bool,
     undistort_thermal: bool,
@@ -50,6 +52,32 @@ def prepare_rotation_and_mosaic(
         input_type,
         len(camera_meta) if camera_meta else 0,
     )
+
+    if mosaic_enabled:
+        if input_type != "images":
+            raise RuntimeError(
+                "Approximate mosaicing is available only for folders of individual images, "
+                "not an existing orthophoto."
+            )
+        geolocated_count = sum(
+            1
+            for key, entry in (camera_meta or {}).items()
+            if not str(key).startswith("__")
+            and isinstance(entry, dict)
+            and (entry.get("latitude") is not None or entry.get("lat") is not None)
+            and (entry.get("longitude") is not None or entry.get("lon") is not None)
+        )
+        if geolocated_count < 2:
+            raise RuntimeError(
+                "Approximate mosaicing requires at least two images with readable GPS coordinates. "
+                "Untick ‘Create approximate mosaic before inference’ or use geotagged images."
+            )
+        log.info(
+            "UI:INFO:test: Creating an approximate mosaic from EXIF/GPS positions and image headings; "
+            "COLMAP is not required. Geolocated images=%s, visual_refinement=%s",
+            geolocated_count,
+            "enabled" if refine_mosaic_alignment else "disabled",
+        )
 
     if input_type != "images" or (not camera_meta and not undistort_thermal):
         return RotationResult(
@@ -175,19 +203,54 @@ def prepare_rotation_and_mosaic(
                     plane_z=0.0,
                     resolution=0.1,
                     camera_meta=camera_meta,
+                    refine_alignment=refine_mosaic_alignment,
+                    log=lambda message: log.info("Mosaic alignment: %s", message),
                 )
+                alignment_path = out_root / "mosaic_alignment.json"
+                if alignment_path.exists():
+                    try:
+                        alignment = json.loads(alignment_path.read_text(encoding="utf-8"))
+                        alignment_status = alignment.get("status", "unknown")
+                        if alignment_status == "refined":
+                            log.info(
+                                "UI:OK:test: Mosaic overlap refinement complete: %s accepted pair(s), "
+                                "%s image(s) refined, %s retained GPS placement.",
+                                alignment.get("accepted_pair_count", 0),
+                                alignment.get("refined_image_count", 0),
+                                alignment.get("gps_only_image_count", 0),
+                            )
+                        elif alignment_status == "gps_only":
+                            log.info(
+                                "UI:WARN:test: No visual overlap passed validation; mosaic uses GPS/heading placement only."
+                            )
+                        else:
+                            log.info(
+                                "UI:INFO:test: Mosaic visual refinement disabled; using GPS/heading placement only."
+                            )
+                    except Exception as exc:
+                        log.warning("Could not read mosaic alignment report: %s", exc)
                 log.info("UI:INFO:test: \u2713 Mosaic created: %s", mosaic_path)
                 tiles_dir = out_root / "tiles"
                 log.info("UI:INFO:test: Tiling mosaic from %s to %s", mosaic_path, tiles_dir)
                 tile_tif_func(mosaic_path, tiles_dir, tile_size=tile_size, stride=tile_stride)
-                run_images_dir = tiles_dir
-                input_type = "tif"
                 tif_src = mosaic_path
                 tile_count = len(list(tiles_dir.glob("*")))
-                log.info(
-                    "UI:INFO:test: \u2713 Mosaic tiled; running orthophoto pipeline on %s tiles",
-                    tile_count,
-                )
+                if inference_source == "mosaic":
+                    run_images_dir = tiles_dir
+                    input_type = "tif"
+                    log.info(
+                        "UI:INFO:test: \u2713 Mosaic tiled; inference source=mosaic (%s tiles). "
+                        "Individual source images will be available for map review but will not be predicted.",
+                        tile_count,
+                    )
+                else:
+                    run_images_dir = rotated_images_dir
+                    input_type = "images"
+                    log.info(
+                        "UI:INFO:test: \u2713 Mosaic created for map review; inference source=individual images (%s prepared images). "
+                        "Mosaic tiles will not be predicted.",
+                        len(rotated_files),
+                    )
             else:
                 run_images_dir = rotated_images_dir
                 log.info(

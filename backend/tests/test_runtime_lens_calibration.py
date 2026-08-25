@@ -190,6 +190,73 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
             run_mock.assert_not_called()
             self.assertEqual(result.input_type, "tif")
 
+    def test_approximate_mosaic_requires_two_geolocated_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaisesRegex(RuntimeError, "at least two images with readable GPS"):
+                prepare_rotation_and_mosaic(
+                    input_type="images",
+                    session_dir=root,
+                    out_root=root,
+                    camera_meta={"one.jpg": {"lat": 1.0, "lon": 2.0}},
+                    mosaic_enabled=True,
+                    ds_dir=root,
+                    model_is_thermal=False,
+                    undistort_thermal=False,
+                    tile_tif_func=lambda *_args, **_kwargs: None,
+                    run_images_dir=root,
+                    tiles_dir=None,
+                    tif_src=None,
+                )
+
+    def test_mosaic_can_be_created_while_individual_images_remain_inference_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.mkdir()
+            rotated = root / "rotated_images"
+            rotated.mkdir()
+            for name in ("one.png", "two.png"):
+                Image.new("RGB", (32, 24), "white").save(rotated / name)
+            camera_meta = {
+                "one.png": {"lat": 1.0, "lon": 2.0},
+                "two.png": {"lat": 1.0001, "lon": 2.0001},
+            }
+            (root / "camera_meta.json").write_text(json.dumps(camera_meta), encoding="utf-8")
+
+            def create_mosaic(*_args, **kwargs):
+                output = Path(kwargs["out_mosaic_path"])
+                output.touch()
+                return output
+
+            def create_tiles(_source, destination, **_kwargs):
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / "tile.png").touch()
+
+            completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+            with patch("pvrt.web.mosaic.subprocess.run", return_value=completed), patch(
+                "pvrt.web.mosaic.create_mosaic_from_rotated_images", side_effect=create_mosaic
+            ):
+                result = prepare_rotation_and_mosaic(
+                    input_type="images",
+                    session_dir=root,
+                    out_root=root,
+                    camera_meta=camera_meta,
+                    mosaic_enabled=True,
+                    inference_source="individual",
+                    ds_dir=source,
+                    model_is_thermal=False,
+                    undistort_thermal=False,
+                    tile_tif_func=create_tiles,
+                    run_images_dir=source,
+                    tiles_dir=None,
+                    tif_src=None,
+                )
+
+            self.assertEqual(result.input_type, "images")
+            self.assertEqual(result.run_images_dir, rotated)
+            self.assertEqual(result.tif_src, root / "mosaic.tif")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -175,7 +175,7 @@ function renderImagesList(){
     <li>
       <label class="chk">
         <input type="checkbox" class="imgToggle" data-id="${escapeHtml(rec.id)}" ${rec.on ? 'checked' : ''}>
-        <span>${escapeHtml(rec.name)}${rec.n ? ` <span style="color:#0a84ff; font-weight:bold;">(${rec.n})</span>` : ''}</span>
+        <span>${escapeHtml(rec.name)}${rec.reviewOnly ? ' <small class="muted">· mosaic source</small>' : ''}${rec.n ? ` <span style="color:#0a84ff; font-weight:bold;">(${rec.n})</span>` : ''}</span>
       </label>
       <button class="iconDots imgMenu" data-id="${escapeHtml(rec.id)}" title="Options">⋮</button>
     </li>

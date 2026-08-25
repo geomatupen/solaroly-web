@@ -70,6 +70,10 @@ from ..core.projects import ProjectManager, Project
 # --- SSE/logging bridge ---
 from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
 
+
+_ACTIVE_TEST_RUNS: set[str] = set()
+_ACTIVE_TEST_RUNS_GUARD = asyncio.Lock()
+
 if settings.enable_colmap:
     from .colmap import (
         router as colmap_router,
@@ -1737,6 +1741,25 @@ def _preds_to_geojson(
         except Exception:
             manifest_map = {}
 
+    rotated_by_stem = {
+        path.stem: path
+        for path in (out_session / "rotated_images").glob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    }
+    aligned_centres_by_stem: Dict[str, Tuple[float, float]] = {}
+    alignment_path = out_session / "mosaic_alignment.json"
+    if alignment_path.is_file():
+        try:
+            alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8"))
+            for image_name, record in (alignment_payload.get("images") or {}).items():
+                final_lat_lon = record.get("final_lat_lon") if isinstance(record, dict) else None
+                if isinstance(final_lat_lon, list) and len(final_lat_lon) >= 2:
+                    aligned_centres_by_stem[Path(image_name).stem] = (
+                        float(final_lat_lon[0]), float(final_lat_lon[1])
+                    )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            logger.warning("Could not read mosaic image alignment centres from %s", alignment_path)
+
     # ---------------- images.geojson (points + optional footprint corners) ----------------
     imgs_fc = {"type": "FeatureCollection", "features": []}
     camera_meta = camera_meta or {}
@@ -1764,6 +1787,8 @@ def _preds_to_geojson(
 
     for fname in sorted(candidates):
         cam_entry = _camera_entry_for(fname)
+        source_stem = Path(fname).stem
+        prepared_rotated = rotated_by_stem.get(source_stem)
 
         # Determine center lat/lon (priority: camera_meta -> manifest_map -> exif_index)
         latlon = None
@@ -1778,8 +1803,14 @@ def _preds_to_geojson(
                 latlon = (float(e["lat"]), float(e["lon"]))
         if latlon is None:
             latlon = gps_index.get(fname)
+        if source_stem in aligned_centres_by_stem:
+            latlon = aligned_centres_by_stem[source_stem]
 
         props: Dict[str, object] = {}
+        props["image"] = fname
+        if prepared_rotated is not None:
+            props["prepared_image"] = _media_url(prepared_rotated)
+            props["display_source"] = "prepared_source_image"
         # overlay/thumb from manifest
         if isinstance(manifest_map.get(fname), dict):
             entry = manifest_map[fname]
@@ -1807,6 +1838,12 @@ def _preds_to_geojson(
                 w_px = int(ent["w"]); h_px = int(ent["h"])
         if w_px is None and fname in sizes_index:
             w_px, h_px = sizes_index.get(fname)
+        if prepared_rotated is not None:
+            try:
+                with Image.open(prepared_rotated) as prepared_image:
+                    w_px, h_px = prepared_image.size
+            except OSError:
+                pass
 
         entry_mpp = _coerce_positive_float(cam_entry.get("meters_per_pixel")) if cam_entry else None
         image_mpp = entry_mpp or default_mpp
@@ -1837,7 +1874,7 @@ def _preds_to_geojson(
             # Rotation comes from camera metadata (or session defaults) and is expressed
             # as camera heading (0°=North, +CW). Compute separate overlay rotation for
             # PNG generation while keeping geo math aligned to heading.
-            heading_deg = _camera_heading_from_entry(cam_entry, session_meta)
+            heading_deg = 0.0 if prepared_rotated is not None else _camera_heading_from_entry(cam_entry, session_meta)
             rot_overlay = _camera_heading_to_overlay_rotation(heading_deg)
             rot_for_geo = heading_deg if heading_deg is not None else 0.0
             props["rotation"] = float(rot_for_geo)
@@ -2057,6 +2094,122 @@ def _preds_to_geojson(
     anom_path.write_text(json.dumps(anom_fc, indent=2), encoding="utf-8")
 
     return anom_path, imgs_path
+
+
+def _append_mosaic_source_images_geojson(
+    out_session: Path,
+    camera_meta: Dict[str, Dict[str, Any]],
+) -> Path:
+    """Add corrected/rotated mosaic inputs to the map catalog without predicting them."""
+    out_session = Path(out_session)
+    images_path = out_session / "images.geojson"
+    try:
+        feature_collection = json.loads(images_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        feature_collection = {"type": "FeatureCollection", "features": []}
+    features = [
+        feature
+        for feature in feature_collection.get("features", [])
+        if feature.get("properties", {}).get("source_role") != "mosaic_input"
+    ]
+
+    rotated_by_stem = {
+        path.stem: path
+        for path in (out_session / "rotated_images").glob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    }
+    alignment_images: Dict[str, Dict[str, Any]] = {}
+    alignment_resolution: Optional[float] = None
+    try:
+        alignment_payload = json.loads((out_session / "mosaic_alignment.json").read_text(encoding="utf-8"))
+        parsed_resolution = _coerce_float(alignment_payload.get("resolution_m_per_px"))
+        alignment_resolution = parsed_resolution if parsed_resolution is not None and parsed_resolution > 0 else None
+        alignment_images = {
+            Path(name).stem: record
+            for name, record in (alignment_payload.get("images") or {}).items()
+            if isinstance(record, dict)
+        }
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    preprocessing_images: Dict[str, Dict[str, Any]] = {}
+    try:
+        preprocessing_payload = json.loads((out_session / "preprocessing.json").read_text(encoding="utf-8"))
+        preprocessing_images = {
+            Path(name).stem: record
+            for name, record in (preprocessing_payload.get("images") or {}).items()
+            if isinstance(record, dict)
+        }
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
+    for source_name, meta in sorted((camera_meta or {}).items()):
+        if str(source_name).startswith("__") or not isinstance(meta, dict):
+            continue
+        stem = Path(source_name).stem
+        prepared_path = rotated_by_stem.get(stem)
+        if prepared_path is None:
+            continue
+        lat = meta.get("lat", meta.get("latitude"))
+        lon = meta.get("lon", meta.get("longitude"))
+        alignment_record = alignment_images.get(stem, {})
+        final_lat_lon = alignment_record.get("final_lat_lon")
+        if isinstance(final_lat_lon, list) and len(final_lat_lon) >= 2:
+            lat, lon = final_lat_lon[:2]
+        if lat is None or lon is None:
+            continue
+        lat = float(lat)
+        lon = float(lon)
+        try:
+            with Image.open(prepared_path) as prepared_image:
+                width, height = prepared_image.size
+        except OSError:
+            continue
+        try:
+            # Display the full prepared frame at its metadata-derived ground
+            # footprint. The mosaic output resolution may be coarser and causes
+            # an in-memory resize during composition, not a source-image crop.
+            meters_per_pixel = float(meta.get("meters_per_pixel") or alignment_resolution or 0.05)
+        except (TypeError, ValueError):
+            meters_per_pixel = 0.05
+        if meters_per_pixel <= 0:
+            meters_per_pixel = 0.05
+        deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat)
+        half_width_m = width * meters_per_pixel / 2.0
+        half_height_m = height * meters_per_pixel / 2.0
+        left = lon - half_width_m * deg_per_m_lon
+        right = lon + half_width_m * deg_per_m_lon
+        top = lat + half_height_m * deg_per_m_lat
+        bottom = lat - half_height_m * deg_per_m_lat
+        correction_record = preprocessing_images.get(stem, {})
+        props: Dict[str, Any] = {
+            "src": source_name,
+            "image": source_name,
+            "prepared_image": _media_url(prepared_path),
+            "display_source": "prepared_source_image",
+            "source_role": "mosaic_input",
+            "inference_performed": False,
+            "alignment_status": alignment_record.get("status", "gps_only"),
+            "w": int(width),
+            "h": int(height),
+            "meters_per_pixel": meters_per_pixel,
+            "width_m": width * meters_per_pixel,
+            "height_m": height * meters_per_pixel,
+            "rotation": 0.0,
+            "rotation_heading": 0.0,
+            "rotation_overlay": 0.0,
+            "corners": [[left, top], [right, top], [right, bottom], [left, bottom]],
+            "lens_correction_status": correction_record.get("status", "not_requested"),
+            "lens_displacement_px": correction_record.get("maximum_displacement_px"),
+        }
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": props,
+        })
+
+    feature_collection = {"type": "FeatureCollection", "features": features}
+    images_path.write_text(json.dumps(feature_collection, indent=2), encoding="utf-8")
+    return images_path
 
 
 
@@ -3355,6 +3508,9 @@ async def api_test_run(
     channel_count: int = Form(3),
     accurate_locations: bool = Form(default=False),
     mosaic_enabled: bool = Form(default=False),
+    create_mosaic: bool = Form(default=False),
+    inference_source: Optional[str] = Form(default=None),
+    refine_mosaic_alignment: bool = Form(default=False),
     undistort_thermal: bool = Form(default=False),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
@@ -3384,9 +3540,32 @@ async def api_test_run(
             raise HTTPException(status_code=404, detail="No trained models found.")
         model_dir = get_project_output_dir() / models[0]["name"]
 
+    legacy_mosaic_request = bool(mosaic_enabled and inference_source is None)
+    source_mode = str(inference_source or ("mosaic" if legacy_mosaic_request else "individual")).strip().lower()
+    if source_mode not in {"individual", "mosaic"}:
+        raise HTTPException(status_code=400, detail="Inference source must be ‘individual’ or ‘mosaic’.")
+    mosaic_enabled = bool(create_mosaic or mosaic_enabled or source_mode == "mosaic")
+
     session = (_safe_name(result_name) or _now_stamp())
     base = get_project_sessions_dir()
     ses = base / session
+
+    active_run_key = str(ses.resolve())
+    async with _ACTIVE_TEST_RUNS_GUARD:
+        if active_run_key in _ACTIVE_TEST_RUNS:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A test named '{session}' is already running. Wait for it to finish or use another result name.",
+            )
+        if ses.exists() and any(ses.iterdir()) and not clear_existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A result named '{session}' already exists. Confirm replacement or use another result name.",
+            )
+        _ACTIVE_TEST_RUNS.add(active_run_key)
+    request_task = asyncio.current_task()
+    if request_task is not None:
+        request_task.add_done_callback(lambda _task, key=active_run_key: _ACTIVE_TEST_RUNS.discard(key))
     
     # Clear existing session directory if requested
     if clear_existing and ses.exists():
@@ -3406,6 +3585,8 @@ async def api_test_run(
         model=model_dir.name,
         lens_correction_requested=bool(undistort_thermal),
         undistort_thermal=bool(undistort_thermal),
+        inference_source=source_mode,
+        mosaic_created=mosaic_enabled,
     )
     test_logger = logging.getLogger("pvrt.test")
     test_logger.info(
@@ -3693,6 +3874,8 @@ async def api_test_run(
             out_root=out_root,
             camera_meta=camera_meta,
             mosaic_enabled=mosaic_enabled,
+            inference_source=source_mode,
+            refine_mosaic_alignment=refine_mosaic_alignment,
             ds_dir=ds_dir,
             model_is_thermal=model_is_thermal,
             undistort_thermal=bool(undistort_thermal),
@@ -3921,6 +4104,18 @@ async def api_test_run(
             class_names=class_names,
             score_thresh=th_num,
         )
+        if mosaic_enabled and (out_root / "rotated_images").is_dir():
+            imgs_gj = _append_mosaic_source_images_geojson(out_root, camera_meta)
+            source_image_count = sum(
+                1
+                for feature in json.loads(Path(imgs_gj).read_text(encoding="utf-8")).get("features", [])
+                if feature.get("properties", {}).get("source_role") == "mosaic_input"
+            )
+            test_logger.info(
+                "UI:OK:test: Added %s prepared source image(s) to the Map catalog; "
+                "inference was performed only on mosaic tiles.",
+                source_image_count,
+            )
 
         # Render downsampled overlay PNG for results grid
         ov_dir = out_root / "overlays"; ov_dir.mkdir(parents=True, exist_ok=True)
@@ -4010,9 +4205,12 @@ async def api_test_run(
         metrics = {}
         if mpath.exists():
             metrics = json.loads(mpath.read_text(encoding="utf-8"))
-        metrics.setdefault("source_tifs", [])  # <— use this exact key
-        if str(tif_src) not in metrics["source_tifs"]:
-            metrics["source_tifs"].append(str(tif_src))
+        metrics["inference_source"] = source_mode
+        metrics["mosaic_created"] = mosaic_enabled
+        if tif_src is not None:
+            metrics.setdefault("source_tifs", [])
+            if str(tif_src) not in metrics["source_tifs"]:
+                metrics["source_tifs"].append(str(tif_src))
         correction_checked = bool((out_root / "preprocessing.json").is_file())
         metrics["lens_correction_checked"] = correction_checked
         metrics["undistort_thermal"] = correction_checked  # backward compatibility
@@ -4028,6 +4226,8 @@ async def api_test_run(
         model=model_dir.name,
         lens_correction_checked=bool(preprocessing_path.is_file()),
         undistort_thermal=bool(preprocessing_path.is_file()),
+        inference_source=source_mode,
+        mosaic_created=mosaic_enabled,
     )
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
@@ -4046,6 +4246,8 @@ async def api_test_run(
         "lens_correction_checked": bool(preprocessing_path.is_file()),
         "undistort_thermal": bool(preprocessing_path.is_file()),
         "preprocessing": _media_url(preprocessing_path) if preprocessing_path.is_file() else None,
+        "inference_source": source_mode,
+        "mosaic_created": mosaic_enabled,
         "assets": assets,
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),

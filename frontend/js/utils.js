@@ -152,8 +152,7 @@ window.applyFeatureFlags = function applyFeatureFlags(){
   }
   const accurateRows = [
     document.getElementById('accurateModeRow'),
-    document.getElementById('useOptimizationFromRow'),
-    document.getElementById('mosaicControls')
+    document.getElementById('useOptimizationFromRow')
   ];
   if(!colmapEnabled){
     accurateRows.forEach(row => row && setHidden(row, true));

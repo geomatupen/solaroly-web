@@ -1660,6 +1660,10 @@ async function cancelTraining(){
 
 // ---------- test run ----------
 async function runTest(){
+  if(testAbort){
+    warn("test", "A test is already running. Wait for it to finish or cancel it first.");
+    return;
+  }
   clearAlerts("test"); wireAlertClose();
   resetLogPane("#testMiniLog");
   const ds = getSelectedDataset();
@@ -1740,6 +1744,8 @@ async function runTest(){
   const testThreshold = (document.getElementById("testThreshold")?.value);
 
   setHidden($("#spinTest"), false);
+  const runTestButton = document.getElementById('btnRunTest');
+  if(runTestButton) runTestButton.disabled = true;
   setText("#testStatus","Preparing test data…");
   const preparingLine = `[test] Preparing dataset "${ds}" for model inference…`;
   appendMiniLog("#testMiniLog", preparingLine);
@@ -1760,8 +1766,19 @@ async function runTest(){
   fd.append("undistort_thermal", document.getElementById("chkUndistortThermal")?.checked ? "true" : "false");
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
-  const wantsMosaic = document.getElementById("chkMosaicImages")?.checked;
-  if(wantsMosaic) fd.append("mosaic_enabled", "true");
+  const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;
+  const inferenceSource = createMosaic
+    ? (document.querySelector('input[name="inferenceSource"]:checked')?.value || 'mosaic')
+    : 'individual';
+  fd.append('inference_source', inferenceSource);
+  fd.append('create_mosaic', createMosaic ? 'true' : 'false');
+  if(createMosaic){
+    fd.append("mosaic_enabled", "true");
+    fd.append(
+      "refine_mosaic_alignment",
+      document.getElementById("chkRefineMosaicAlignment")?.checked ? "true" : "false"
+    );
+  }
   const backend = getSelectedBackend();
   fd.append('backend', backend);
   if(backend === 'yolo'){
@@ -1819,6 +1836,8 @@ async function runTest(){
   }finally{
     setHidden($("#spinTest"), true);
     testAbort = null;
+    if(typeof updateAccurateUI === 'function') updateAccurateUI();
+    else if(runTestButton) runTestButton.disabled = false;
   }
 }
 function cancelTest(){ if(testAbort){ testAbort.abort(); } }
@@ -1934,6 +1953,12 @@ function buildNameVariantSet(...values){
 }
 
 function resolveFeatureOverlayUrl(featureProps, overlayByName, sessionRoot){
+  const preparedImage = featureProps?.prepared_image;
+  if (typeof preparedImage === 'string' && preparedImage) {
+    if (preparedImage.startsWith('/api/project_file/')) return preparedImage;
+    const projected = toProjectFileUrlFromValue(preparedImage);
+    if (projected) return projected;
+  }
   const overlayProp = featureProps?.overlay;
   if (typeof overlayProp === 'string' && overlayProp) {
     if (overlayProp.startsWith('/api/project_file/')) return overlayProp;
@@ -1949,6 +1974,9 @@ function resolveFeatureOverlayUrl(featureProps, overlayByName, sessionRoot){
   const overlayName = `${stem}.png`;
   const fromSummary = overlayByName.get(overlayName);
   if (fromSummary) return fromSummary;
+
+  const rotated = getRotatedImageUrl(srcFile);
+  if (rotated) return rotated;
 
   const canUseSessionRoot = sessionRoot && !sessionRoot.includes('/api/project_file/');
   return canUseSessionRoot ? `${sessionRoot}overlays/${encodeURIComponent(overlayName)}` : null;
@@ -2754,7 +2782,8 @@ async function applySessionToMap(sessionName){
     TIF_TILE_BOUNDS = b.firstBounds;
 
     // show controller row inside Images list (replaces normal images there)
-    installTilesIntoImagesList(sessionName, tiles.layers);
+    await loadImagesCatalog(sessionName, imagesUrl);
+    installTilesIntoImagesList(sessionName, tiles.layers, false);
 
     await waitForMapTiles(b.layers);
 
@@ -2821,10 +2850,10 @@ function createTifTileGroup(layerDefs, paneName = 'sessionOrthophotoPane'){
   return { group, layers, firstBounds };
 }
 
-function installTilesIntoImagesList(sessionName, layerDefs){
+function installTilesIntoImagesList(sessionName, layerDefs, clearExisting = true){
   const list = document.getElementById('imagesList');
   if (!list) return;
-  list.innerHTML = "";
+  if (clearExisting) list.innerHTML = "";
 
   const label = layerDefs.length === 1 ? layerDefs[0].name : `Orthophoto (GeoTIFF)`;
 
@@ -2852,7 +2881,8 @@ function installTilesIntoImagesList(sessionName, layerDefs){
     openOrthoMenu(orthoBtn, sessionName, layerDefs);
   });
 
-  list.appendChild(row);
+  if (clearExisting) list.appendChild(row);
+  else list.prepend(row);
 }
 
 
@@ -3089,7 +3119,18 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       );
 
       const matchTokens = buildNameVariantSet(file);
-      imageCatalog.push({ id: file, name: file, url, bounds, on: false, rotation: storedRotation, corners: Array.isArray(corners) ? corners : null, n: detectionCount, matchTokens });
+      imageCatalog.push({
+        id: file,
+        name: file,
+        url,
+        bounds,
+        on: false,
+        rotation: storedRotation,
+        corners: Array.isArray(corners) ? corners : null,
+        n: detectionCount,
+        reviewOnly: f?.properties?.source_role === 'mosaic_input' && f?.properties?.inference_performed === false,
+        matchTokens,
+      });
     }
 
     applyMapDetectionFilter();
@@ -3538,7 +3579,15 @@ function setupUI(){
     });
   };
   wireInfoModal('btnLensCorrectionInfo', 'lensCorrectionInfoModal');
+  wireInfoModal('btnMosaicInfo', 'mosaicInfoModal');
   wireInfoModal('btnThermalTrainingInfo', 'thermalTrainingInfoModal');
+
+  const mosaicToggle = document.getElementById('chkMosaicImages');
+  const updateMosaicOptionsVisibility = () => {
+    setHidden(document.getElementById('mosaicOptions'), !mosaicToggle?.checked);
+  };
+  mosaicToggle?.addEventListener('change', updateMosaicOptionsVisibility);
+  updateMosaicOptionsVisibility();
   document.addEventListener('keydown', event => {
     if(event.key !== 'Escape') return;
     const openInfoModal = document.querySelector('.workflowInfoModal.show');

@@ -37,13 +37,19 @@ Notes:
 
 """
 import argparse
+import json
 import math
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+
+try:
+    from .fast_mosaic_alignment import ImagePlacement, refine_mosaic_placements
+except ImportError:  # Direct execution for the documented command-line workflow.
+    from fast_mosaic_alignment import ImagePlacement, refine_mosaic_placements
 
 # Optional: use OpenCV for faster IO if available
 try:
@@ -341,6 +347,8 @@ def create_mosaic_from_rotated_images(
     plane_z: float = 0.0,
     resolution: float = 0.1,
     camera_meta: dict = None,
+    refine_alignment: bool = False,
+    log: Optional[Callable[[str], None]] = None,
 ) -> Path:
     """
     Create a single-plane mosaic from pre-rotated images using grid stitching.
@@ -351,6 +359,8 @@ def create_mosaic_from_rotated_images(
         plane_z: Reference plane Z coordinate (default 0.0 m).
         resolution: Mosaic resolution in meters per pixel.
         camera_meta: Camera metadata dict with lat/lon for georeferencing (optional).
+        refine_alignment: Refine GPS centres from validated visual overlap matches.
+        log: Optional callback for detailed overlap-alignment decisions.
     
     Returns:
         Path to the generated mosaic file.
@@ -374,6 +384,7 @@ def create_mosaic_from_rotated_images(
         # Extract coordinates and estimate bounds
         coords = []
         img_to_coords = {}
+        img_to_meta = {}
         for key, entry in camera_meta.items():
             if key.startswith('__') or not isinstance(entry, dict):
                 continue
@@ -386,6 +397,7 @@ def create_mosaic_from_rotated_images(
                     # Try matching by stem (filename without extension)
                     if key in img_path.name or img_path.stem in key or key.startswith(img_path.stem):
                         img_to_coords[img_path.name] = (float(lat), float(lon))
+                        img_to_meta[img_path.name] = entry
                         break
         
         if coords and len(coords) > 1:
@@ -401,15 +413,38 @@ def create_mosaic_from_rotated_images(
             meters_per_deg_lon = 111320 * math.cos(lat_rad)
             meters_per_deg_lat = 111320
             
-            # Load first image to get typical image size
-            first_img = Image.open(image_files[0])
-            img_width, img_height = first_img.size
-            img_mode = first_img.mode
-            
-            # Estimate image footprint in degrees (assuming ~50m altitude typical drone)
-            # Typical drone image covers ~100m x 75m at 50m altitude with standard FOV
-            img_width_deg = (img_width * resolution) / meters_per_deg_lon
-            img_height_deg = (img_height * resolution) / meters_per_deg_lat
+            # Keep the requested output resolution, but scale every full source
+            # image to its metadata-derived ground footprint on that canvas.
+            # This fixes overlap geometry without cropping source content.
+            footprint_sizes: Dict[str, Tuple[int, int]] = {}
+            footprint_width_m = []
+            footprint_height_m = []
+            metadata_mpp = []
+            for img_path in image_files:
+                with Image.open(img_path) as source_image:
+                    source_width, source_height = source_image.size
+                entry = img_to_meta.get(img_path.name, {})
+                try:
+                    image_mpp = float(entry.get("meters_per_pixel") or resolution)
+                except (TypeError, ValueError):
+                    image_mpp = float(resolution)
+                if not math.isfinite(image_mpp) or image_mpp <= 0:
+                    image_mpp = float(resolution)
+                metadata_mpp.append(image_mpp)
+                footprint_width_m.append(source_width * image_mpp)
+                footprint_height_m.append(source_height * image_mpp)
+                footprint_sizes[img_path.name] = (
+                    max(1, int(round(source_width * image_mpp / resolution))),
+                    max(1, int(round(source_height * image_mpp / resolution))),
+                )
+            img_width_deg = max(footprint_width_m) / meters_per_deg_lon
+            img_height_deg = max(footprint_height_m) / meters_per_deg_lat
+            alignment_emit = log or (lambda message: print(f"[mosaic-align] {message}"))
+            alignment_emit(
+                "Ground footprints: output_resolution="
+                f"{resolution:.6f} m/px, metadata_GSD_median={float(np.median(metadata_mpp)):.6f} m/px, "
+                f"metadata_GSD_range={min(metadata_mpp):.6f}–{max(metadata_mpp):.6f} m/px."
+            )
             
             # Add padding for image extent
             min_lon -= img_width_deg
@@ -436,6 +471,76 @@ def create_mosaic_from_rotated_images(
             
             # Create canvas with transparency support
             canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+
+            initial_placements = []
+            for img_path in image_files:
+                if img_path.name not in img_to_coords:
+                    continue
+                lat, lon = img_to_coords[img_path.name]
+                center_x = ((lon - min_lon) / canvas_width_deg) * canvas_width
+                center_y = ((max_lat - lat) / canvas_height_deg) * canvas_height
+                try:
+                    with Image.open(img_path) as placement_image:
+                        width, height = placement_image.size
+                except Exception as exc:
+                    print(f"Warning: Failed to inspect {img_path} for alignment: {exc}")
+                    continue
+                initial_placements.append(
+                    ImagePlacement(
+                        name=img_path.name,
+                        path=img_path,
+                        center_x=float(center_x),
+                        center_y=float(center_y),
+                        width=footprint_sizes[img_path.name][0],
+                        height=footprint_sizes[img_path.name][1],
+                    )
+                )
+
+            if refine_alignment:
+                refined_centers, alignment_report = refine_mosaic_placements(
+                    initial_placements,
+                    log=alignment_emit,
+                )
+            else:
+                refined_centers = {
+                    item.name: (item.center_x, item.center_y) for item in initial_placements
+                }
+                alignment_report = {
+                    "status": "disabled",
+                    "method": "GPS and heading placement only",
+                    "image_count": len(initial_placements),
+                    "reason": "Visual overlap refinement was disabled by the user.",
+                    "images": {
+                        item.name: {
+                            "status": "gps_only",
+                            "initial_center_px": [item.center_x, item.center_y],
+                            "final_center_px": [item.center_x, item.center_y],
+                            "correction_px": 0.0,
+                        }
+                        for item in initial_placements
+                    },
+                }
+                alignment_emit("Visual overlap refinement disabled; using GPS/heading placement only.")
+            alignment_report["resolution_m_per_px"] = float(resolution)
+            alignment_report["metadata_gsd_median_m_per_px"] = float(np.median(metadata_mpp))
+            alignment_report["metadata_gsd_range_m_per_px"] = [float(min(metadata_mpp)), float(max(metadata_mpp))]
+            placement_by_name = {item.name: item for item in initial_placements}
+            for image_name, image_record in alignment_report.get("images", {}).items():
+                placement = placement_by_name.get(image_name)
+                source_coords = img_to_coords.get(image_name)
+                final_center = refined_centers.get(image_name)
+                if placement is None or source_coords is None or final_center is None:
+                    continue
+                source_lat, source_lon = source_coords
+                dx_px = float(final_center[0] - placement.center_x)
+                dy_px = float(final_center[1] - placement.center_y)
+                final_lon = float(source_lon + (dx_px * resolution) / meters_per_deg_lon)
+                final_lat = float(source_lat - (dy_px * resolution) / meters_per_deg_lat)
+                image_record["initial_lat_lon"] = [float(source_lat), float(source_lon)]
+                image_record["final_lat_lon"] = [final_lat, final_lon]
+            alignment_path = out_mosaic_path.parent / "mosaic_alignment.json"
+            alignment_path.write_text(json.dumps(alignment_report, indent=2), encoding="utf-8")
+            alignment_emit(f"Alignment report written: {alignment_path}")
             
             # Voronoi nearest-center with Gaussian blending at edges only
             distance_map = np.full((canvas_height, canvas_width), np.inf, dtype=np.float32)
@@ -448,22 +553,25 @@ def create_mosaic_from_rotated_images(
                     print(f"Warning: No coordinates for {img_path.name}, skipping")
                     continue
                 
-                lat, lon = img_to_coords[img_path.name]
-                
-                # Calculate pixel position (top-left corner)
-                x_frac = (lon - min_lon) / canvas_width_deg
-                y_frac = (max_lat - lat) / canvas_height_deg
-                
-                x_px = int(x_frac * canvas_width) - img_width // 2
-                y_px = int(y_frac * canvas_height) - img_height // 2
-                
                 try:
                     img = Image.open(img_path)
                     if img.mode != "RGBA":
                         img = img.convert("RGBA")
                     img_array = np.array(img)
-                    
+                    target_w, target_h = footprint_sizes[img_path.name]
+                    if img.size != (target_w, target_h):
+                        img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                        img_array = np.array(img)
                     h, w = img_array.shape[:2]
+                    center_x, center_y = refined_centers.get(
+                        img_path.name,
+                        (
+                            ((img_to_coords[img_path.name][1] - min_lon) / canvas_width_deg) * canvas_width,
+                            ((max_lat - img_to_coords[img_path.name][0]) / canvas_height_deg) * canvas_height,
+                        ),
+                    )
+                    x_px = int(round(center_x - w / 2.0))
+                    y_px = int(round(center_y - h / 2.0))
                     
                     # Image center in canvas coordinates
                     img_center_x = x_px + w // 2
