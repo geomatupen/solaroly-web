@@ -491,6 +491,43 @@
     }
   }
 
+  function setPreviewFullscreen(active) {
+    const preview = document.querySelector(".postprocessPreview");
+    if (!preview) return;
+    preview.classList.toggle("postprocessFullscreen", active);
+    document.body.classList.toggle("postprocessFullscreenOpen", active);
+    const button = byId("ppFullscreen");
+    button.textContent = active ? "Exit fullscreen" : "Fullscreen";
+    button.setAttribute("aria-pressed", String(active));
+    window.setTimeout(() => state.map?.invalidateSize(), 50);
+  }
+
+  async function togglePreviewFullscreen() {
+    const preview = document.querySelector(".postprocessPreview");
+    if (!preview) return;
+    const active = preview.classList.contains("postprocessFullscreen") || document.fullscreenElement === preview;
+    if (active) {
+      if (document.fullscreenElement === preview && document.exitFullscreen) {
+        await document.exitFullscreen().catch(() => {});
+      }
+      setPreviewFullscreen(false);
+      return;
+    }
+    setPreviewFullscreen(true);
+    if (preview.requestFullscreen) {
+      await preview.requestFullscreen().catch(() => {
+        // The fixed-position fallback remains active when browser fullscreen is unavailable.
+      });
+    }
+  }
+
+  function exitPreviewFullscreen() {
+    const preview = document.querySelector(".postprocessPreview");
+    if (!preview?.classList.contains("postprocessFullscreen") && document.fullscreenElement !== preview) return;
+    if (document.fullscreenElement === preview && document.exitFullscreen) void document.exitFullscreen();
+    setPreviewFullscreen(false);
+  }
+
   async function sendLayerToMap(stage, button) {
     if (!state.workflowId || !["combined", "regularized", "edited"].includes(stage)) return;
     const original = button.textContent;
@@ -1378,6 +1415,7 @@
       renderWorkflowList();
     });
     byId("ppFitLayers").addEventListener("click", fitVisibleLayers);
+    byId("ppFullscreen").addEventListener("click", togglePreviewFullscreen);
     byId("ppRefreshOutputs").addEventListener("click", () =>
       restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value, state.workflowId)
     );
@@ -1401,7 +1439,9 @@
     });
     document.querySelector(".tabs")?.addEventListener("click", event => {
       const navigation = event.target.closest("button[data-tab], a[href]");
-      if (!state.editing || !navigation || navigation.id === "btnPostprocess") return;
+      if (!navigation || navigation.id === "btnPostprocess") return;
+      exitPreviewFullscreen();
+      if (!state.editing) return;
       if (state.editing.dirty && !window.confirm("Leave Post-process and discard the unsaved polygon edits?")) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -1413,6 +1453,13 @@
       if (!state.editing?.dirty) return;
       event.preventDefault();
       event.returnValue = "";
+    });
+    document.addEventListener("fullscreenchange", () => {
+      const preview = document.querySelector(".postprocessPreview");
+      setPreviewFullscreen(document.fullscreenElement === preview);
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !document.fullscreenElement) exitPreviewFullscreen();
     });
     document.addEventListener("keydown", event => {
       if (!state.editing || !(event.ctrlKey || event.metaKey)) return;

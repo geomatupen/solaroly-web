@@ -32,6 +32,78 @@
 .postprocessPreviewHeader h3,
 .postprocessPreviewHeader p { margin: 0; }
 
+.postprocessPreviewHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.postprocessPreviewWorkspace,
+.postprocessPreviewMapColumn,
+.postprocessPreviewLayersColumn { min-width: 0; }
+
+.postprocessPreview.postprocessFullscreen,
+.postprocessPreview:fullscreen {
+  position: fixed;
+  z-index: 3000;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: #081018;
+}
+
+.postprocessPreview.postprocessFullscreen .postprocessPreviewWorkspace,
+.postprocessPreview:fullscreen .postprocessPreviewWorkspace {
+  display: grid;
+  grid-template-columns: minmax(310px, 390px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+  height: calc(100vh - 58px);
+}
+
+.postprocessPreview.postprocessFullscreen .postprocessPreviewLayersColumn,
+.postprocessPreview:fullscreen .postprocessPreviewLayersColumn {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  padding-right: 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: #64748b #17212b;
+  scrollbar-width: thin;
+}
+
+.postprocessPreview.postprocessFullscreen .postprocessPreviewMapColumn,
+.postprocessPreview:fullscreen .postprocessPreviewMapColumn {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.postprocessPreview.postprocessFullscreen .postprocessMap,
+.postprocessPreview:fullscreen .postprocessMap {
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.postprocessPreview.postprocessFullscreen .postprocessReferenceHeader,
+.postprocessPreview:fullscreen .postprocessReferenceHeader { margin-top: 0; padding-top: 0; border-top: 0; }
+
+.postprocessPreview.postprocessFullscreen .postprocessLayerList,
+.postprocessPreview:fullscreen .postprocessLayerList,
+.postprocessPreview.postprocessFullscreen .postprocessWorkflowList,
+.postprocessPreview:fullscreen .postprocessWorkflowList { max-height: 28vh; }
+
+body.postprocessFullscreenOpen { overflow: hidden; }
+
 .postprocessMap {
   width: 100%;
   height: 460px;

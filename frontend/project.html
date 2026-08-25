@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260824a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260825c" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260825d" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -540,48 +540,57 @@
               <h3>Stage preview</h3>
               <p class="muted tiny">Toggle and compare each available product.</p>
             </div>
-            <button id="ppFitLayers" class="secondary tiny" type="button" disabled>Fit visible</button>
-          </div>
-          <div id="ppMap" class="postprocessMap" aria-label="Post-processing GeoJSON preview"></div>
-          <div id="ppMapStatus" class="statusLine tiny">Scan a GeoJSON to preview it.</div>
-          <div class="postprocessReferenceHeader">
-            <div>
-              <h3>Reference layers</h3>
-              <small class="muted">Linked imagery is read-only and is not copied.</small>
+            <div class="postprocessPreviewHeaderActions">
+              <button id="ppFitLayers" class="secondary tiny" type="button" disabled>Fit visible</button>
+              <button id="ppFullscreen" class="secondary tiny" type="button" aria-pressed="false">Fullscreen</button>
             </div>
-            <button id="ppAddTemporaryLayer" class="secondary tiny" type="button">Add temporary GeoJSON</button>
-            <input id="ppTemporaryLayerFile" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
           </div>
-          <div id="ppReferenceStatus" class="statusLine tiny">Select a test result to find linked imagery.</div>
-          <div id="ppReferenceLayers" class="postprocessLayerList postprocessReferenceLayers">
-            <div class="muted tiny">No reference layers loaded.</div>
-          </div>
-          <div id="ppEditPanel" class="postprocessEditPanel" hidden>
-            <div class="postprocessEditIdentity">
-              <span>Editing layer</span>
-              <strong id="ppEditLayerName">—</strong>
-              <small id="ppEditLayerIdentity">—</small>
+          <div class="postprocessPreviewWorkspace">
+            <div class="postprocessPreviewMapColumn">
+              <div id="ppMap" class="postprocessMap" aria-label="Post-processing GeoJSON preview"></div>
+              <div id="ppMapStatus" class="statusLine tiny">Scan a GeoJSON to preview it.</div>
             </div>
-            <div class="postprocessEditActions">
-              <button id="ppEditVertices" class="tiny" type="button">Edit vertices</button>
-              <button id="ppDeletePolygons" class="secondary tiny" type="button">Delete polygons</button>
-              <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo</button>
-              <button id="ppRedoEdits" class="secondary tiny" type="button" disabled>Redo</button>
-              <button id="ppSaveEdits" class="tiny" type="button" disabled>Save edits</button>
-              <button id="ppExitEditing" class="secondary tiny" type="button">Exit editing</button>
+            <div class="postprocessPreviewLayersColumn">
+              <div class="postprocessReferenceHeader">
+                <div>
+                  <h3>Reference layers</h3>
+                  <small class="muted">Linked imagery is read-only and is not copied.</small>
+                </div>
+                <button id="ppAddTemporaryLayer" class="secondary tiny" type="button">Add temporary GeoJSON</button>
+                <input id="ppTemporaryLayerFile" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
+              </div>
+              <div id="ppReferenceStatus" class="statusLine tiny">Select a test result to find linked imagery.</div>
+              <div id="ppReferenceLayers" class="postprocessLayerList postprocessReferenceLayers">
+                <div class="muted tiny">No reference layers loaded.</div>
+              </div>
+              <div id="ppEditPanel" class="postprocessEditPanel" hidden>
+                <div class="postprocessEditIdentity">
+                  <span>Editing layer</span>
+                  <strong id="ppEditLayerName">—</strong>
+                  <small id="ppEditLayerIdentity">—</small>
+                </div>
+                <div class="postprocessEditActions">
+                  <button id="ppEditVertices" class="tiny" type="button">Edit vertices</button>
+                  <button id="ppDeletePolygons" class="secondary tiny" type="button">Delete polygons</button>
+                  <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo</button>
+                  <button id="ppRedoEdits" class="secondary tiny" type="button" disabled>Redo</button>
+                  <button id="ppSaveEdits" class="tiny" type="button" disabled>Save edits</button>
+                  <button id="ppExitEditing" class="secondary tiny" type="button">Exit editing</button>
+                </div>
+                <div id="ppEditStatus" class="muted tiny">Choose an editing tool.</div>
+              </div>
+              <h3 class="postprocessLayerSectionTitle">Processing layers</h3>
+              <div id="ppLayerList" class="postprocessLayerList">
+                <div class="muted tiny">No preview layers loaded.</div>
+              </div>
+              <div class="postprocessSavedHeader">
+                <h3>Saved outputs</h3>
+                <button id="ppRefreshOutputs" class="secondary tiny" type="button">Refresh</button>
+              </div>
+              <div id="ppWorkflowList" class="postprocessWorkflowList">
+                <div class="muted tiny">No saved outputs.</div>
+              </div>
             </div>
-            <div id="ppEditStatus" class="muted tiny">Choose an editing tool.</div>
-          </div>
-          <h3 class="postprocessLayerSectionTitle">Processing layers</h3>
-          <div id="ppLayerList" class="postprocessLayerList">
-            <div class="muted tiny">No preview layers loaded.</div>
-          </div>
-          <div class="postprocessSavedHeader">
-            <h3>Saved outputs</h3>
-            <button id="ppRefreshOutputs" class="secondary tiny" type="button">Refresh</button>
-          </div>
-          <div id="ppWorkflowList" class="postprocessWorkflowList">
-            <div class="muted tiny">No saved outputs.</div>
           </div>
         </aside>
         </div>
@@ -1118,7 +1127,7 @@
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
   <script src="js/main.js?v=20260825d"></script>
-  <script src="js/postprocess.js?v=20260825g"></script>
+  <script src="js/postprocess.js?v=20260825h"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {
