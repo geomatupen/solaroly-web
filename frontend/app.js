@@ -2922,6 +2922,12 @@ async function runTest(){
   fd.append("result_name", resultName);
   fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append("test_threshold", testThreshold);
+  const correctLensDistortion = document.getElementById("chkUndistortThermal")?.checked === true;
+  fd.append("undistort_thermal", correctLensDistortion ? "true" : "false");
+  fd.append(
+    "export_undistorted_images",
+    correctLensDistortion && document.getElementById("chkExportUndistortedImages")?.checked ? "true" : "false"
+  );
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
   const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;

@@ -161,6 +161,7 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
                         ds_dir=source,
                         model_is_thermal=False,
                         undistort_thermal=True,
+                        export_undistorted_images=True,
                         tile_tif_func=lambda *_args, **_kwargs: None,
                         run_images_dir=source,
                         tiles_dir=None,
@@ -168,6 +169,7 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
                     )
                 command = run_mock.call_args.args[0]
                 self.assertIn("--correct-lens-distortion", command)
+                self.assertIn("--export-undistorted-images", command)
 
     def test_orthophoto_bypasses_runtime_calibration(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -100,6 +100,15 @@
             </label>
             <button id="btnLensCorrectionInfo" type="button" class="infoBtn" aria-label="How automatic lens correction works" aria-haspopup="dialog" aria-controls="lensCorrectionInfoModal">i</button>
           </div>
+          <div class="row wrap" id="undistortedExportControls" hidden style="margin-left: 2em;">
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkExportUndistortedImages" />
+              <span>
+                Export undistorted originals for photogrammetry
+                <span class="muted tiny hintLine">Creates a separate metadata-preserving <code>undistorted_images</code> folder for WebODM.</span>
+              </span>
+            </label>
+          </div>
 
           <div class="row wrap" id="accurateControls">
             <label class="switchRow wide">
@@ -935,6 +944,7 @@
           <li><b>Retry one inconsistent sample safely.</b> If exactly one best-three image disagrees, replace it with the fourth-ranked usable image and validate three images again. If that still fails, make one final fit from the two originally consistent images. The result is applied only when every image in the accepted attempt independently supports it.</li>
           <li><b>Fail without changing images.</b> If evidence is missing, inconsistent, already straight, or unsafe, preparation stops before writing corrected images. Untick this option to run without correction.</li>
           <li><b>Apply and record.</b> An accepted model is applied to every image in its matching group at the original width and height. Decisions and fitted values are logged and saved in <code>preprocessing.json</code>.</li>
+          <li><b>Optional photogrammetry export.</b> When the nested export option is checked, write a separate <code>undistorted_images</code> folder before north-up rotation. Files keep their original name, format, dimensions, EXIF/GPS, XMP, ICC profile and timestamps where supported, making them suitable for a WebODM trial. This export is not created when the option is off.</li>
         </ol>
         <div class="workflowNote"><b>Important:</b> automatic calibration cannot be guaranteed for arbitrary natural scenes. Eight evenly spaced candidates are checked and the best three are used. One or two images can still be sufficient for a smaller folder when they contain several long structures across the frame. The images do not need to overlap. When evidence is insufficient, no correction is guessed.</div>
       </div>
@@ -1236,7 +1246,7 @@
   <script src="js/map.js?v=20260825o"></script>
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
-  <script src="js/main.js?v=20260825p"></script>
+  <script src="js/main.js?v=20260825q"></script>
   <script src="js/postprocess.js?v=20260825j"></script>
   <script>
     // Display active project name in header

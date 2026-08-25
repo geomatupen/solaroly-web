@@ -37,6 +37,7 @@ def prepare_rotation_and_mosaic(
     ds_dir: Path,
     model_is_thermal: bool,
     undistort_thermal: bool,
+    export_undistorted_images: bool = False,
     tile_tif_func: Callable[[Path, Path, int, Optional[int]], None],
     run_images_dir: Path,
     tiles_dir: Optional[Path],
@@ -127,6 +128,11 @@ def prepare_rotation_and_mosaic(
                 cmd.append("--use-thermal")
             if undistort_thermal:
                 cmd.append("--correct-lens-distortion")
+                if export_undistorted_images:
+                    cmd.append("--export-undistorted-images")
+                    log.info(
+                        "UI:INFO:test: Metadata-preserving undistorted originals will be exported to undistorted_images/ before rotation."
+                    )
                 log.info("UI:INFO:test: Checking lens distortion before north-up rotation…")
                 log.info(
                     "UI:INFO:test: Runtime lens calibration groups images by camera and dimensions, "

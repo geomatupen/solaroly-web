@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import numpy as np
-from PIL import Image, PngImagePlugin
+from PIL import Image
 
 from ..config import DIRP_LIB, describe_dirp
 from ..core.thermal import normalize_thermal
 from .flir_rjpeg import extract_flir_raw, has_flir_fff
+from .image_metadata import save_with_metadata
 
 log = logging.getLogger("pvrt")
 
@@ -42,63 +42,6 @@ def ensure_dirp_init() -> None:
     dji_init(str(lib))
     log.info("[DJI] DIRP initialized: %s", lib)
     _DJI_READY = True
-
-
-def _read_transferable_metadata(source: Path) -> Dict[str, object]:
-    """Read metadata Pillow can safely carry into a newly encoded image."""
-    with Image.open(source) as original:
-        info = original.info.copy()
-        exif = info.get("exif")
-        if not exif:
-            try:
-                source_exif = original.getexif()
-                exif = source_exif.tobytes() if source_exif else None
-            except (AttributeError, OSError, ValueError):
-                exif = None
-        return {
-            "exif": exif,
-            "icc_profile": info.get("icc_profile"),
-            "dpi": info.get("dpi"),
-            "comment": info.get("comment"),
-            "xmp": info.get("xmp") or info.get("XML:com.adobe.xmp"),
-        }
-
-
-def _save_with_metadata(image: Image.Image, source: Path, output: Path, quality: int) -> None:
-    metadata = _read_transferable_metadata(source)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    suffix = output.suffix.lower()
-    common = {
-        key: value
-        for key, value in metadata.items()
-        if key in {"exif", "icc_profile", "dpi"} and value is not None
-    }
-
-    if suffix in {".jpg", ".jpeg"}:
-        jpeg_args = {**common, "format": "JPEG", "quality": quality}
-        if metadata.get("comment") is not None:
-            jpeg_args["comment"] = metadata["comment"]
-        if metadata.get("xmp") is not None:
-            jpeg_args["xmp"] = metadata["xmp"]
-        image.save(output, **jpeg_args)
-    elif suffix == ".png":
-        png_info = PngImagePlugin.PngInfo()
-        if metadata.get("xmp") is not None:
-            xmp = metadata["xmp"]
-            if isinstance(xmp, bytes):
-                xmp = xmp.decode("utf-8", errors="replace")
-            png_info.add_itxt("XML:com.adobe.xmp", str(xmp))
-        if metadata.get("comment") is not None:
-            comment = metadata["comment"]
-            if isinstance(comment, bytes):
-                comment = comment.decode("utf-8", errors="replace")
-            png_info.add_text("Comment", str(comment))
-        image.save(output, format="PNG", pnginfo=png_info, **common)
-    else:
-        raise ValueError("Output format must be JPG or PNG.")
-
-    # Preserve filesystem timestamps and permissions as well as embedded metadata.
-    shutil.copystat(source, output)
 
 
 def inspect_thermal_source(source: Path) -> Dict[str, object]:
@@ -287,7 +230,7 @@ def convert_thermal_rjpeg(
         )
     rgb_gray = Image.merge("RGB", (gray_image, gray_image, gray_image))
     if preserve_metadata:
-        _save_with_metadata(rgb_gray, source, output, max(1, min(100, int(quality))))
+        save_with_metadata(rgb_gray, source, output, max(1, min(100, int(quality))))
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
         rgb_gray.save(output, quality=max(1, min(100, int(quality))))
@@ -326,7 +269,7 @@ def convert_standard_image(
         raise ValueError("Converted dimensions do not match the source image.")
     rgb_gray = Image.merge("RGB", (gray_image, gray_image, gray_image))
     if preserve_metadata:
-        _save_with_metadata(rgb_gray, source, output, max(1, min(100, int(quality))))
+        save_with_metadata(rgb_gray, source, output, max(1, min(100, int(quality))))
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
         rgb_gray.save(output, quality=max(1, min(100, int(quality))))

@@ -10,9 +10,11 @@ import sys
 try:
     from .lens_distortion import LensCalibrationError, correct_pil_image, inspect_camera_group
     from .plumb_line_calibration import estimate_runtime_calibration
+    from .image_metadata import save_with_metadata
 except ImportError:  # Script execution places this directory on sys.path.
     from lens_distortion import LensCalibrationError, correct_pil_image, inspect_camera_group
     from plumb_line_calibration import estimate_runtime_calibration
+    from image_metadata import save_with_metadata
 
 
 def _normalize_heading_deg(val):
@@ -68,7 +70,7 @@ def _camera_heading_from_entry(cam_entry, session_meta):
 # allow passing session directory path as first CLI arg, source images dir as second arg
 # First arg must be the full path to the session directory (project structure)
 if len(sys.argv) < 2:
-    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal] [--correct-lens-distortion]")
+    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal] [--correct-lens-distortion] [--export-undistorted-images]")
     print("[ERROR] session_dir_path: Full path to test/outputs/<session-id>/")
     sys.exit(1)
 
@@ -77,6 +79,9 @@ SRC_IMAGES_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else None  # optional so
 USE_THERMAL = '--use-thermal' in sys.argv  # flag to use thermal images if available
 CORRECT_LENS_DISTORTION = (
     '--correct-lens-distortion' in sys.argv
+)
+EXPORT_UNDISTORTED_IMAGES = (
+    CORRECT_LENS_DISTORTION and '--export-undistorted-images' in sys.argv
 )
 
 # Use the full session directory path (new project structure)
@@ -181,7 +186,10 @@ try:
 
             runtime_calibrations = {}
             runtime_estimations = {}
+            undistorted_dir = BASE / 'undistorted_images'
             if CORRECT_LENS_DISTORTION:
+                if EXPORT_UNDISTORTED_IMAGES:
+                    undistorted_dir.mkdir(parents=True, exist_ok=True)
                 source_candidates = [
                     path for path in src_files
                     if path.is_file() and path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.bmp')
@@ -340,6 +348,27 @@ try:
                         if p_img is not original_image:
                             original_image.close()
                     preprocessing_records[fname] = correction_record
+                    if EXPORT_UNDISTORTED_IMAGES:
+                        undistorted_output = undistorted_dir / fname
+                        if use_thermal_for_rotation and fname in src_thermal_pairs:
+                            # The inference image is a decoded preview in thermal mode.
+                            # Export the corrected original file pixels separately for WebODM.
+                            with Image.open(p) as original_for_export:
+                                export_image, _export_record = correct_pil_image(
+                                    original_for_export, current_group, calibration
+                                )
+                                with export_image:
+                                    save_with_metadata(export_image, p, undistorted_output, quality=100)
+                        else:
+                            save_with_metadata(p_img, p, undistorted_output, quality=100)
+                        correction_record["undistorted_output_file"] = str(
+                            Path('undistorted_images') / fname
+                        )
+                        correction_record["metadata_preserved"] = True
+                        correction_record["photogrammetry_export"] = True
+                        print(
+                            f"[undistort] Exported metadata-preserving original: {undistorted_output}"
+                        )
                     print(
                         f"[undistort] Corrected {fname}; maximum displacement "
                         f"{correction_record['maximum_displacement_px']:.2f}px using the validated runtime model"
@@ -421,6 +450,14 @@ try:
                     json.dumps({
                         "lens_correction_enabled": True,
                         "undistort_thermal": True,
+                        "export_undistorted_images": EXPORT_UNDISTORTED_IMAGES,
+                        "undistorted_images_dir": str(undistorted_dir) if EXPORT_UNDISTORTED_IMAGES else None,
+                        "metadata_preservation": (
+                            "Original filename, format, dimensions, EXIF/GPS, XMP, ICC profile, comments, "
+                            "DPI and filesystem timestamps are retained when supported. Proprietary radiometric "
+                            "payloads and MPO secondary frames are not copied."
+                            if EXPORT_UNDISTORTED_IMAGES else None
+                        ),
                         "image_count": len(preprocessing_records),
                         "status_counts": status_counts,
                         "runtime_estimations": {
@@ -440,6 +477,9 @@ try:
                     )
                 if estimation_summary:
                     summary += "; " + "; ".join(estimation_summary)
+                if EXPORT_UNDISTORTED_IMAGES:
+                    exported_count = sum(1 for path in undistorted_dir.iterdir() if path.is_file())
+                    summary += f"; metadata-preserving exports={exported_count} in {undistorted_dir}"
                 print(f"[undistort] Summary: {summary}")
                 print(f"[undistort] Metadata written: {preprocessing_path}")
         else:

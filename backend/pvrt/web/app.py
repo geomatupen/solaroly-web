@@ -3512,6 +3512,7 @@ async def api_test_run(
     inference_source: Optional[str] = Form(default=None),
     refine_mosaic_alignment: bool = Form(default=False),
     undistort_thermal: bool = Form(default=False),
+    export_undistorted_images: bool = Form(default=False),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
@@ -3585,6 +3586,7 @@ async def api_test_run(
         model=model_dir.name,
         lens_correction_requested=bool(undistort_thermal),
         undistort_thermal=bool(undistort_thermal),
+        export_undistorted_images_requested=bool(export_undistorted_images and undistort_thermal),
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
     )
@@ -3879,6 +3881,7 @@ async def api_test_run(
             ds_dir=ds_dir,
             model_is_thermal=model_is_thermal,
             undistort_thermal=bool(undistort_thermal),
+            export_undistorted_images=bool(export_undistorted_images and undistort_thermal),
             tile_tif_func=_tile_tif_to_dir,
             run_images_dir=run_images_dir,
             tiles_dir=tiles_dir,
@@ -4214,6 +4217,7 @@ async def api_test_run(
         correction_checked = bool((out_root / "preprocessing.json").is_file())
         metrics["lens_correction_checked"] = correction_checked
         metrics["undistort_thermal"] = correction_checked  # backward compatibility
+        metrics["undistorted_images_exported"] = bool((out_root / "undistorted_images").is_dir())
         mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
@@ -4226,6 +4230,7 @@ async def api_test_run(
         model=model_dir.name,
         lens_correction_checked=bool(preprocessing_path.is_file()),
         undistort_thermal=bool(preprocessing_path.is_file()),
+        undistorted_images_exported=bool((out_root / "undistorted_images").is_dir()),
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
     )
@@ -4245,6 +4250,12 @@ async def api_test_run(
         "manifest": manifest_items,
         "lens_correction_checked": bool(preprocessing_path.is_file()),
         "undistort_thermal": bool(preprocessing_path.is_file()),
+        "undistorted_images_exported": bool((out_root / "undistorted_images").is_dir()),
+        "undistorted_images": (
+            _media_url(out_root / "undistorted_images")
+            if (out_root / "undistorted_images").is_dir()
+            else None
+        ),
         "preprocessing": _media_url(preprocessing_path) if preprocessing_path.is_file() else None,
         "inference_source": source_mode,
         "mosaic_created": mosaic_enabled,
