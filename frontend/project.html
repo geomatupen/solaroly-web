@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260824a" />
+  <link rel="stylesheet" href="css/styles.css?v=20260825b" />
   <link rel="stylesheet" href="css/postprocess.css?v=20260825e" />
 
   <!-- Leaflet -->
@@ -98,6 +98,7 @@
                 <span class="muted tiny hintLine">Skips already-corrected or negligible distortion below 2 px. The test stops when correction status cannot be determined.</span>
               </span>
             </label>
+            <button id="btnLensCorrectionInfo" type="button" class="infoBtn" aria-label="How automatic lens correction works" aria-haspopup="dialog" aria-controls="lensCorrectionInfoModal">i</button>
           </div>
 
           <div class="row wrap" id="accurateControls">
@@ -258,11 +259,13 @@
               <option value="x">xlarge (x)</option>
             </select>
           </div>
-          <label class="switchRow">
-            <input type="checkbox" id="chkUseThermalTrain" />
-            <span>Use thermal band</span>
-            <button type="button" class="infoBtn" title="Decode DJI thermal images and extract the thermal band as 3-channel grayscale for training.">i</button>
-          </label>
+          <div class="switchInfoRow">
+            <label class="switchRow">
+              <input type="checkbox" id="chkUseThermalTrain" />
+              <span>Use thermal band</span>
+            </label>
+            <button id="btnThermalTrainingInfo" type="button" class="infoBtn" aria-label="How thermal-band training works" aria-haspopup="dialog" aria-controls="thermalTrainingInfoModal">i</button>
+          </div>
           <div class="row">
             <label for="inpIters">Iterations</label>
             <input id="inpIters" type="number" value="500" min="1" />
@@ -896,6 +899,55 @@
     </div>
   </div>
 
+  <!-- Test and training workflow information modals -->
+  <div id="lensCorrectionInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="lensCorrectionInfoTitle">
+    <div class="modalContent workflowInfoModalContent">
+      <div class="modalHeader">
+        <h3 id="lensCorrectionInfoTitle">How automatic lens correction works</h3>
+        <button class="iconBtn" data-close-info-modal type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody workflowInfoBody">
+        <p>This check runs before north-up rotation and model inference when the selected thermal model uses individual images.</p>
+        <ol class="workflowSteps">
+          <li><b>Identify the camera.</b> Read the image’s EXIF/XMP camera make, model, dimensions, serial information, and DJI correction flag when present.</li>
+          <li><b>Check whether correction is needed.</b> If metadata says the image was already corrected, keep it unchanged.</li>
+          <li><b>Find calibration.</b> Use embedded DJI <code>DewarpData</code> or a matching saved camera profile. A serial-specific profile is preferred over a general model profile.</li>
+          <li><b>Measure distortion.</b> Calculate the maximum expected pixel displacement around the image edges.</li>
+          <li><b>Make the decision.</b> Skip correction below <b>2 px</b>; correct at or above <b>2 px</b>. If the correction state or calibration cannot be determined, testing stops instead of guessing.</li>
+          <li><b>Correct before rotation.</b> Apply the calibrated lens model while retaining the original image width and height, then continue with rotation and inference.</li>
+          <li><b>Record the result.</b> The Test mini-log shows the decision summary, the full Logs tab contains each image decision, and details are saved in <code>preprocessing.json</code>.</li>
+        </ol>
+        <div class="workflowNote"><b>If strict checking stops the test:</b> add a calibrated profile for that camera, or untick this option and run again. Unticking bypasses lens correction completely.</div>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" data-close-info-modal type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="thermalTrainingInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="thermalTrainingInfoTitle">
+    <div class="modalContent workflowInfoModalContent">
+      <div class="modalHeader">
+        <h3 id="thermalTrainingInfoTitle">How “Use thermal band” works</h3>
+        <button class="iconBtn" data-close-info-modal type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody workflowInfoBody">
+        <p>This option trains the model from decoded thermal imagery instead of the visible RGB pixels.</p>
+        <ol class="workflowSteps">
+          <li><b>Scan both splits.</b> Check the selected dataset’s <code>train</code> and <code>valid</code>/<code>val</code> folders for supported radiometric images.</li>
+          <li><b>Decode radiometric data.</b> Use the configured DJI DIRP or FLIR FFF decoder to extract the thermal values.</li>
+          <li><b>Create model input.</b> Normalize the thermal values into a grayscale preview and encode it as a three-channel image so existing Detectron and YOLO models can consume it.</li>
+          <li><b>Pair files by name.</b> Store or reuse previews under each split’s <code>thermal/</code> folder and record the source-to-thermal mapping in <code>pairs.json</code>.</li>
+          <li><b>Train and identify the model.</b> Train with the paired thermal previews and save thermal mode in the model metadata so testing can select thermal inputs automatically.</li>
+        </ol>
+        <div class="workflowNote"><b>Important:</b> this is thermal-as-RGB, not RGB plus a fourth thermal channel. Annotations must match the decoded thermal view. Unsupported or unpaired images are reported in the training logs.</div>
+      </div>
+      <div class="modalFooter">
+        <button class="secondary" data-close-info-modal type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- COLMAP Info Modal -->
   <div id="colmapInfoModal" class="modal hidden">
     <div class="modalContent">
@@ -1136,7 +1188,7 @@
   <script src="js/map.js?v=20260825d"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
-  <script src="js/main.js?v=20260825f"></script>
+  <script src="js/main.js?v=20260825g"></script>
   <script src="js/postprocess.js?v=20260825j"></script>
   <script>
     // Display active project name in header

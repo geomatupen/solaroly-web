@@ -3499,6 +3499,42 @@ function _prevImg(){ if (_gIdx > 0) _setLightbox(_gIdx - 1); }
 function setupUI(){
   setupTabs();
 
+  let infoModalReturnFocus = null;
+  const closeInfoModal = modal => {
+    if(!modal) return;
+    modal.classList.remove('show');
+    modal.classList.add('hidden');
+    const returnTarget = infoModalReturnFocus;
+    infoModalReturnFocus = null;
+    returnTarget?.focus();
+  };
+  const wireInfoModal = (buttonId, modalId) => {
+    const button = document.getElementById(buttonId);
+    const modal = document.getElementById(modalId);
+    if(!button || !modal) return;
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      infoModalReturnFocus = button;
+      modal.classList.add('show');
+      modal.classList.remove('hidden');
+      modal.querySelector('[data-close-info-modal]')?.focus();
+    });
+    modal.querySelectorAll('[data-close-info-modal]').forEach(closeButton => {
+      closeButton.addEventListener('click', () => closeInfoModal(modal));
+    });
+    modal.addEventListener('click', event => {
+      if(event.target === modal) closeInfoModal(modal);
+    });
+  };
+  wireInfoModal('btnLensCorrectionInfo', 'lensCorrectionInfoModal');
+  wireInfoModal('btnThermalTrainingInfo', 'thermalTrainingInfoModal');
+  document.addEventListener('keydown', event => {
+    if(event.key !== 'Escape') return;
+    const openInfoModal = document.querySelector('.workflowInfoModal.show');
+    if(openInfoModal) closeInfoModal(openInfoModal);
+  });
+
   const btnRefreshFolders = $("#btnRefreshFolders");
   if(btnRefreshFolders) btnRefreshFolders.addEventListener("click", loadDatasets);
   const selTestFolder = document.getElementById('selTestFolder');

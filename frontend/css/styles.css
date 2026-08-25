@@ -287,6 +287,30 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
   cursor:pointer;
 }
 .infoBtn:hover{ border-color:var(--accent); color:var(--accent); }
+.switchInfoRow{ display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; }
+.switchInfoRow .switchRow{ min-width:0; }
+.workflowInfoModal .workflowInfoModalContent{
+  display:flex;
+  flex-direction:column;
+  width:min(720px, calc(100vw - 32px));
+  max-width:720px;
+  max-height:calc(100vh - 32px);
+  padding:0;
+  overflow:hidden;
+}
+.workflowInfoModal .workflowInfoModalContent .modalHeader,
+.workflowInfoModal .workflowInfoModalContent .modalFooter{ flex:0 0 auto; }
+.workflowInfoModal .workflowInfoModalContent .modalHeader h3{ margin:0; }
+.workflowInfoModal .workflowInfoBody{
+  display:block;
+  min-height:0;
+  padding:16px 20px;
+  overflow:auto;
+}
+.workflowInfoBody > p:first-child{ margin-top:0; }
+.workflowSteps{ margin:14px 0; padding-left:24px; }
+.workflowSteps li{ margin:0 0 12px; padding-left:4px; line-height:1.5; }
+.workflowNote{ padding:11px 12px; border:1px solid rgba(43,135,255,.35); border-radius:8px; background:rgba(43,135,255,.08); color:#cdd6df; line-height:1.45; }
 .infoBody ul{ padding-left:18px; margin:0; }
 .infoBody li{ margin:6px 0; line-height:1.4; }
 
