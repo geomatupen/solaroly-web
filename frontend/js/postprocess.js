@@ -20,7 +20,7 @@
     source: { label: "Source", color: "#38bdf8", weight: 1, fillOpacity: 0.08 },
     combined: { label: "Combined", color: "#f59e0b", weight: 2, fillOpacity: 0.13 },
     regularized: { label: "Regularized", color: "#22c55e", weight: 2, fillOpacity: 0.16 },
-    edited: { label: "Edited revision", color: "#a855f7", weight: 2, fillOpacity: 0.18 },
+    edited: { label: "Edited", color: "#a855f7", weight: 2, fillOpacity: 0.18 },
   };
 
   const byId = id => document.getElementById(id);
@@ -212,13 +212,41 @@
     }
   }
 
-  function setEditDirty(dirty = true) {
+  function updateEditHistoryControls(message = "") {
+    const editing = state.editing;
+    if (!editing) return;
+    editing.dirty = editing.historyIndex > 0;
+    byId("ppUndoEdits").disabled = editing.historyIndex <= 0;
+    byId("ppRedoEdits").disabled = editing.historyIndex >= editing.history.length - 1;
+    byId("ppSaveEdits").disabled = !editing.dirty;
+    if (message) byId("ppEditStatus").textContent = message;
+  }
+
+  function recordEditState(message = "Change recorded. You can undo or redo it.") {
+    const editing = state.editing;
+    if (!editing) return;
+    if (typeof message !== "string") message = "Vertex edit recorded. You can undo or redo it.";
+    if (editing.historyTimer) {
+      window.clearTimeout(editing.historyTimer);
+      editing.historyTimer = null;
+    }
+    const snapshot = JSON.parse(JSON.stringify(editing.item.layer.toGeoJSON()));
+    if (JSON.stringify(snapshot) === JSON.stringify(editing.history[editing.historyIndex])) return;
+    editing.history.splice(editing.historyIndex + 1);
+    editing.history.push(snapshot);
+    if (editing.history.length > 12) editing.history.splice(1, editing.history.length - 12);
+    editing.historyIndex = editing.history.length - 1;
+    updateEditHistoryControls(message);
+  }
+
+  function scheduleEditHistory() {
     if (!state.editing) return;
-    const changed = dirty !== false;
-    state.editing.dirty = changed;
-    byId("ppUndoEdits").disabled = !changed;
-    byId("ppSaveEdits").disabled = !changed;
-    if (changed) byId("ppEditStatus").textContent = "Unsaved changes. Save a new revision or undo them.";
+    if (state.editing.historyTimer) window.clearTimeout(state.editing.historyTimer);
+    state.editing.historyTimer = window.setTimeout(() => {
+      if (!state.editing) return;
+      state.editing.historyTimer = null;
+      recordEditState("Vertex edit recorded. You can undo or redo it.");
+    }, 120);
   }
 
   function lockProcessingControls(locked) {
@@ -240,6 +268,11 @@
   function disableEditingTools() {
     const editing = state.editing;
     if (!editing) return;
+    if (editing.historyTimer) {
+      window.clearTimeout(editing.historyTimer);
+      editing.historyTimer = null;
+      recordEditState("Vertex edit recorded. You can undo or redo it.");
+    }
     for (const entry of editing.deleteHandlers || []) {
       entry.layer.off("click", entry.handler);
     }
@@ -248,8 +281,10 @@
     editing.selectedLayer = null;
     editing.item.layer.eachLayer(layer => {
       try { layer.pm?.disable(); } catch (_) {}
-      layer.off("pm:edit", setEditDirty);
-      layer.off("pm:update", setEditDirty);
+      layer.off("pm:edit", scheduleEditHistory);
+      layer.off("pm:markerdragend", recordEditState);
+      layer.off("pm:vertexadded", scheduleEditHistory);
+      layer.off("pm:vertexremoved", scheduleEditHistory);
     });
     byId("ppMap").classList.remove("deleteMode");
     byId("ppMap").classList.remove("vertexMode");
@@ -276,23 +311,35 @@
     if (!item || !state.workflowId) return;
     if (state.editing?.dirty && !window.confirm("Discard the unsaved edits on the current layer?")) return;
     stopEditing(false);
+    const visibleStages = new Set(
+      [...state.previewLayers].filter(([, candidate]) => state.map.hasLayer(candidate.layer)).map(([key]) => key)
+    );
     if (!state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
+    for (const [key, candidate] of state.previewLayers) {
+      if (key !== stage && state.map.hasLayer(candidate.layer)) state.map.removeLayer(candidate.layer);
+    }
+    const initialSnapshot = JSON.parse(JSON.stringify(item.layer.toGeoJSON()));
     state.editing = {
       stage,
       item,
-      snapshot: JSON.parse(JSON.stringify(item.layer.toGeoJSON())),
+      snapshot: initialSnapshot,
       dirty: false,
       deleteHandlers: [],
       mode: null,
       selectedLayer: null,
+      visibleStages,
+      history: [initialSnapshot],
+      historyIndex: 0,
+      historyTimer: null,
     };
     lockProcessingControls(true);
     byId("ppEditPanel").hidden = false;
     const workflow = state.workflows.find(candidate => candidate.id === state.workflowId);
     byId("ppEditLayerName").textContent = `${workflow ? workflowDisplayName(workflow) : state.workflowId} · ${item.label}`;
     byId("ppEditLayerIdentity").textContent = `Workflow ID: ${state.workflowId} · Stage: ${stage}`;
-    byId("ppEditStatus").textContent = "Only this highlighted layer is editable. All other layers are locked.";
+    byId("ppEditStatus").textContent = "Only this highlighted layer is editable. Other layers are temporarily hidden and locked.";
     byId("ppUndoEdits").disabled = true;
+    byId("ppRedoEdits").disabled = true;
     byId("ppSaveEdits").disabled = true;
     applyEditingEmphasis();
     renderPreviewLayers();
@@ -314,17 +361,24 @@
           state.editing.item.layer.eachLayer(other => {
             if (other !== layer) {
               try { other.pm?.disable(); } catch (_) {}
-              other.off("pm:edit", setEditDirty);
-              other.off("pm:update", setEditDirty);
+              other.off("pm:edit", scheduleEditHistory);
+              other.off("pm:markerdragend", recordEditState);
+              other.off("pm:vertexadded", scheduleEditHistory);
+              other.off("pm:vertexremoved", scheduleEditHistory);
             }
           });
           applyEditingEmphasis();
           state.editing.selectedLayer = layer;
           layer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.42 });
-          layer.on("pm:edit", setEditDirty);
-          layer.on("pm:update", setEditDirty);
+          layer.on("pm:edit", scheduleEditHistory);
+          layer.on("pm:markerdragend", recordEditState);
+          layer.on("pm:vertexadded", scheduleEditHistory);
+          layer.on("pm:vertexremoved", scheduleEditHistory);
           layer.pm.enable({ allowSelfIntersection: false, snappable: true });
-          byId("ppEditStatus").textContent = "Drag this polygon's vertices, or click another polygon in the named layer.";
+          const markerCount = layer.pm?._markers?.length || 0;
+          byId("ppEditStatus").textContent = markerCount
+            ? `Polygon selected · ${markerCount} vertex handles. Drag a handle to edit.`
+            : "Polygon selected, but vertex handles could not be created.";
         };
         layer.on("click", handler);
         state.editing.deleteHandlers.push({ layer, handler });
@@ -347,9 +401,8 @@
         if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
         group.removeLayer(layer);
         state.editing.item.count = group.getLayers().length;
-        setEditDirty(true);
+        recordEditState("Polygon deleted. You can undo or redo this change.");
         renderPreviewLayers();
-        byId("ppEditStatus").textContent = "Polygon removed. Continue deleting or save the new revision.";
       };
       layer.on("click", handler);
       state.editing.deleteHandlers.push({ layer, handler });
@@ -359,26 +412,41 @@
     byId("ppEditStatus").textContent = "Delete mode: click polygons only in the highlighted layer.";
   }
 
-  function undoEdits() {
+  function restoreEditHistory(targetIndex) {
     if (!state.editing) return;
-    disableEditingTools();
     const editing = state.editing;
+    if (targetIndex < 0 || targetIndex >= editing.history.length || targetIndex === editing.historyIndex) return;
+    const mode = editing.mode || "vertices";
+    disableEditingTools();
     const wasVisible = state.map.hasLayer(editing.item.layer);
     if (wasVisible) state.map.removeLayer(editing.item.layer);
-    const created = createPreviewGeoJsonLayer(editing.stage, editing.snapshot);
+    const snapshot = JSON.parse(JSON.stringify(editing.history[targetIndex]));
+    const created = createPreviewGeoJsonLayer(editing.stage, snapshot);
     editing.item.layer = created.layer;
-    editing.item.geojson = editing.snapshot;
+    editing.item.geojson = snapshot;
     editing.item.baseStyle = created.baseStyle;
+    editing.item.count = snapshot.features?.length || 0;
     if (wasVisible) editing.item.layer.addTo(state.map);
-    setEditDirty(false);
+    editing.historyIndex = targetIndex;
+    updateEditHistoryControls(targetIndex === 0 ? "Returned to the original layer." : "Edit history restored.");
     applyEditingEmphasis();
     renderPreviewLayers();
-    byId("ppEditStatus").textContent = "Changes restored to the last saved version.";
+    if (mode === "delete") enablePolygonDeletion();
+    else enableVertexEditing();
+  }
+
+  function undoEdits() {
+    if (state.editing) restoreEditHistory(state.editing.historyIndex - 1);
+  }
+
+  function redoEdits() {
+    if (state.editing) restoreEditHistory(state.editing.historyIndex + 1);
   }
 
   function stopEditing(confirmDiscard = true) {
     if (!state.editing) return true;
     if (confirmDiscard && state.editing.dirty && !window.confirm("Exit and discard these unsaved polygon edits?")) return false;
+    const editing = state.editing;
     disableEditingTools();
     for (const [stage, item] of state.previewLayers) {
       item.layer.eachLayer(layer => {
@@ -387,6 +455,11 @@
       });
     }
     state.editing = null;
+    for (const [stage, item] of state.previewLayers) {
+      const shouldShow = editing.visibleStages.has(stage);
+      if (shouldShow && !state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
+      else if (!shouldShow && state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
+    }
     byId("ppEditPanel").hidden = true;
     lockProcessingControls(false);
     renderPreviewLayers();
@@ -400,7 +473,7 @@
     const button = byId("ppSaveEdits");
     button.disabled = true;
     button.textContent = "Saving…";
-    byId("ppEditStatus").textContent = "Validating and saving a new GeoJSON revision…";
+      byId("ppEditStatus").textContent = "Validating and updating the edited GeoJSON…";
     try {
       const resultId = byId("ppResult").value;
       const payload = await requestJson(
@@ -414,12 +487,12 @@
       stopEditing(false);
       applyWorkflow(payload);
       await restoreLatestWorkflow(resultId, byId("ppGeojson").value, state.workflowId);
-      setMessage("Edited polygons saved as a new revision.", "ok");
+      setMessage("Edited polygons saved. The edited layer has been updated.", "ok");
     } catch (error) {
       byId("ppEditStatus").textContent = error.message;
       setMessage(error.message, "err");
     } finally {
-      button.textContent = "Save new revision";
+      button.textContent = "Save edits";
       if (state.editing) button.disabled = !state.editing.dirty;
     }
   }
@@ -1004,6 +1077,7 @@
     byId("ppEditVertices").addEventListener("click", enableVertexEditing);
     byId("ppDeletePolygons").addEventListener("click", enablePolygonDeletion);
     byId("ppUndoEdits").addEventListener("click", undoEdits);
+    byId("ppRedoEdits").addEventListener("click", redoEdits);
     byId("ppSaveEdits").addEventListener("click", saveEditedRevision);
     byId("ppExitEditing").addEventListener("click", () => stopEditing(true));
     document.querySelector(".tabs")?.addEventListener("click", event => {
@@ -1020,6 +1094,20 @@
       if (!state.editing?.dirty) return;
       event.preventDefault();
       event.returnValue = "";
+    });
+    document.addEventListener("keydown", event => {
+      if (!state.editing || !(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" && event.shiftKey) {
+        event.preventDefault();
+        redoEdits();
+      } else if (key === "z") {
+        event.preventDefault();
+        undoEdits();
+      } else if (key === "y") {
+        event.preventDefault();
+        redoEdits();
+      }
     });
   }
 

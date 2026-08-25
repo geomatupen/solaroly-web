@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260824a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260824g" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260824h" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -554,8 +554,9 @@
             <div class="postprocessEditActions">
               <button id="ppEditVertices" class="tiny" type="button">Edit vertices</button>
               <button id="ppDeletePolygons" class="secondary tiny" type="button">Delete polygons</button>
-              <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo changes</button>
-              <button id="ppSaveEdits" class="tiny" type="button" disabled>Save new revision</button>
+              <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo</button>
+              <button id="ppRedoEdits" class="secondary tiny" type="button" disabled>Redo</button>
+              <button id="ppSaveEdits" class="tiny" type="button" disabled>Save edits</button>
               <button id="ppExitEditing" class="secondary tiny" type="button">Exit editing</button>
             </div>
             <div id="ppEditStatus" class="muted tiny">Choose an editing tool.</div>
@@ -1105,7 +1106,7 @@
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260824b"></script>
   <script src="js/main.js?v=20260824e"></script>
-  <script src="js/postprocess.js?v=20260824s"></script>
+  <script src="js/postprocess.js?v=20260824x"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

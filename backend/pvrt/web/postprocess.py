@@ -184,7 +184,11 @@ def create_postprocess_router(
     async def list_geojsons(result_id: str) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
         files = list(result_dir.glob("*.geojson"))
-        files.extend((result_dir / "postprocess").glob("*/*.geojson"))
+        files.extend(
+            path
+            for path in (result_dir / "postprocess").glob("*/*.geojson")
+            if not path.name.startswith("edited_")
+        )
         items = []
         for path in sorted(set(files), key=lambda item: (item.stat().st_mtime, item.name), reverse=True):
             relative = path.relative_to(result_dir).as_posix()
@@ -193,7 +197,7 @@ def create_postprocess_router(
                 stage = "combined"
             elif path.name == "regularized.geojson":
                 stage = "regularized"
-            elif path.name.startswith("edited_"):
+            elif path.name == "edited.geojson":
                 stage = "edited"
             items.append(
                 {
@@ -459,33 +463,34 @@ def create_postprocess_router(
             properties["manual_edit_source_stage"] = stage
             cleaned["properties"] = properties
             cleaned_features.append(cleaned)
-        revision_id = f"edit_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        output_path = workflow_dir / f"edited_{revision_id}.geojson"
+        output_path = workflow_dir / "edited.geojson"
         _atomic_json(output_path, {"type": "FeatureCollection", "features": cleaned_features})
+        for legacy_path in workflow_dir.glob("edited_*.geojson"):
+            try:
+                legacy_path.unlink()
+            except OSError as exc:
+                log.warning("Could not remove superseded edited GeoJSON %s: %s", legacy_path, exc)
         relative = output_path.relative_to(result_dir).as_posix()
         current = read_status(workflow_dir)
         outputs = dict(current.get("outputs") or {})
         outputs["edited"] = {"path": relative}
-        revisions = list(current.get("manual_revisions") or [])
         revision_name = request.name or f"{current.get('display_name') or workflow_id} — Edited"
-        revisions.append(
-            {
-                "id": revision_id,
-                "name": revision_name,
-                "source_stage": stage,
-                "path": relative,
-                "feature_count": len(cleaned_features),
-                "created_at": datetime.now().isoformat(),
-            }
-        )
+        edited_record = {
+            "id": "edited",
+            "name": revision_name,
+            "source_stage": stage,
+            "path": relative,
+            "feature_count": len(cleaned_features),
+            "updated_at": datetime.now().isoformat(),
+        }
         update_status(
             workflow_dir,
             status="complete",
             stage="manual_edit",
             progress=100,
-            message="Edited GeoJSON revision is ready.",
+            message="Edited GeoJSON is ready.",
             outputs=outputs,
-            manual_revisions=revisions,
+            manual_revisions=[edited_record],
         )
         return read_status(workflow_dir)
 

@@ -144,6 +144,23 @@
 .postprocessMap.vertexMode .leaflet-interactive { cursor: pointer; }
 .postprocessMap.deleteMode .leaflet-interactive { cursor: crosshair; }
 
+.postprocessMap .marker-icon {
+  width: 14px !important;
+  height: 14px !important;
+  margin: -7px 0 0 -7px !important;
+  border: 2px solid #fff !important;
+  border-radius: 50% !important;
+  background: #a855f7 !important;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, .35);
+}
+
+.postprocessMap .marker-icon-middle {
+  width: 10px !important;
+  height: 10px !important;
+  margin: -5px 0 0 -5px !important;
+  background: #22c55e !important;
+}
+
 .postprocessPolygonPopup .leaflet-popup-content {
   width: min(300px, calc(100vw - 80px)) !important;
   margin: 10px 12px;
