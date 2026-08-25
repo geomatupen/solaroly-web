@@ -66,14 +66,17 @@ def _camera_heading_from_entry(cam_entry, session_meta):
 # allow passing session directory path as first CLI arg, source images dir as second arg
 # First arg must be the full path to the session directory (project structure)
 if len(sys.argv) < 2:
-    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal] [--undistort-thermal]")
+    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal] [--correct-lens-distortion]")
     print("[ERROR] session_dir_path: Full path to test/outputs/<session-id>/")
     sys.exit(1)
 
 SESSION_DIR_PATH = sys.argv[1]
 SRC_IMAGES_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else None  # optional source images directory
 USE_THERMAL = '--use-thermal' in sys.argv  # flag to use thermal images if available
-UNDISTORT_THERMAL = '--undistort-thermal' in sys.argv
+CORRECT_LENS_DISTORTION = (
+    '--correct-lens-distortion' in sys.argv
+    or '--undistort-thermal' in sys.argv  # backward-compatible internal flag
+)
 
 # Use the full session directory path (new project structure)
 BASE = Path(SESSION_DIR_PATH)
@@ -255,7 +258,10 @@ try:
                 else:
                     p_img = Image.open(p)
 
-                if UNDISTORT_THERMAL and USE_THERMAL:
+                # Correct the actual image selected for inference. This must not
+                # depend on model metadata: an RGB model can still be run against
+                # grayscale thermal images, as in user-provided converted datasets.
+                if CORRECT_LENS_DISTORTION:
                     original_image = p_img
                     try:
                         p_img, correction_record = undistort_pil_image(p_img, p)
@@ -346,7 +352,7 @@ try:
                     except Exception:
                         pass
             print(f"[rotation] COMPLETE: {len(sizes)} images in {IMAGES_DIR.name}, IMAGES_DIR now={IMAGES_DIR}")
-            if UNDISTORT_THERMAL:
+            if CORRECT_LENS_DISTORTION:
                 preprocessing_path = BASE / 'preprocessing.json'
                 status_counts = {}
                 for record in preprocessing_records.values():
@@ -354,6 +360,7 @@ try:
                     status_counts[status] = status_counts.get(status, 0) + 1
                 preprocessing_path.write_text(
                     json.dumps({
+                        "lens_correction_enabled": True,
                         "undistort_thermal": True,
                         "image_count": len(preprocessing_records),
                         "minimum_displacement_px": DEFAULT_MINIMUM_DISPLACEMENT_PX,
@@ -374,7 +381,7 @@ try:
         print(f"[rotation] SKIPPED: CAM_META does not exist")
 except Exception as e:
     print('failed to create rotated_images from originals:', e, file=sys.stderr)
-    if UNDISTORT_THERMAL:
+    if CORRECT_LENS_DISTORTION:
         raise
 
 # image latlon mapping from manifest entries if present

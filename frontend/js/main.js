@@ -2005,11 +2005,21 @@ function renderResultsGrid(manifest){
     const detectionBadge = (item.n && item.n > 0)
       ? `<div class="detection-badge">${item.n}</div>`
       : '';
+    const correctionLabels = {
+      corrected: 'Lens corrected',
+      skipped_already_corrected: 'Already corrected',
+      skipped_below_threshold: 'Correction &lt;2 px',
+    };
+    const correctionLabel = correctionLabels[item.lens_correction_status] || '';
+    const correctionBadge = correctionLabel
+      ? `<div class="correction-badge" title="This overlay uses the prepared inference image">${correctionLabel}</div>`
+      : '';
 
     div.innerHTML = `
       <img src="${item.thumb}" alt="${item.file}">
       <div class="meta" title="${item.file}">${item.file}</div>
       ${detectionBadge}
+      ${correctionBadge}
     `;
 
     // Hide if filter is on and no detections

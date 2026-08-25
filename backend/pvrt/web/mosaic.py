@@ -91,8 +91,8 @@ def prepare_rotation_and_mosaic(
             cmd = [sys.executable, str(ROTATION_SCRIPT), str(session_dir), str(ds_dir)]
             if model_is_thermal:
                 cmd.append("--use-thermal")
-            if model_is_thermal and undistort_thermal:
-                cmd.append("--undistort-thermal")
+            if undistort_thermal:
+                cmd.append("--correct-lens-distortion")
                 log.info("UI:INFO:test: Checking lens distortion before north-up rotation…")
                 log.info(
                     "UI:INFO:test: Lens-correction rules: skip images already marked corrected; "
@@ -130,7 +130,7 @@ def prepare_rotation_and_mosaic(
             if proc.returncode != 0:
                 error_lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
                 helpful = next((line for line in error_lines if "Cannot correct lens distortion" in line), None)
-                raise RuntimeError(helpful or (error_lines[-1] if error_lines else "Thermal image preparation failed."))
+                raise RuntimeError(helpful or (error_lines[-1] if error_lines else "Image preparation failed."))
             time.sleep(0.3)
         else:
             log.warning("UI:INFO:test: Script not found at %s", ROTATION_SCRIPT)
@@ -186,7 +186,7 @@ def prepare_rotation_and_mosaic(
     except Exception as exc:
         log.warning("\u2717 Failed to generate rotation/mosaic: %s", exc)
         log.warning("Traceback: %s", traceback.format_exc())
-        if model_is_thermal and undistort_thermal:
+        if undistort_thermal:
             raise
 
     return RotationResult(

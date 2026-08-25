@@ -1788,6 +1788,11 @@ def _preds_to_geojson(
                 props["image"] = fname
             if "thumb" in entry:
                 props["thumb"] = entry["thumb"]
+            for key in (
+                "prepared_image", "display_source", "lens_correction_status", "lens_displacement_px"
+            ):
+                if key in entry:
+                    props[key] = entry[key]
 
         # width/height in pixels
         w_px = h_px = None
@@ -3398,6 +3403,7 @@ async def api_test_run(
         "running",
         dataset=dataset,
         model=model_dir.name,
+        lens_correction_requested=bool(undistort_thermal),
         undistort_thermal=bool(undistort_thermal),
     )
     test_logger = logging.getLogger("pvrt.test")
@@ -3665,7 +3671,7 @@ async def api_test_run(
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to persist camera metadata: {e}")
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Traceback: {traceback.format_exc()}")
 
-    if input_type == "images" and model_is_thermal:
+    if input_type == "images":
         test_logger.info(
             "UI:INFO:test: Automatic lens correction is %s.",
             "enabled (strict)" if undistort_thermal else "disabled by user",
@@ -3698,7 +3704,7 @@ async def api_test_run(
             tif_src=tif_src,
         )
     except Exception as exc:
-        message = str(exc) or "Thermal image preparation failed."
+        message = str(exc) or "Image preparation failed."
         _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=message)
         test_logger.error("UI:ERR:test: Preparation failed: %s", message)
         raise HTTPException(status_code=400, detail=message) from exc
@@ -3805,6 +3811,25 @@ async def api_test_run(
                         "thumb": thumb_url,
                     }
 
+    preprocessing_records: Dict[str, Dict[str, Any]] = {}
+    preprocessing_path = out_root / "preprocessing.json"
+    if preprocessing_path.is_file():
+        try:
+            preprocessing_payload = json.loads(preprocessing_path.read_text(encoding="utf-8"))
+            raw_records = preprocessing_payload.get("images", {})
+            if isinstance(raw_records, dict):
+                preprocessing_records = {
+                    str(name): value for name, value in raw_records.items() if isinstance(value, dict)
+                }
+        except (OSError, json.JSONDecodeError, TypeError):
+            logger.warning("Could not read lens-correction metadata from %s", preprocessing_path)
+
+    prepared_images_by_stem = {
+        path.stem: path
+        for path in Path(run_images_dir).iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    } if Path(run_images_dir).is_dir() else {}
+
     # manifest_obj is {"orig_filename": {"overlay": "...", "thumb": "..."}, ...}
     for fname, entry in list(manifest_obj.items()):
         if isinstance(entry, dict):
@@ -3833,10 +3858,26 @@ async def api_test_run(
                 w, h = sizes_index[fname]
                 entry["w"] = int(w)
                 entry["h"] = int(h)
+
+            stem = Path(fname).stem
+            prepared_image = prepared_images_by_stem.get(stem)
+            if prepared_image is not None:
+                # Exact post-correction/post-rotation file passed to inference.
+                # The Results and Map overlays are rendered on this same image.
+                entry["prepared_image"] = _media_url(prepared_image)
+                entry["display_source"] = "prepared_inference_image"
+            correction_record = preprocessing_records.get(fname)
+            if correction_record is None:
+                correction_record = next(
+                    (value for name, value in preprocessing_records.items() if Path(name).stem == stem),
+                    None,
+                )
+            if correction_record:
+                entry["lens_correction_status"] = correction_record.get("status", "unknown")
+                entry["lens_displacement_px"] = correction_record.get("maximum_displacement_px")
             
             # add detection count (n) from predictions
             try:
-                stem = Path(fname).stem
                 pred_file = preds_dir / "preds" / f"{stem}.json"
                 if pred_file.exists():
                     pred_data = json.loads(pred_file.read_text(encoding="utf-8"))
@@ -3974,7 +4015,9 @@ async def api_test_run(
         metrics.setdefault("source_tifs", [])  # <— use this exact key
         if str(tif_src) not in metrics["source_tifs"]:
             metrics["source_tifs"].append(str(tif_src))
-        metrics["undistort_thermal"] = bool((out_root / "preprocessing.json").is_file())
+        correction_checked = bool((out_root / "preprocessing.json").is_file())
+        metrics["lens_correction_checked"] = correction_checked
+        metrics["undistort_thermal"] = correction_checked  # backward compatibility
         mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
@@ -3985,6 +4028,7 @@ async def api_test_run(
         "complete",
         dataset=dataset,
         model=model_dir.name,
+        lens_correction_checked=bool(preprocessing_path.is_file()),
         undistort_thermal=bool(preprocessing_path.is_file()),
     )
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
@@ -4001,6 +4045,7 @@ async def api_test_run(
         "overlays": _media_url(ov_dir),
         "thumbs":   _media_url(th_dir),
         "manifest": manifest_items,
+        "lens_correction_checked": bool(preprocessing_path.is_file()),
         "undistort_thermal": bool(preprocessing_path.is_file()),
         "preprocessing": _media_url(preprocessing_path) if preprocessing_path.is_file() else None,
         "assets": assets,

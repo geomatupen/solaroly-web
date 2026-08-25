@@ -94,7 +94,7 @@ class CameraUndistortionTests(unittest.TestCase):
             with self.assertRaisesRegex(UndistortionError, "Disable .Correct lens distortion automatically."):
                 resolve_calibration(identity, xmp, root / "empty")
 
-    def test_strict_rotation_propagates_undistortion_failure(self) -> None:
+    def test_strict_rotation_propagates_correction_failure_for_rgb_model(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "source"
@@ -110,7 +110,7 @@ class CameraUndistortionTests(unittest.TestCase):
                 stdout="",
                 stderr="Cannot correct lens distortion for DJI M3TD. Disable ‘Correct lens distortion automatically’ and run again.",
             )
-            with patch("pvrt.web.mosaic.subprocess.run", return_value=failed):
+            with patch("pvrt.web.mosaic.subprocess.run", return_value=failed) as run_mock:
                 with self.assertRaisesRegex(RuntimeError, "Cannot correct lens distortion for DJI M3TD"):
                     prepare_rotation_and_mosaic(
                         input_type="images",
@@ -119,13 +119,16 @@ class CameraUndistortionTests(unittest.TestCase):
                         camera_meta={"thermal.jpg": {"lat": 1, "lon": 1}},
                         mosaic_enabled=False,
                         ds_dir=source,
-                        model_is_thermal=True,
+                        model_is_thermal=False,
                         undistort_thermal=True,
                         tile_tif_func=lambda *_args, **_kwargs: None,
                         run_images_dir=source,
                         tiles_dir=None,
                         tif_src=None,
                     )
+                command = run_mock.call_args.args[0]
+                self.assertIn("--correct-lens-distortion", command)
+                self.assertNotIn("--use-thermal", command)
             with patch("pvrt.web.mosaic.subprocess.run", return_value=failed):
                 result = prepare_rotation_and_mosaic(
                     input_type="images",
@@ -134,7 +137,7 @@ class CameraUndistortionTests(unittest.TestCase):
                     camera_meta={"thermal.jpg": {"lat": 1, "lon": 1}},
                     mosaic_enabled=False,
                     ds_dir=source,
-                    model_is_thermal=True,
+                    model_is_thermal=False,
                     undistort_thermal=False,
                     tile_tif_func=lambda *_args, **_kwargs: None,
                     run_images_dir=source,

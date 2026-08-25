@@ -204,6 +204,7 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .thumb img{ display:block; width:100%; height:auto; }
 .thumb .meta{ padding:6px 8px; color:#cdd6df; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .thumb .detection-badge{ position: absolute; top: 6px; right: 6px; background: #0a84ff; color: #fff; font-size: 11px; font-weight: bold; padding: 3px 7px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+.thumb .correction-badge{ position:absolute; top:6px; left:6px; max-width:calc(100% - 58px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:rgba(11,17,23,.9); border:1px solid rgba(24,183,106,.65); color:#7ee2ad; font-size:10px; font-weight:600; padding:3px 7px; border-radius:12px; box-shadow:0 2px 4px rgba(0,0,0,.3); }
 .thumb.hidden-by-filter{ display: none; }
 
 
