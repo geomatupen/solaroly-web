@@ -18,6 +18,7 @@ from pvrt.dataops.lens_distortion import (
     inspect_camera_group,
 )
 from pvrt.dataops.plumb_line_calibration import estimate_runtime_calibration
+from pvrt.dataops.plumb_line_calibration import CurveTrace
 from pvrt.web.mosaic import prepare_rotation_and_mosaic
 
 
@@ -71,6 +72,65 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
             self.assertIsNotNone(calibration, record)
             self.assertEqual(record["status"], "accepted")
             self.assertGreater(record["candidate"]["validation_improvement"], 0.15)
+
+    def test_one_disagreeing_sample_tries_fourth_then_consistent_two(self) -> None:
+        group = CameraGroup("Test", "Camera", "", 160, 120)
+        paths = [Path(f"sample_{index}.png") for index in range(4)]
+        accepted = RuntimeCalibration(
+            [[160.0, 0.0, 80.0], [0.0, 160.0, 60.0], [0.0, 0.0, 1.0]],
+            [-0.1, 0.0, 0.0, 0.0, 0.0],
+        )
+
+        def fake_traces(_gray: np.ndarray, image_index: int = 0) -> list[CurveTrace]:
+            return [
+                CurveTrace(
+                    points=np.asarray([[0.0, float(offset)], [159.0, float(offset)]], dtype=np.float64),
+                    span=159.0,
+                    support=159.0,
+                    family=0,
+                    image_index=image_index,
+                )
+                for offset in range(4)
+            ]
+
+        first_attempt = {
+            "status": "rejected_cross_image_disagreement",
+            "reason": "The fitted model was not independently supported by every selected image.",
+            "selected_images": [path.name for path in paths],
+            "disagreeing_images": [paths[0].name],
+        }
+        second_attempt = {
+            "status": "rejected_cross_image_disagreement",
+            "selected_images": [paths[1].name, paths[2].name, paths[3].name],
+            "disagreeing_images": [paths[3].name],
+        }
+        third_attempt = {
+            "status": "accepted",
+            "selected_images": [paths[1].name, paths[2].name],
+            "candidate": {"validation_improvement": 0.3},
+        }
+        with (
+            patch(
+                "pvrt.dataops.plumb_line_calibration._read_gray",
+                return_value=(np.zeros((120, 160), dtype=np.uint8), 1.0),
+            ),
+            patch("pvrt.dataops.plumb_line_calibration.trace_straight_structures", side_effect=fake_traces),
+            patch(
+                "pvrt.dataops.plumb_line_calibration._fit_selected_images",
+                side_effect=[
+                    (None, first_attempt),
+                    (None, second_attempt),
+                    (accepted, third_attempt),
+                ],
+            ) as fit_mock,
+        ):
+            calibration, record = estimate_runtime_calibration(paths, group)
+        self.assertEqual(calibration, accepted)
+        self.assertTrue(record["fallback_used"])
+        self.assertEqual(record["fallback_stage"], "two_image_consensus")
+        self.assertEqual(record["fallback_removed_images"], [paths[0].name])
+        self.assertEqual(record["fallback_replacement_image"], paths[3].name)
+        self.assertEqual(fit_mock.call_count, 3)
 
     def test_rotation_passes_optional_runtime_flag_and_propagates_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -169,6 +169,10 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
    - YOLOv8: uses Ultralytics models; per-image overlays are rendered with CV2, stored in `test/outputs/<session>/overlays`, and summarized via `raw_results_summary.json` and `metrics.json` (see `backend/pvrt/backends/yolo/infer.py`).
 5. **Geo outputs:** Every run writes `preds/*.json`, `rotated_images/`, `images.geojson`, `anomalies.geojson`, overlays, and `test.log`. The frontend map tab consumes the GeoJSON directly and renders anomalies + camera markers.
 
+#### Optional runtime lens correction
+
+Enable **Test → Advanced → Correct lens distortion automatically** to estimate radial correction before rotation and inference. The option is off by default and orthophotos are skipped. For each camera/sensor/resolution group, the runtime checks up to eight evenly spaced files from the sorted folder, rejects structurally weak samples, and jointly fits one shared model from the best three using repeated long-line evidence. Held-out traces must improve consistently and the remap must pass coverage, monotonicity, and displacement checks. If exactly one of the best three disagrees, it is first replaced by the fourth-ranked usable image and all three are validated again. If that still fails, the two originally consistent samples are refitted once; every image in the accepted attempt must pass or preparation stops without corrected images. Overlap is not required, dimensions are preserved, and fitted values plus decisions—including failed calibration diagnostics—are saved in `preprocessing.json`. The implementation uses the existing OpenCV and NumPy dependencies only.
+
 ### 7.2 Orthophoto Pipeline
 1. Upload or reference a georeferenced orthophoto (single GeoTIFF) through *Test → Uploads*. The backend stores it under `test/data/uploads` for the active project.
 2. The orthophoto worker (`backend/pvrt/web/mosaic.py`) splits the GeoTIFF into patches/tiles sized per the UI form and writes them to `test/outputs/<session>/tiles`.

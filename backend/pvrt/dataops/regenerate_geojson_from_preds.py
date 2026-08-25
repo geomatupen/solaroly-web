@@ -217,6 +217,21 @@ try:
                     runtime_estimations[camera_group] = estimation
                     if calibration is None:
                         reason = estimation.get('reason', 'independent validation did not accept a safe model')
+                        preprocessing_path = BASE / 'preprocessing.json'
+                        preprocessing_path.write_text(
+                            json.dumps({
+                                "lens_correction_enabled": True,
+                                "status": "rejected",
+                                "image_count": 0,
+                                "runtime_estimations": {
+                                    group_key.label: group_estimation
+                                    for group_key, group_estimation in runtime_estimations.items()
+                                },
+                                "images": {},
+                            }, indent=2),
+                            encoding='utf-8',
+                        )
+                        print(f"[undistort] Rejection diagnostics written: {preprocessing_path}")
                         raise LensCalibrationError(
                             f"Automatic lens correction was not applied to {camera_group.label}: {reason} "
                             "No images were modified. Expand ‘Advanced’ above, untick "

@@ -33,6 +33,7 @@ MAX_FIT_IMAGES = 3
 ANALYSIS_MAX_DIMENSION = 900
 MIN_TRACES = 4
 MIN_TRACES_PER_IMAGE = 4
+MIN_RESERVE_TRACES_PER_IMAGE = 3
 MIN_VALIDATION_IMPROVEMENT = 0.15
 
 
@@ -350,41 +351,15 @@ def _fit_parameters(
     return best
 
 
-def estimate_runtime_calibration(
-    image_paths: Iterable[Path],
+def _fit_selected_images(
+    selected: list[tuple[Path, list[CurveTrace]]],
     group: CameraGroup,
-    log: Optional[Callable[[str], None]] = None,
+    emit: Callable[[str], None],
 ) -> tuple[Optional[RuntimeCalibration], dict[str, Any]]:
-    """Inspect eight evenly spaced candidates and fit one shared model from the best three."""
-    emit = log or (lambda _message: None)
-    unique_paths = sorted({Path(path) for path in image_paths})
-    candidates = _even_sample(unique_paths, MAX_CANDIDATE_IMAGES)
-    analysed: list[tuple[Path, list[CurveTrace]]] = []
-    for index, path in enumerate(candidates):
-        loaded = _read_gray(path, (group.width, group.height))
-        if loaded is None:
-            continue
-        gray, scale = loaded
-        traces = _restore_trace_scale(trace_straight_structures(gray, image_index=index), scale)
-        if len(traces) >= MIN_TRACES_PER_IMAGE:
-            analysed.append((path, traces))
-            emit(f"Analysed {path.name}: {len(traces)} long curve trace(s)")
-        elif traces:
-            emit(
-                f"Excluded {path.name}: only {len(traces)} reliable long trace(s); "
-                f"at least {MIN_TRACES_PER_IMAGE} are required per sample"
-            )
-    analysed.sort(key=lambda item: sum(trace.weight for trace in item[1]), reverse=True)
-    selected = analysed[:MAX_FIT_IMAGES]
     traces = [trace for _path, image_traces in selected for trace in image_traces]
     record: dict[str, Any] = {
-        "method": "runtime multi-image plumb-line calibration",
-        "camera_group": group.label,
-        "candidate_image_count": len(candidates),
         "selected_images": [path.name for path, _traces in selected],
         "trace_count": len(traces),
-        "maximum_fit_images": MAX_FIT_IMAGES,
-        "minimum_validation_improvement": MIN_VALIDATION_IMPROVEMENT,
     }
     if len(traces) < MIN_TRACES:
         record.update(
@@ -457,14 +432,157 @@ def estimate_runtime_calibration(
             reason="The fitted model did not improve enough independent traces to justify changing the images.",
         )
         return None, record
-    # A two-image fit must help traces from every selected image; this rejects scene-specific curves.
+    name_by_index = {
+        image_traces[0].image_index: path.name
+        for path, image_traces in selected
+        if image_traces
+    }
+    per_image_validation: dict[str, Any] = {}
+    failing_images: list[str] = []
     for image_index in {trace.image_index for trace in validation_traces}:
         image_traces = [trace for trace in validation_traces if trace.image_index == image_index]
-        if image_traces and _weighted_error(image_traces, calibration) >= _weighted_error(image_traces, None) * 0.95:
-            record.update(
-                status="rejected_cross_image_disagreement",
-                reason="The fitted model was not independently supported by every selected image.",
-            )
-            return None, record
+        if not image_traces:
+            continue
+        name = name_by_index.get(image_index, f"sample-{image_index}")
+        before = _weighted_error(image_traces, None)
+        after = _weighted_error(image_traces, calibration)
+        image_improvement = 1.0 - after / max(before, 1e-9)
+        before_each = _trace_errors(image_traces, None)
+        after_each = _trace_errors(image_traces, calibration)
+        image_wins = int(np.sum(after_each < before_each * 0.95))
+        supported = after < before * 0.95
+        per_image_validation[name] = {
+            "trace_count": len(image_traces),
+            "rms_before": round(before, 6),
+            "rms_after": round(after, 6),
+            "improvement": round(image_improvement, 6),
+            "trace_wins": image_wins,
+            "supported": supported,
+        }
+        emit(
+            f"Validation image {name}: curvature RMS {before:.3f}px → {after:.3f}px "
+            f"({image_improvement * 100:.1f}% improvement), supported={'yes' if supported else 'no'}"
+        )
+        if not supported:
+            failing_images.append(name)
+    record["per_image_validation"] = per_image_validation
+    if failing_images:
+        record.update(
+            status="rejected_cross_image_disagreement",
+            reason="The fitted model was not independently supported by every selected image.",
+            disagreeing_images=failing_images,
+        )
+        return None, record
     record.update(status="accepted")
     return calibration, record
+
+
+def estimate_runtime_calibration(
+    image_paths: Iterable[Path],
+    group: CameraGroup,
+    log: Optional[Callable[[str], None]] = None,
+) -> tuple[Optional[RuntimeCalibration], dict[str, Any]]:
+    """Inspect eight evenly spaced candidates and fit one shared model from the best three."""
+    emit = log or (lambda _message: None)
+    unique_paths = sorted({Path(path) for path in image_paths})
+    candidates = _even_sample(unique_paths, MAX_CANDIDATE_IMAGES)
+    analysed: list[tuple[Path, list[CurveTrace]]] = []
+    reserve_candidates: list[tuple[Path, list[CurveTrace]]] = []
+    for index, path in enumerate(candidates):
+        loaded = _read_gray(path, (group.width, group.height))
+        if loaded is None:
+            continue
+        gray, scale = loaded
+        traces = _restore_trace_scale(trace_straight_structures(gray, image_index=index), scale)
+        if len(traces) >= MIN_TRACES_PER_IMAGE:
+            analysed.append((path, traces))
+            emit(f"Analysed {path.name}: {len(traces)} long curve trace(s)")
+        elif len(traces) >= MIN_RESERVE_TRACES_PER_IMAGE:
+            reserve_candidates.append((path, traces))
+            emit(
+                f"Reserve {path.name}: {len(traces)} reliable long trace(s); "
+                "it will only replace a disagreeing best-three sample"
+            )
+        elif traces:
+            emit(
+                f"Excluded {path.name}: only {len(traces)} reliable long trace(s); "
+                f"at least {MIN_TRACES_PER_IMAGE} are required per sample"
+            )
+    analysed.sort(key=lambda item: sum(trace.weight for trace in item[1]), reverse=True)
+    reserve_candidates.sort(
+        key=lambda item: sum(trace.weight for trace in item[1]), reverse=True
+    )
+    selected = analysed[:MAX_FIT_IMAGES]
+    unused = analysed[MAX_FIT_IMAGES:] + reserve_candidates
+    unused.sort(key=lambda item: sum(trace.weight for trace in item[1]), reverse=True)
+    common_record: dict[str, Any] = {
+        "method": "runtime multi-image plumb-line calibration",
+        "camera_group": group.label,
+        "candidate_image_count": len(candidates),
+        "maximum_fit_images": MAX_FIT_IMAGES,
+        "minimum_validation_improvement": MIN_VALIDATION_IMPROVEMENT,
+    }
+    calibration, attempt = _fit_selected_images(selected, group, emit)
+    if calibration is not None:
+        return calibration, {**common_record, **attempt}
+
+    disagreeing = set(attempt.get("disagreeing_images") or [])
+    if (
+        attempt.get("status") == "rejected_cross_image_disagreement"
+        and len(selected) >= 3
+        and len(disagreeing) == 1
+    ):
+        fallback_selected = [item for item in selected if item[0].name not in disagreeing]
+        if len(fallback_selected) == 2 and unused:
+            reserve = unused[0]
+            replacement_selected = fallback_selected + [reserve]
+            emit(
+                "Best-three validation rejected "
+                + next(iter(disagreeing))
+                + "; replacing it with fourth-ranked usable sample "
+                + reserve[0].name
+                + " and validating three images again"
+            )
+            replacement_calibration, replacement_attempt = _fit_selected_images(
+                replacement_selected, group, emit
+            )
+            replacement_result = {
+                **common_record,
+                **replacement_attempt,
+                "fallback_used": True,
+                "fallback_stage": "three_image_replacement",
+                "fallback_removed_images": sorted(disagreeing),
+                "fallback_replacement_image": reserve[0].name,
+                "initial_attempt": attempt,
+            }
+            if replacement_calibration is not None:
+                emit("Replacement best-three model accepted after independent validation")
+                return replacement_calibration, replacement_result
+            emit(
+                "Replacement three-image model was not accepted; "
+                "trying the two originally consistent images as the final fallback"
+            )
+        if len(fallback_selected) >= 2:
+            emit(
+                "Best-three validation rejected "
+                + ", ".join(sorted(disagreeing))
+                + "; refitting once with the consistent sample(s): "
+                + ", ".join(path.name for path, _traces in fallback_selected)
+            )
+            fallback_calibration, fallback_attempt = _fit_selected_images(fallback_selected, group, emit)
+            result = {
+                **common_record,
+                **fallback_attempt,
+                "fallback_used": True,
+                "fallback_stage": "two_image_consensus",
+                "fallback_removed_images": sorted(disagreeing),
+                "initial_attempt": attempt,
+            }
+            if len(fallback_selected) == 2 and unused:
+                result["replacement_attempt"] = replacement_attempt
+                result["fallback_replacement_image"] = unused[0][0].name
+            if fallback_calibration is not None:
+                emit("Consistent-sample fallback accepted after independent validation")
+                return fallback_calibration, result
+            return None, result
+    return None, {**common_record, **attempt, "fallback_used": False}
