@@ -18,6 +18,7 @@
     referenceLayers: new Map(),
     referenceToken: 0,
     temporarySequence: 0,
+    previewHoverReset: null,
   };
 
   const PREVIEW_STYLES = {
@@ -28,6 +29,20 @@
   };
 
   const byId = id => document.getElementById(id);
+
+  function showListLoading(id, message) {
+    const container = byId(id);
+    container.replaceChildren();
+    const row = document.createElement("div");
+    row.className = "mapListLoading";
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.textContent = message;
+    row.append(spinner, text);
+    container.appendChild(row);
+  }
 
   function updateFitButton() {
     const hasVisibleReference = state.map && [...state.referenceLayers.values()]
@@ -326,6 +341,7 @@
 
   async function loadReferenceSources(resultId) {
     const token = ++state.referenceToken;
+    showListLoading("ppReferenceLayers", "Loading reference layers…");
     byId("ppReferenceStatus").textContent = "Finding linked orthophoto and image references…";
     const [summaryResult, tilesResult] = await Promise.allSettled([
       requestJson(`/api/session_summary?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
@@ -435,25 +451,34 @@
       style: () => baseStyle,
       onEachFeature: (feature, polygonLayer) => {
         polygonLayer.options.pmIgnore = !editableStage;
+        let hovered = false;
+        const resetHover = () => {
+          if (!hovered) return;
+          hovered = false;
+          if (state.previewHoverReset === resetHover) state.previewHoverReset = null;
+          if (state.editing?.selectedLayer === polygonLayer) return;
+          if (!state.editing) polygonLayer.setStyle(baseStyle);
+          else if (state.editing.stage === stage) {
+            polygonLayer.setStyle({ ...baseStyle, weight: baseStyle.weight + 1, fillOpacity: 0.28, opacity: 1 });
+          }
+        };
         polygonLayer.on("mouseover", event => {
           if (state.editing && state.editing.stage !== stage) return;
           if (state.editing?.selectedLayer === event.target) return;
+          if (state.previewHoverReset && state.previewHoverReset !== resetHover) state.previewHoverReset();
+          hovered = true;
           event.target.setStyle({
             color: "#ffffff",
             weight: style.weight + 2,
             fillColor: style.color,
             fillOpacity: 0.38,
           });
-          event.target.bringToFront?.();
+          state.previewHoverReset = resetHover;
         });
-        polygonLayer.on("mouseout", event => {
-          if (state.editing?.selectedLayer === event.target) return;
-          if (!state.editing) event.target.setStyle(baseStyle);
-          else if (state.editing.stage === stage) {
-            event.target.setStyle({ ...baseStyle, weight: baseStyle.weight + 1, fillOpacity: 0.28, opacity: 1 });
-          }
-        });
+        polygonLayer.on("mouseout", resetHover);
+        polygonLayer.on("remove", resetHover);
         polygonLayer.on("click", event => {
+          resetHover();
           if (state.editing) return;
           window.L.popup({
             className: "postprocessPolygonPopup",
@@ -903,6 +928,17 @@
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
     }
+    for (const stage of state.previewLoading) {
+      if (state.previewLayers.has(stage)) continue;
+      const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
+      const loading = document.createElement("div");
+      loading.className = "mapListLoading";
+      loading.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>Loading ${escapeHtml(style.label)} layer…</span>`;
+      container.appendChild(loading);
+    }
+    if (!container.childElementCount) {
+      container.innerHTML = '<div class="muted tiny">No processing layers loaded.</div>';
+    }
     updateFitButton();
   }
 
@@ -914,6 +950,7 @@
       return;
     }
     state.previewLoading.add(stage);
+    renderPreviewLayers();
     const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
     byId("ppMapStatus").textContent = `Loading ${style.label.toLowerCase()} polygons…`;
     try {
@@ -945,6 +982,7 @@
       byId("ppMapStatus").textContent = `Could not load ${style.label.toLowerCase()} preview: ${error.message}`;
     } finally {
       state.previewLoading.delete(stage);
+      renderPreviewLayers();
     }
   }
 
@@ -1150,8 +1188,7 @@
       state.workflows = (payload.workflows || []).sort((first, second) =>
         String(second.created_at || "").localeCompare(String(first.created_at || ""))
       );
-      const workflow = state.workflows.find(item => item.id === preferredId)
-        || state.workflows.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && item.outputs?.combined);
+      const workflow = selectSavedWorkflow(inputPath, preferredId, false);
       renderWorkflowList();
       if (!workflow) {
         byId("ppRegularizeStep").hidden = true;
@@ -1167,40 +1204,85 @@
     }
   }
 
+  function selectSavedWorkflow(inputPath = "", preferredId = null, allowLatest = false) {
+    return state.workflows.find(item => item.id === preferredId)
+      || state.workflows.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && item.outputs?.combined)
+      || (allowLatest ? state.workflows.find(item => Object.keys(item.outputs || {}).length) : null);
+  }
+
+  async function loadSavedOutputsFirst(resultId) {
+    showListLoading("ppWorkflowList", "Loading saved outputs…");
+    showListLoading("ppLayerList", "Loading output layers…");
+    try {
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, { cache: "no-store" });
+      state.workflows = (payload.workflows || []).sort((first, second) =>
+        String(second.created_at || "").localeCompare(String(first.created_at || ""))
+      );
+      const workflow = selectSavedWorkflow("", null, true);
+      if (workflow) {
+        state.workflowId = workflow.id;
+        applyWorkflow(workflow);
+        populateRegularizeSources(workflow.id);
+      } else {
+        renderPreviewLayers();
+      }
+      renderWorkflowList();
+      return workflow;
+    } catch (error) {
+      state.workflows = [];
+      renderWorkflowList();
+      renderPreviewLayers();
+      byId("ppMapStatus").textContent = `Could not load saved outputs: ${error.message}`;
+      return null;
+    }
+  }
+
   async function loadGeojsons() {
     resetAnalysis();
     clearReferenceLayers();
     state.workflows = [];
-    renderWorkflowList();
     const resultId = byId("ppResult").value;
     const select = byId("ppGeojson");
     select.disabled = true;
     byId("ppAnalyze").disabled = true;
     select.replaceChildren();
-    addOption(select, "", "Select a GeoJSON…");
+    addOption(select, "", resultId ? "Looking for GeoJSON files…" : "Select a GeoJSON…");
     if (!resultId) {
       setMessage("Select a test result.");
       byId("ppReferenceStatus").textContent = "Select a test result to find linked imagery.";
       return;
     }
+    setMessage("Loading saved outputs first…");
+    const earlyWorkflow = await loadSavedOutputsFirst(resultId);
     void loadReferenceSources(resultId);
     setMessage("Looking for GeoJSON files in the selected result…");
     startIndeterminate("Loading the available GeoJSON file list…");
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
       state.geojsonFiles = payload.files || [];
+      select.replaceChildren();
+      addOption(select, "", "Select a GeoJSON…");
       for (const file of state.geojsonFiles) {
         addOption(select, file.path, `${file.name} · ${file.stage}`);
       }
+      const previousSource = earlyWorkflow
+        ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(earlyWorkflow.input_path))
+        : null;
       const predictions = [...select.options].find(option => option.value.toLowerCase() === "predictions.geojson")
         || [...select.options].find(option => option.value.toLowerCase() === "anomalies.geojson");
-      if (predictions) select.value = predictions.value;
+      if (previousSource) select.value = previousSource.value;
+      else if (predictions) select.value = predictions.value;
       else if (select.options.length > 1) select.selectedIndex = 1;
       select.disabled = select.options.length <= 1;
       byId("ppAnalyze").disabled = !select.value;
-      const restored = select.value
-        ? await restoreLatestWorkflow(resultId, select.value)
-        : false;
+      const matchingWorkflow = selectSavedWorkflow(select.value, null, false);
+      const restored = Boolean(matchingWorkflow);
+      if (matchingWorkflow && matchingWorkflow.id !== state.workflowId) {
+        state.workflowId = matchingWorkflow.id;
+        applyWorkflow(matchingWorkflow);
+        populateRegularizeSources(matchingWorkflow.id);
+        renderWorkflowList();
+      }
       if (!restored) {
         setMessage(select.value ? "Click Scan GeoJSON to inspect tile edges. Nothing runs until you start it." : "This result has no GeoJSON files.", select.value ? "" : "warn");
       }
@@ -1294,9 +1376,11 @@
     }
     syncOutputPreviews(status);
     const running = status.status === "queued" || status.status === "running";
+    const hasCombined = Boolean(status.outputs?.combined);
     byId("ppCombine").disabled = running || !state.analysis;
-    byId("ppRegularize").disabled = running || !status.outputs?.combined;
-    if (state.scanComplete && status.outputs?.combined) {
+    byId("ppRegularize").disabled = running || !hasCombined;
+    if (hasCombined) {
+      byId("ppCombineStep").hidden = false;
       byId("ppRegularizeStep").hidden = false;
     }
     if (status.status === "failed") setMessage(status.error || status.message || "Post-processing failed.", "err");

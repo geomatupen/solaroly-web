@@ -12,13 +12,22 @@ let layerMenuState = { name: null, info: null };
 let mapDetectionFilterActive = false;
 let anomaliesFilterActive = false;
 let prevMapDetectionStates = null;
+let activeGeoJsonHoverReset = null;
 
 function addGeoJsonHoverHighlight(feature, featureLayer) {
   const geometryType = feature?.geometry?.type;
   if (!['Polygon', 'MultiPolygon'].includes(geometryType) || !featureLayer?.setStyle) return;
   let previousStyle = null;
+  const resetHighlight = () => {
+    if (previousStyle) featureLayer.setStyle(previousStyle);
+    previousStyle = null;
+    if (activeGeoJsonHoverReset === resetHighlight) activeGeoJsonHoverReset = null;
+  };
   featureLayer.on('mouseover', event => {
     if (previousStyle) return;
+    if (activeGeoJsonHoverReset && activeGeoJsonHoverReset !== resetHighlight) {
+      activeGeoJsonHoverReset();
+    }
     const options = event.target.options || {};
     previousStyle = {
       color: options.color,
@@ -34,13 +43,11 @@ function addGeoJsonHoverHighlight(feature, featureLayer) {
       fillColor: options.fillColor || options.color,
       fillOpacity: Math.max(Number(options.fillOpacity || 0), 0.4),
     });
-    event.target.bringToFront?.();
+    activeGeoJsonHoverReset = resetHighlight;
   });
-  featureLayer.on('mouseout', event => {
-    if (!previousStyle) return;
-    event.target.setStyle(previousStyle);
-    previousStyle = null;
-  });
+  featureLayer.on('mouseout', resetHighlight);
+  featureLayer.on('click', resetHighlight);
+  featureLayer.on('remove', resetHighlight);
 }
 
 window.addGeoJsonHoverHighlight = addGeoJsonHoverHighlight;
