@@ -3,7 +3,7 @@
 
 .postprocessWorkspace {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr);
+  grid-template-columns: minmax(360px, .85fr) minmax(680px, 1.65fr);
   gap: 18px;
   align-items: start;
 }
@@ -43,6 +43,33 @@
 .postprocessPreviewMapColumn,
 .postprocessPreviewLayersColumn { min-width: 0; }
 
+.postprocessPreviewWorkspace {
+  --postprocess-preview-height: clamp(520px, calc(100vh - 190px), 680px);
+  display: grid;
+  grid-template-columns: minmax(290px, 350px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.postprocessPreviewLayersColumn {
+  grid-column: 1;
+  grid-row: 1;
+  max-height: var(--postprocess-preview-height);
+  padding-right: 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: #64748b #17212b;
+  scrollbar-width: thin;
+}
+
+.postprocessPreviewMapColumn {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .postprocessPreview.postprocessFullscreen,
 .postprocessPreview:fullscreen {
   position: fixed;
@@ -71,6 +98,7 @@
   grid-column: 1;
   grid-row: 1;
   min-height: 0;
+  max-height: none;
   padding-right: 5px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -106,7 +134,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessMap {
   width: 100%;
-  height: 460px;
+  height: var(--postprocess-preview-height);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #111820;
@@ -130,6 +158,12 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+
+.postprocessPreviewLayersColumn > .postprocessReferenceHeader {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .postprocessReferenceHeader h3 { margin: 0; }
@@ -399,14 +433,10 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessMetric span { color: var(--muted); font-size: 11px; }
 
 .postprocessSteps {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   margin-top: 16px;
-}
-
-.postprocessSteps:not(:has(#ppRegularizeStep:not([hidden]))) {
-  grid-template-columns: 1fr;
 }
 
 .postprocessStep {
@@ -468,11 +498,20 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   to { transform: translateX(300%); }
 }
 
+@media (max-width: 1200px) {
+  .postprocessWorkspace { grid-template-columns: 1fr; }
+  .postprocessPreview { position: static; }
+}
+
 @media (max-width: 850px) {
   .postprocessWorkspace,
-  .postprocessSelection,
-  .postprocessSteps { grid-template-columns: 1fr; }
-  .postprocessPreview { position: static; }
+  .postprocessSelection { grid-template-columns: 1fr; }
+  .postprocessPreviewWorkspace { display: flex; flex-direction: column; }
+  .postprocessPreviewMapColumn,
+  .postprocessPreviewLayersColumn { max-height: none; }
+  .postprocessPreviewMapColumn { order: 1; }
+  .postprocessPreviewLayersColumn { order: 2; overflow: visible; }
+  .postprocessMap { height: 480px; }
   .postprocessSelection button { justify-self: start; }
 }
 
