@@ -15,6 +15,9 @@
     scanComplete: false,
     editing: null,
     loadingPromise: null,
+    referenceLayers: new Map(),
+    referenceToken: 0,
+    temporarySequence: 0,
   };
 
   const PREVIEW_STYLES = {
@@ -25,6 +28,12 @@
   };
 
   const byId = id => document.getElementById(id);
+
+  function updateFitButton() {
+    const hasVisibleReference = state.map && [...state.referenceLayers.values()]
+      .some(item => item.layer && state.map.hasLayer(item.layer));
+    byId("ppFitLayers").disabled = !state.previewLayers.size && !hasVisibleReference;
+  }
 
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, character => ({
@@ -97,6 +106,10 @@
   function ensurePreviewMap() {
     if (state.map || !window.L || !byId("ppMap")) return state.map;
     state.map = window.L.map("ppMap", { preferCanvas: true, zoomControl: true }).setView([0, 0], 2);
+    const rasterPane = state.map.createPane("ppRasterPane");
+    rasterPane.style.zIndex = "250";
+    const referencePane = state.map.createPane("ppReferencePane");
+    referencePane.style.zIndex = "350";
     window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 22,
       attribution: "&copy; OpenStreetMap contributors",
@@ -113,9 +126,296 @@
     }
     state.previewLayers.clear();
     state.previewLoading.clear();
-    byId("ppFitLayers").disabled = true;
+    updateFitButton();
     byId("ppLayerList").innerHTML = '<div class="muted tiny">No preview layers loaded.</div>';
     byId("ppMapStatus").textContent = "Scan a GeoJSON to preview it.";
+  }
+
+  function clearReferenceLayers() {
+    state.referenceToken += 1;
+    if (state.map) {
+      for (const item of state.referenceLayers.values()) {
+        if (item.layer && state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
+      }
+    }
+    state.referenceLayers.clear();
+    byId("ppReferenceLayers").innerHTML = '<div class="muted tiny">No reference layers loaded.</div>';
+    updateFitButton();
+  }
+
+  function setReferenceOpacity(item, opacity) {
+    item.opacity = opacity;
+    item.layer?.eachLayer?.(layer => {
+      if (layer.setOpacity && !layer.setStyle) layer.setOpacity(opacity);
+      else if (layer.setStyle && layer.options?.pane === "ppReferencePane") {
+        layer.setStyle({ opacity: Math.max(opacity, 0.25), fillOpacity: 0.04 });
+      }
+    });
+  }
+
+  function renderReferenceLayers() {
+    const container = byId("ppReferenceLayers");
+    container.replaceChildren();
+    if (!state.referenceLayers.size) {
+      container.innerHTML = '<div class="muted tiny">No linked or temporary reference layers.</div>';
+      return;
+    }
+    for (const [id, item] of state.referenceLayers) {
+      const row = document.createElement("div");
+      row.className = "postprocessLayerItem";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = Boolean(item.layer && state.map?.hasLayer(item.layer));
+      checkbox.disabled = Boolean(item.loading);
+      checkbox.title = `Show ${item.label}`;
+      checkbox.addEventListener("change", async () => {
+        try {
+          if (checkbox.checked && item.loader && !item.loaded) {
+            checkbox.disabled = true;
+            item.loading = true;
+            byId("ppReferenceStatus").textContent = `Loading ${item.label}…`;
+            await item.loader(item);
+            if (state.referenceLayers.get(id) !== item) return;
+            item.loaded = true;
+            item.loading = false;
+          }
+          if (checkbox.checked) item.layer.addTo(state.map);
+          else if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
+          byId("ppReferenceStatus").textContent = checkbox.checked
+            ? `${item.label} is visible as a read-only reference.`
+            : `${item.label} is hidden.`;
+        } catch (error) {
+          checkbox.checked = false;
+          item.loading = false;
+          byId("ppReferenceStatus").textContent = `Could not load ${item.label}: ${error.message}`;
+        } finally {
+          checkbox.disabled = false;
+          renderReferenceLayers();
+        }
+      });
+      const swatch = document.createElement("span");
+      swatch.className = "postprocessLayerSwatch";
+      swatch.style.color = item.color;
+      const text = document.createElement("div");
+      text.className = "postprocessLayerText";
+      const name = document.createElement("strong");
+      name.textContent = item.label;
+      const detail = document.createElement("small");
+      detail.textContent = item.detail;
+      text.append(name, detail);
+      const actions = document.createElement("div");
+      actions.className = "postprocessLayerActions";
+      const opacity = document.createElement("input");
+      opacity.type = "range";
+      opacity.min = "0.1";
+      opacity.max = "1";
+      opacity.step = "0.05";
+      opacity.value = String(item.opacity ?? 0.75);
+      opacity.className = "postprocessReferenceOpacity";
+      opacity.title = "Reference opacity";
+      opacity.addEventListener("input", () => setReferenceOpacity(item, Number(opacity.value)));
+      actions.appendChild(opacity);
+      const focus = document.createElement("button");
+      focus.type = "button";
+      focus.className = "secondary tiny";
+      focus.textContent = "Focus";
+      focus.disabled = !item.loaded;
+      focus.addEventListener("click", () => {
+        const bounds = item.bounds || item.layer?.getBounds?.();
+        if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
+      });
+      actions.appendChild(focus);
+      if (item.temporary) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary tiny";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+          if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
+          state.referenceLayers.delete(id);
+          renderReferenceLayers();
+          byId("ppReferenceStatus").textContent = "Temporary layer removed. No project file was changed.";
+        });
+        actions.appendChild(remove);
+      }
+      row.append(checkbox, swatch, text, actions);
+      container.appendChild(row);
+    }
+    updateFitButton();
+  }
+
+  function imageBounds(feature) {
+    const properties = feature?.properties || {};
+    const coordinates = feature?.geometry?.coordinates || [];
+    const longitude = Number(coordinates[0]);
+    const latitude = Number(coordinates[1]);
+    const corners = properties.corners;
+    if (Array.isArray(corners) && corners.length >= 4) {
+      const points = corners.map(point => window.L.latLng(Number(point[1]), Number(point[0])));
+      const bounds = window.L.latLngBounds(points);
+      if (bounds.isValid()) return bounds;
+    }
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    const halfWidth = Number(properties.width_m || 50) / 2;
+    const halfHeight = Number(properties.height_m || 50) / 2;
+    const latitudeDelta = halfHeight / 111320;
+    const longitudeDelta = halfWidth / (111320 * Math.max(Math.cos(latitude * Math.PI / 180), 0.01));
+    return window.L.latLngBounds(
+      [latitude - latitudeDelta, longitude - longitudeDelta],
+      [latitude + latitudeDelta, longitude + longitudeDelta],
+    );
+  }
+
+  function imageOverlayUrl(properties, overlayByName) {
+    const direct = properties?.overlay;
+    if (typeof direct === "string" && (direct.startsWith("/") || /^https?:/i.test(direct))) return direct;
+    const source = properties?.src || properties?.image || properties?.file || properties?.name;
+    const basename = String(source || "").split(/[\\/]/).pop();
+    if (!basename) return null;
+    return overlayByName.get(`${basename.replace(/\.[^.]+$/, "")}.png`) || null;
+  }
+
+  async function loadLinkedImages(item, summary, imagesUrl) {
+    const geojson = await requestJson(imagesUrl, { cache: "no-store" });
+    const overlayByName = new Map();
+    for (const url of summary?.assets?.overlays || []) {
+      const basename = decodeURIComponent(String(url).split("?")[0].split("/").pop() || "");
+      if (basename) overlayByName.set(basename, url);
+    }
+    let count = 0;
+    for (const feature of geojson.features || []) {
+      if (feature?.geometry?.type !== "Point") continue;
+      const bounds = imageBounds(feature);
+      if (!bounds) continue;
+      const properties = feature.properties || {};
+      const imageUrl = imageOverlayUrl(properties, overlayByName);
+      const footprint = window.L.rectangle(bounds, {
+        pane: "ppReferencePane",
+        color: "#38bdf8",
+        weight: 1,
+        opacity: 0.75,
+        fillOpacity: 0.04,
+        pmIgnore: true,
+      });
+      footprint.on("mouseover", event => event.target.setStyle({ color: "#fff", weight: 2, fillOpacity: 0.12 }));
+      footprint.on("mouseout", event => event.target.setStyle({ color: "#38bdf8", weight: 1, opacity: Math.max(item.opacity, 0.25), fillOpacity: 0.04 }));
+      footprint.on("click", () => {
+        if (!imageUrl) {
+          byId("ppReferenceStatus").textContent = "This image footprint has no linked overlay image.";
+          return;
+        }
+        let image = item.imageLayers.get(imageUrl);
+        if (!image) {
+          image = window.L.imageOverlay(imageUrl, bounds, { pane: "ppRasterPane", opacity: item.opacity, interactive: false });
+          item.imageLayers.set(imageUrl, image);
+        }
+        if (item.layer.hasLayer(image)) {
+          item.layer.removeLayer(image);
+          byId("ppReferenceStatus").textContent = "Linked image hidden.";
+        } else {
+          item.layer.addLayer(image);
+          byId("ppReferenceStatus").textContent = "Linked image loaded. Click its footprint again to hide it.";
+        }
+      });
+      item.layer.addLayer(footprint);
+      count += 1;
+    }
+    item.detail = `${count.toLocaleString()} footprints · click a footprint to load its image`;
+    item.bounds = item.layer.getBounds?.();
+  }
+
+  async function loadReferenceSources(resultId) {
+    const token = ++state.referenceToken;
+    byId("ppReferenceStatus").textContent = "Finding linked orthophoto and image references…";
+    const [summaryResult, tilesResult] = await Promise.allSettled([
+      requestJson(`/api/session_summary?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
+      requestJson(`/api/session_tiles?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
+    ]);
+    if (token !== state.referenceToken) return;
+    const summary = summaryResult.status === "fulfilled" ? summaryResult.value : {};
+    const tiles = tilesResult.status === "fulfilled" ? tilesResult.value : {};
+    if (Array.isArray(tiles.layers) && tiles.layers.length) {
+      const group = window.L.layerGroup();
+      let combinedBounds = null;
+      for (const definition of tiles.layers) {
+        const bounds = Array.isArray(definition.bounds) ? window.L.latLngBounds(definition.bounds) : undefined;
+        if (bounds?.isValid()) combinedBounds = combinedBounds ? combinedBounds.extend(bounds) : bounds;
+        window.L.tileLayer(definition.template, {
+          pane: "ppRasterPane",
+          bounds,
+          minZoom: definition.minzoom ?? 0,
+          maxZoom: definition.maxzoom ?? 22,
+          tileSize: 256,
+          noWrap: true,
+          opacity: 0.8,
+        }).addTo(group);
+      }
+      state.referenceLayers.set("orthophoto", {
+        label: "Orthophoto",
+        detail: `${tiles.layers.length.toLocaleString()} linked tile layer${tiles.layers.length === 1 ? "" : "s"} · read-only`,
+        color: "#f8fafc",
+        layer: group,
+        bounds: combinedBounds,
+        loaded: true,
+        opacity: 0.8,
+      });
+    }
+    const imagesUrl = summary.images_geojson_url || summary.images_geojson || summary.images || summary.images_gj;
+    if (imagesUrl) {
+      const item = {
+        label: "Individual images",
+        detail: "Linked footprints · images load only when clicked",
+        color: "#38bdf8",
+        layer: window.L.featureGroup(),
+        loaded: false,
+        loading: false,
+        opacity: 0.75,
+        imageLayers: new Map(),
+      };
+      item.loader = () => loadLinkedImages(item, summary, imagesUrl);
+      state.referenceLayers.set("images", item);
+    }
+    renderReferenceLayers();
+    byId("ppReferenceStatus").textContent = state.referenceLayers.size
+      ? "Reference sources found. Enable only the imagery needed for editing."
+      : "No linked orthophoto or geolocated image references were found.";
+  }
+
+  async function addTemporaryGeoJson(file) {
+    const payload = JSON.parse(await file.text());
+    if (payload?.type !== "FeatureCollection" || !Array.isArray(payload.features)) {
+      throw new Error("Temporary GeoJSON must be a FeatureCollection.");
+    }
+    const id = `temporary-${++state.temporarySequence}`;
+    const layer = window.L.geoJSON(payload, {
+      pane: "ppReferencePane",
+      pmIgnore: true,
+      style: { color: "#e879f9", weight: 2, dashArray: "6 4", fillColor: "#e879f9", fillOpacity: 0.08 },
+      pointToLayer: (_feature, latlng) => window.L.circleMarker(latlng, { pane: "ppReferencePane", radius: 5, color: "#e879f9" }),
+      onEachFeature: (feature, featureLayer) => {
+        featureLayer.options.pmIgnore = true;
+        featureLayer.on("click", event => {
+          window.L.popup({ maxWidth: 320, maxHeight: 210 })
+            .setLatLng(event.latlng)
+            .setContent(polygonPopupHtml(feature, file.name))
+            .openOn(state.map);
+        });
+      },
+    });
+    state.referenceLayers.set(id, {
+      label: file.name,
+      detail: `${Number(payload.features.length).toLocaleString()} features · temporary · read-only`,
+      color: "#e879f9",
+      layer,
+      loaded: true,
+      temporary: true,
+      opacity: 0.8,
+    });
+    layer.addTo(state.map);
+    renderReferenceLayers();
+    const bounds = layer.getBounds?.();
+    if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
+    byId("ppReferenceStatus").textContent = "Temporary GeoJSON added in browser memory only.";
   }
 
   function createPreviewGeoJsonLayer(stage, geojson, label = null) {
@@ -176,6 +476,12 @@
     for (const item of state.previewLayers.values()) {
       if (map.hasLayer(item.layer)) {
         const layerBounds = item.layer.getBounds?.();
+        if (layerBounds?.isValid()) bounds.push(layerBounds);
+      }
+    }
+    for (const item of state.referenceLayers.values()) {
+      if (item.layer && map.hasLayer(item.layer)) {
+        const layerBounds = item.bounds || item.layer.getBounds?.();
         if (layerBounds?.isValid()) bounds.push(layerBounds);
       }
     }
@@ -551,7 +857,7 @@
         const send = document.createElement("button");
         send.type = "button";
         send.className = "secondary tiny";
-        send.textContent = "Send to Map";
+        send.textContent = "Link to Map";
         send.disabled = Boolean(state.editing);
         send.addEventListener("click", () => sendLayerToMap(key, send));
         actions.appendChild(send);
@@ -560,7 +866,7 @@
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
     }
-    byId("ppFitLayers").disabled = !state.previewLayers.size;
+    updateFitButton();
   }
 
   async function loadPreviewLayer(stage, url, expectedCount = null, label = null) {
@@ -826,6 +1132,7 @@
 
   async function loadGeojsons() {
     resetAnalysis();
+    clearReferenceLayers();
     state.workflows = [];
     renderWorkflowList();
     const resultId = byId("ppResult").value;
@@ -836,8 +1143,10 @@
     addOption(select, "", "Select a GeoJSON…");
     if (!resultId) {
       setMessage("Select a test result.");
+      byId("ppReferenceStatus").textContent = "Select a test result to find linked imagery.";
       return;
     }
+    void loadReferenceSources(resultId);
     setMessage("Looking for GeoJSON files in the selected result…");
     startIndeterminate("Loading the available GeoJSON file list…");
     try {
@@ -1078,6 +1387,18 @@
     byId("ppRedoEdits").addEventListener("click", redoEdits);
     byId("ppSaveEdits").addEventListener("click", saveEditedRevision);
     byId("ppExitEditing").addEventListener("click", () => stopEditing(true));
+    byId("ppAddTemporaryLayer").addEventListener("click", () => byId("ppTemporaryLayerFile").click());
+    byId("ppTemporaryLayerFile").addEventListener("change", async event => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+      try {
+        ensurePreviewMap();
+        await addTemporaryGeoJson(file);
+      } catch (error) {
+        byId("ppReferenceStatus").textContent = `Could not add temporary layer: ${error.message}`;
+      }
+    });
     document.querySelector(".tabs")?.addEventListener("click", event => {
       const navigation = event.target.closest("button[data-tab], a[href]");
       if (!state.editing || !navigation || navigation.id === "btnPostprocess") return;

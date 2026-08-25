@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260824a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260825a" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260825c" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -544,6 +544,18 @@
           </div>
           <div id="ppMap" class="postprocessMap" aria-label="Post-processing GeoJSON preview"></div>
           <div id="ppMapStatus" class="statusLine tiny">Scan a GeoJSON to preview it.</div>
+          <div class="postprocessReferenceHeader">
+            <div>
+              <h3>Reference layers</h3>
+              <small class="muted">Linked imagery is read-only and is not copied.</small>
+            </div>
+            <button id="ppAddTemporaryLayer" class="secondary tiny" type="button">Add temporary GeoJSON</button>
+            <input id="ppTemporaryLayerFile" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
+          </div>
+          <div id="ppReferenceStatus" class="statusLine tiny">Select a test result to find linked imagery.</div>
+          <div id="ppReferenceLayers" class="postprocessLayerList postprocessReferenceLayers">
+            <div class="muted tiny">No reference layers loaded.</div>
+          </div>
           <div id="ppEditPanel" class="postprocessEditPanel" hidden>
             <div class="postprocessEditIdentity">
               <span>Editing layer</span>
@@ -560,6 +572,7 @@
             </div>
             <div id="ppEditStatus" class="muted tiny">Choose an editing tool.</div>
           </div>
+          <h3 class="postprocessLayerSectionTitle">Processing layers</h3>
           <div id="ppLayerList" class="postprocessLayerList">
             <div class="muted tiny">No preview layers loaded.</div>
           </div>
@@ -1103,9 +1116,9 @@
   <script src="js/utils.js?v=20260822c"></script>
   <script src="js/map.js?v=20260824c"></script>
   <script src="js/colmap.js?v=20260301b"></script>
-  <script src="js/map-overlay.js?v=20260824b"></script>
-  <script src="js/main.js?v=20260825b"></script>
-  <script src="js/postprocess.js?v=20260825d"></script>
+  <script src="js/map-overlay.js?v=20260825b"></script>
+  <script src="js/main.js?v=20260825d"></script>
+  <script src="js/postprocess.js?v=20260825g"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

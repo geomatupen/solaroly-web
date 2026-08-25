@@ -430,7 +430,7 @@ function switchToTab(tabId){
     window.PostProcessTab?.activate();
   }
   if(tabId === "tab-map"){
-    ensureMapTabLoaded();
+    ensureMapTabLoaded().then(() => window.refreshReferencedMapOverlays?.());
   }
   if(tabId === "tab-train"){
     if(document.getElementById('btnAssetData')?.classList.contains('active')) loadTrainingDatasets();
@@ -3154,7 +3154,7 @@ function refreshLayersPanel(){
     <li>
       <label class="chk">
         <input type="checkbox" class="layerToggle" data-key="${escapeHtml(key)}" ${MAP.hasLayer(rec.layer) ? 'checked' : ''}>
-        <span>${escapeHtml(key)}</span>
+        <span>${escapeHtml(key)}${rec.reference ? ' <small class="muted">· linked</small>' : ''}</span>
       </label>
       <button class="iconDots layerMenuBtn" data-key="${escapeHtml(key)}" title="Layer menu">⋮</button>
     </li>

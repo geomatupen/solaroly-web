@@ -50,6 +50,31 @@
   padding-top: 5px;
 }
 
+.postprocessReferenceHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.postprocessReferenceHeader h3 { margin: 0; }
+.postprocessReferenceHeader small { display: block; margin-top: 2px; }
+.postprocessReferenceLayers { max-height: 190px; }
+
+.postprocessReferenceOpacity {
+  width: 72px;
+  accent-color: var(--accent);
+}
+
+.postprocessLayerSectionTitle {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .postprocessLayerItem {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;

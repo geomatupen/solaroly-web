@@ -369,10 +369,16 @@ async function addSavedGeoJsonOverlay(overlay, options = {}) {
   if (!response.ok) throw new Error(`Could not load overlay (${response.status}).`);
   const geojson = await response.json();
   const name = overlay.name || 'GeoJSON overlay';
-  const previous = overlayRegistry[name];
+  const previousEntry = Object.entries(overlayRegistry).find(([, record]) =>
+    overlay.overlay_id && record?.overlay_id === overlay.overlay_id
+  );
+  const previousName = previousEntry?.[0];
+  const previous = previousEntry?.[1] || overlayRegistry[name];
+  const wasVisible = Boolean(previous?.layer && MAP.hasLayer(previous.layer));
   if (previous?.layer) {
     try { MAP.removeLayer(previous.layer); } catch (_) {}
   }
+  if (previousName && previousName !== name) delete overlayRegistry[previousName];
   const bounds = computeLayerBounds(geojson);
   const layer = L.geoJSON(geojson, {
     style: { color: '#22c55e', weight: 2, fillColor: '#22c55e', fillOpacity: 0.2 },
@@ -393,8 +399,9 @@ async function addSavedGeoJsonOverlay(overlay, options = {}) {
     bounds,
     temporary: false,
     overlay_id: overlay.overlay_id,
+    reference: Boolean(overlay.reference),
   };
-  if (options.show) layer.addTo(MAP);
+  if (options.show ?? wasVisible) layer.addTo(MAP);
   refreshLayersPanel();
   if (options.focus) {
     const layerBounds = layer.getBounds?.();
@@ -408,16 +415,20 @@ window.addSavedGeoJsonOverlay = addSavedGeoJsonOverlay;
 /**
  * Load saved overlays from backend
  */
-async function loadSavedOverlays() {
+async function loadSavedOverlays(options = {}) {
   try {
     const resp = await fetch('/api/list_overlays');
     const data = await resp.json();
     
     if (!data.ok || !data.overlays) return;
+    const returnedReferenceIds = new Set(
+      data.overlays.filter(overlay => overlay.reference).map(overlay => overlay.overlay_id)
+    );
     
     for (const overlay of data.overlays) {
+      if (options.referencesOnly && !overlay.reference) continue;
       if (overlay.type === 'geojson') {
-        await addSavedGeoJsonOverlay(overlay, { show: false, focus: false });
+        await addSavedGeoJsonOverlay(overlay, { focus: false });
       } else if (overlay.type === 'tif') {
         // Load GeoTIFF overlay - need to get tile info
         const tileResp = await fetch(`/api/get_overlay_tiles?overlay_id=${overlay.overlay_id}`);
@@ -470,12 +481,21 @@ async function loadSavedOverlays() {
         }
       }
     }
+    if (options.referencesOnly) {
+      for (const [name, record] of Object.entries(overlayRegistry)) {
+        if (!record?.reference || returnedReferenceIds.has(record.overlay_id)) continue;
+        try { if (record.layer) MAP.removeLayer(record.layer); } catch (_) {}
+        delete overlayRegistry[name];
+      }
+    }
     
     refreshLayersPanel();
   } catch (err) {
     console.error('Failed to load saved overlays:', err);
   }
 }
+
+window.refreshReferencedMapOverlays = () => loadSavedOverlays({ referencesOnly: true });
 
 /**
  * Initialize map overlay UI

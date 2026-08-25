@@ -378,6 +378,21 @@ def create_postprocess_router(
         if status.get("status") in {"queued", "running"}:
             raise HTTPException(status_code=409, detail="A running workflow cannot be deleted.")
         shutil.rmtree(workflow_dir)
+        overlays_root = Path(get_overlays_dir()).resolve()
+        if overlays_root.is_dir():
+            for overlay_dir in overlays_root.iterdir():
+                if not overlay_dir.is_dir():
+                    continue
+                try:
+                    metadata = json.loads((overlay_dir / ".overlay_meta.json").read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if (
+                    metadata.get("reference_kind") == "postprocess"
+                    and metadata.get("source_result") == result_dir.name
+                    and metadata.get("workflow_id") == workflow_dir.name
+                ):
+                    shutil.rmtree(overlay_dir)
         log.info("UI:OK:postprocess: Deleted workflow %s for %s", workflow_id, result_id)
         return {"ok": True, "deleted": workflow_id}
 
@@ -419,25 +434,28 @@ def create_postprocess_router(
         if overlay_dir.parent != Path(get_overlays_dir()).resolve():
             raise HTTPException(status_code=400, detail="Invalid overlay destination.")
         overlay_dir.mkdir(parents=True, exist_ok=True)
-        destination = overlay_dir / "layer.geojson"
-        shutil.copy2(source, destination)
+        legacy_copy = overlay_dir / "layer.geojson"
+        if legacy_copy.is_file():
+            legacy_copy.unlink()
         _atomic_json(
             overlay_dir / ".overlay_meta.json",
             {
                 "display_name": display_name,
-                "source_result": result_id,
+                "reference_kind": "postprocess",
+                "source_result": result_dir.name,
                 "workflow_id": workflow_id,
                 "stage": stage,
             },
         )
-        log.info("UI:OK:postprocess: Sent %s/%s to Map overlays", workflow_id, stage)
+        log.info("UI:OK:postprocess: Linked %s/%s to Map overlays", workflow_id, stage)
         return {
             "ok": True,
             "overlay": {
                 "type": "geojson",
                 "name": display_name,
                 "overlay_id": overlay_id,
-                "path": media_url(destination),
+                "path": media_url(source),
+                "reference": True,
             },
         }
 

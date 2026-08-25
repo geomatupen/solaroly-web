@@ -4309,14 +4309,52 @@ def api_list_overlays():
         if not overlay_dir.is_dir():
             continue
         overlay_display_name = None
+        overlay_metadata = {}
         try:
             metadata_path = overlay_dir / ".overlay_meta.json"
             if metadata_path.is_file():
-                overlay_display_name = str(
-                    json.loads(metadata_path.read_text(encoding="utf-8")).get("display_name") or ""
-                ).strip() or None
+                overlay_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                overlay_display_name = str(overlay_metadata.get("display_name") or "").strip() or None
         except (OSError, json.JSONDecodeError, AttributeError):
             overlay_display_name = None
+            overlay_metadata = {}
+
+        if overlay_metadata.get("reference_kind") == "postprocess":
+            try:
+                sessions_root = get_project_sessions_dir().resolve()
+                source_result = str(overlay_metadata.get("source_result") or "").strip()
+                workflow_id = str(overlay_metadata.get("workflow_id") or "").strip()
+                stage = str(overlay_metadata.get("stage") or "").strip()
+                result_dir = (sessions_root / source_result).resolve()
+                workflow_dir = (result_dir / "postprocess" / workflow_id).resolve()
+                if result_dir.parent != sessions_root or workflow_dir.parent != (result_dir / "postprocess").resolve():
+                    raise ValueError("Reference escapes the active project.")
+                status = json.loads((workflow_dir / "status.json").read_text(encoding="utf-8"))
+                output = (status.get("outputs") or {}).get(stage) or {}
+                source_path = (result_dir / str(output.get("path") or "")).resolve()
+                source_path.relative_to(workflow_dir)
+                if source_path.suffix.lower() != ".geojson" or not source_path.is_file():
+                    raise FileNotFoundError(source_path)
+                stage_label = stage.title()
+                if stage == "edited":
+                    edits = status.get("manual_revisions") or []
+                    edited_source = str((edits[-1] if edits else {}).get("source_stage") or "combined").lower()
+                    if edited_source not in {"combined", "regularized"}:
+                        edited_source = "combined"
+                    stage_label = f"{edited_source}_edited"
+                workflow_name = status.get("display_name") or status.get("parameters", {}).get("output_name") or workflow_id
+                reference_name = f"{str(workflow_name).strip()} — {stage_label}"
+                result.append({
+                    "type": "geojson",
+                    "name": reference_name,
+                    "overlay_id": overlay_dir.name,
+                    "file": source_path.name,
+                    "path": _media_url(source_path),
+                    "reference": True,
+                })
+            except (OSError, ValueError, json.JSONDecodeError, AttributeError):
+                logger.warning("Skipping broken post-process Map reference: %s", overlay_dir.name)
+            continue
         
         # Look for GeoJSON files
         geojson_files = list(overlay_dir.glob("*.geojson")) + list(overlay_dir.glob("*.json"))
