@@ -7,6 +7,11 @@ import shutil
 
 import sys
 
+try:
+    from .camera_undistort import DEFAULT_MINIMUM_DISPLACEMENT_PX, undistort_pil_image
+except ImportError:  # Script execution places this directory on sys.path.
+    from camera_undistort import DEFAULT_MINIMUM_DISPLACEMENT_PX, undistort_pil_image
+
 
 def _normalize_heading_deg(val):
     try:
@@ -61,13 +66,14 @@ def _camera_heading_from_entry(cam_entry, session_meta):
 # allow passing session directory path as first CLI arg, source images dir as second arg
 # First arg must be the full path to the session directory (project structure)
 if len(sys.argv) < 2:
-    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal]")
+    print("[ERROR] Usage: regenerate_geojson_from_preds.py <session_dir_path> <source_images_dir> [--use-thermal] [--undistort-thermal]")
     print("[ERROR] session_dir_path: Full path to test/outputs/<session-id>/")
     sys.exit(1)
 
 SESSION_DIR_PATH = sys.argv[1]
 SRC_IMAGES_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else None  # optional source images directory
 USE_THERMAL = '--use-thermal' in sys.argv  # flag to use thermal images if available
+UNDISTORT_THERMAL = '--undistort-thermal' in sys.argv
 
 # Use the full session directory path (new project structure)
 BASE = Path(SESSION_DIR_PATH)
@@ -120,6 +126,7 @@ for p in sorted(IMAGES_DIR.glob('*')):
 # ensures `rotated_images/` is available even if thumbs/ or rotated thumbs
 # were not previously created.
 rotated_dir = BASE / 'rotated_images'
+preprocessing_records = {}
 try:
     # If camera metadata is present, (re)generate rotated images from source
     # so we ensure correct rotation is applied (overwrite any existing files).
@@ -248,6 +255,31 @@ try:
                 else:
                     p_img = Image.open(p)
 
+                if UNDISTORT_THERMAL and USE_THERMAL:
+                    original_image = p_img
+                    try:
+                        p_img, correction_record = undistort_pil_image(p_img, p)
+                    finally:
+                        if p_img is not original_image:
+                            original_image.close()
+                    preprocessing_records[fname] = correction_record
+                    correction_status = correction_record["status"]
+                    if correction_status == "corrected":
+                        print(
+                            f"[undistort] Corrected {fname}; maximum displacement "
+                            f"{correction_record['maximum_displacement_px']:.2f}px using "
+                            f"{correction_record['calibration']['source']} "
+                            f"({correction_record['calibration']['profile_id']})"
+                        )
+                    elif correction_status == "skipped_already_corrected":
+                        print(f"[undistort] Skipped {fname}; metadata says lens correction is already applied")
+                    else:
+                        print(
+                            f"[undistort] Skipped {fname}; maximum displacement "
+                            f"{correction_record['maximum_displacement_px']:.2f}px is below the "
+                            f"{correction_record['minimum_displacement_px']:.2f}px threshold"
+                        )
+
                 try:
                     with p_img as im:
                         if abs(angle) < 1e-6:
@@ -285,7 +317,15 @@ try:
                             
                             out_name = f"{Path(fname).stem}.png"
                             rim.save(rotated_dir / out_name)
+                            if fname in preprocessing_records:
+                                preprocessing_records[fname]["rotation_deg"] = float(angle)
+                                preprocessing_records[fname]["rotated_size"] = [rim.width, rim.height]
+                                preprocessing_records[fname]["output_file"] = out_name
                             print(f"[rotation] Rotated {fname} → {out_name} (angle={angle:.1f}°)")
+                        if abs(angle) < 1e-6 and fname in preprocessing_records:
+                            preprocessing_records[fname]["rotation_deg"] = float(angle)
+                            preprocessing_records[fname]["rotated_size"] = [im.width, im.height]
+                            preprocessing_records[fname]["output_file"] = out_name
                 except Exception as e:
                     print(f"[rotation] ERROR processing {fname}: {e}")
                     try:
@@ -306,12 +346,36 @@ try:
                     except Exception:
                         pass
             print(f"[rotation] COMPLETE: {len(sizes)} images in {IMAGES_DIR.name}, IMAGES_DIR now={IMAGES_DIR}")
+            if UNDISTORT_THERMAL:
+                preprocessing_path = BASE / 'preprocessing.json'
+                status_counts = {}
+                for record in preprocessing_records.values():
+                    status = record.get("status", "unknown")
+                    status_counts[status] = status_counts.get(status, 0) + 1
+                preprocessing_path.write_text(
+                    json.dumps({
+                        "undistort_thermal": True,
+                        "image_count": len(preprocessing_records),
+                        "minimum_displacement_px": DEFAULT_MINIMUM_DISPLACEMENT_PX,
+                        "status_counts": status_counts,
+                        "images": preprocessing_records,
+                    }, indent=2),
+                    encoding='utf-8',
+                )
+                summary = ", ".join(f"{key}={value}" for key, value in sorted(status_counts.items())) or "no images"
+                print(
+                    f"[undistort] Summary: {summary}; minimum displacement="
+                    f"{DEFAULT_MINIMUM_DISPLACEMENT_PX:.2f}px"
+                )
+                print(f"[undistort] Metadata written: {preprocessing_path}")
         else:
             print(f"[rotation] SKIPPED: src_images does not exist")
     else:
         print(f"[rotation] SKIPPED: CAM_META does not exist")
 except Exception as e:
-    print('failed to create rotated_images from originals:', e)
+    print('failed to create rotated_images from originals:', e, file=sys.stderr)
+    if UNDISTORT_THERMAL:
+        raise
 
 # image latlon mapping from manifest entries if present
 latlon_map = {}

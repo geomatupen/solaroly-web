@@ -1322,6 +1322,8 @@ def _read_dji_xmp_meta(info: dict) -> Dict[str, float]:
             out["flight_yaw"] = val
         elif tag_name == "GimbalYawDegree":
             out["gimbal_yaw"] = val
+        elif tag_name == "GimbalPitchDegree":
+            out["gimbal_pitch"] = val
         elif tag_name == "RelativeAltitude":
             out["relative_altitude"] = val
         elif tag_name == "AbsoluteAltitude":
@@ -1497,6 +1499,10 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         entry["rotation_source"] = "flight_yaw"
     elif heading is not None:
         entry["rotation_source"] = "gps_img_direction"
+    if xmp_meta.get("gimbal_pitch") is not None:
+        entry["gimbal_pitch"] = float(xmp_meta["gimbal_pitch"])
+    if xmp_meta.get("gimbal_roll") is not None:
+        entry["gimbal_roll"] = float(xmp_meta["gimbal_roll"])
     return entry
 
 
@@ -3343,6 +3349,7 @@ async def api_test_run(
     channel_count: int = Form(3),
     accurate_locations: bool = Form(default=False),
     mosaic_enabled: bool = Form(default=False),
+    undistort_thermal: bool = Form(default=True),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
@@ -3386,7 +3393,13 @@ async def api_test_run(
 
     out_root = get_project_sessions_dir() / session
     out_root.mkdir(parents=True, exist_ok=True)
-    _write_result_status(out_root, "running", dataset=dataset, model=model_dir.name)
+    _write_result_status(
+        out_root,
+        "running",
+        dataset=dataset,
+        model=model_dir.name,
+        undistort_thermal=bool(undistort_thermal),
+    )
     test_logger = logging.getLogger("pvrt.test")
     test_logger.info(
         "UI:INFO:test: Preparing test run '%s' with dataset '%s' and model '%s'…",
@@ -3652,22 +3665,43 @@ async def api_test_run(
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to persist camera metadata: {e}")
             logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Traceback: {traceback.format_exc()}")
 
+    if input_type == "images" and model_is_thermal:
+        test_logger.info(
+            "UI:INFO:test: Automatic lens correction is %s.",
+            "enabled (strict)" if undistort_thermal else "disabled by user",
+        )
+        if undistort_thermal and not camera_meta:
+            message = (
+                "Cannot correct lens distortion because camera metadata could not be read. "
+                "Disable ‘Correct lens distortion automatically’ and run again, or provide images with calibration metadata."
+            )
+            _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=message)
+            test_logger.error("UI:ERR:test: %s", message)
+            raise HTTPException(status_code=400, detail=message)
+
     # ===== PRE-INFERENCE IMAGE ROTATION & OPTIONAL MOSAIC =====
     test_logger.info("UI:INFO:test: Finalizing prepared inputs…")
-    rotation_result = await asyncio.to_thread(
-        prepare_rotation_and_mosaic,
-        input_type=input_type,
-        session_dir=session_dir,
-        out_root=out_root,
-        camera_meta=camera_meta,
-        mosaic_enabled=mosaic_enabled,
-        ds_dir=ds_dir,
-        model_is_thermal=model_is_thermal,
-        tile_tif_func=_tile_tif_to_dir,
-        run_images_dir=run_images_dir,
-        tiles_dir=tiles_dir,
-        tif_src=tif_src,
-    )
+    try:
+        rotation_result = await asyncio.to_thread(
+            prepare_rotation_and_mosaic,
+            input_type=input_type,
+            session_dir=session_dir,
+            out_root=out_root,
+            camera_meta=camera_meta,
+            mosaic_enabled=mosaic_enabled,
+            ds_dir=ds_dir,
+            model_is_thermal=model_is_thermal,
+            undistort_thermal=bool(undistort_thermal),
+            tile_tif_func=_tile_tif_to_dir,
+            run_images_dir=run_images_dir,
+            tiles_dir=tiles_dir,
+            tif_src=tif_src,
+        )
+    except Exception as exc:
+        message = str(exc) or "Thermal image preparation failed."
+        _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=message)
+        test_logger.error("UI:ERR:test: Preparation failed: %s", message)
+        raise HTTPException(status_code=400, detail=message) from exc
     input_type = rotation_result.input_type
     run_images_dir = rotation_result.run_images_dir
     tiles_dir = rotation_result.tiles_dir
@@ -3940,11 +3974,19 @@ async def api_test_run(
         metrics.setdefault("source_tifs", [])  # <— use this exact key
         if str(tif_src) not in metrics["source_tifs"]:
             metrics["source_tifs"].append(str(tif_src))
+        metrics["undistort_thermal"] = bool((out_root / "preprocessing.json").is_file())
         mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
 
-    _write_result_status(out_root, "complete", dataset=dataset, model=model_dir.name)
+    preprocessing_path = out_root / "preprocessing.json"
+    _write_result_status(
+        out_root,
+        "complete",
+        dataset=dataset,
+        model=model_dir.name,
+        undistort_thermal=bool(preprocessing_path.is_file()),
+    )
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
         "ok": True,
@@ -3959,6 +4001,8 @@ async def api_test_run(
         "overlays": _media_url(ov_dir),
         "thumbs":   _media_url(th_dir),
         "manifest": manifest_items,
+        "undistort_thermal": bool(preprocessing_path.is_file()),
+        "preprocessing": _media_url(preprocessing_path) if preprocessing_path.is_file() else None,
         "assets": assets,
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),

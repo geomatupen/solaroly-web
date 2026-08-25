@@ -34,6 +34,7 @@ def prepare_rotation_and_mosaic(
     mosaic_enabled: bool,
     ds_dir: Path,
     model_is_thermal: bool,
+    undistort_thermal: bool,
     tile_tif_func: Callable[[Path, Path, int, Optional[int]], None],
     run_images_dir: Path,
     tiles_dir: Optional[Path],
@@ -90,19 +91,46 @@ def prepare_rotation_and_mosaic(
             cmd = [sys.executable, str(ROTATION_SCRIPT), str(session_dir), str(ds_dir)]
             if model_is_thermal:
                 cmd.append("--use-thermal")
+            if model_is_thermal and undistort_thermal:
+                cmd.append("--undistort-thermal")
+                log.info("UI:INFO:test: Checking lens distortion before north-up rotation…")
+                log.info(
+                    "UI:INFO:test: Lens-correction rules: skip images already marked corrected; "
+                    "skip calibrated displacement below 2.00 px; correct displacement at or above "
+                    "2.00 px; stop if correction status or calibration cannot be determined."
+                )
 
             proc = subprocess.run(
                 cmd,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 cwd=str(PROJECT_ROOT),
                 timeout=300,
             )
             log.info("UI:INFO:test: Rotation completed (exit=%s)", proc.returncode)
+            if proc.stdout:
+                correction_summary = None
+                for line in proc.stdout.splitlines():
+                    if not line.startswith("[undistort]"):
+                        continue
+                    decision = line.removeprefix("[undistort]").strip()
+                    # Every per-image decision remains available in the full Logs tab.
+                    log.info("Lens-correction decision: %s", decision)
+                    if decision.startswith("Summary:"):
+                        correction_summary = decision.removeprefix("Summary:").strip()
+                # Keep the Test mini-log useful without flooding it with one row per image.
+                if correction_summary:
+                    log.info("UI:OK:test: Lens-correction decisions: %s", correction_summary)
             if proc.stderr:
                 for line in proc.stderr.splitlines()[-10:]:
-                    log.warning("UI:INFO:test: [script] %s", line)
+                    # The endpoint emits a concise UI error below; retain subprocess detail
+                    # in the full log for diagnosis without flooding the mini-log.
+                    log.warning("[rotation script] %s", line)
+            if proc.returncode != 0:
+                error_lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
+                helpful = next((line for line in error_lines if "Cannot correct lens distortion" in line), None)
+                raise RuntimeError(helpful or (error_lines[-1] if error_lines else "Thermal image preparation failed."))
             time.sleep(0.3)
         else:
             log.warning("UI:INFO:test: Script not found at %s", ROTATION_SCRIPT)
@@ -158,6 +186,8 @@ def prepare_rotation_and_mosaic(
     except Exception as exc:
         log.warning("\u2717 Failed to generate rotation/mosaic: %s", exc)
         log.warning("Traceback: %s", traceback.format_exc())
+        if model_is_thermal and undistort_thermal:
+            raise
 
     return RotationResult(
         input_type=input_type,

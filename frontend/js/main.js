@@ -1757,6 +1757,7 @@ async function runTest(){
   fd.append("result_name", resultName);
   fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append("test_threshold", testThreshold);
+  fd.append("undistort_thermal", document.getElementById("chkUndistortThermal")?.checked ? "true" : "false");
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
   const wantsMosaic = document.getElementById("chkMosaicImages")?.checked;
@@ -3344,7 +3345,7 @@ function connectLogs(){
     );
     if(isTrainLine){ appendMiniLog("#trainMiniLog", line); }
 
-    const isTestLine = (line.includes("[test]") || line.includes("UI:INFO:test") || line.includes("UI:OK:test") || line.includes("UI:ERR:test"));
+    const isTestLine = (line.includes("[test]") || line.includes("UI:INFO:test") || line.includes("UI:OK:test") || line.includes("UI:WARN:test") || line.includes("UI:ERR:test"));
     if(isTestLine){ appendMiniLog("#testMiniLog", line); }
     if(line.includes("Orthomosaic split progress:")){
       const progress = line.split("Orthomosaic split progress:").pop().trim();

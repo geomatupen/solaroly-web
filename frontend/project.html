@@ -90,6 +90,16 @@
         </div>
 
         <div id="testAdvancedOptions" hidden>
+          <div class="row wrap" id="thermalUndistortControls">
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkUndistortThermal" checked />
+              <span>
+                Correct lens distortion automatically
+                <span class="muted tiny hintLine">Skips already-corrected or negligible distortion below 2 px. The test stops when correction status cannot be determined.</span>
+              </span>
+            </label>
+          </div>
+
           <div class="row wrap" id="accurateControls">
             <label class="switchRow wide">
               <input type="checkbox" id="chkAccurateLocations" />
@@ -1126,7 +1136,7 @@
   <script src="js/map.js?v=20260825d"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
-  <script src="js/main.js?v=20260825d"></script>
+  <script src="js/main.js?v=20260825f"></script>
   <script src="js/postprocess.js?v=20260825j"></script>
   <script>
     // Display active project name in header
