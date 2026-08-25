@@ -8,9 +8,11 @@ import shutil
 import sys
 
 try:
-    from .camera_undistort import DEFAULT_MINIMUM_DISPLACEMENT_PX, undistort_pil_image
+    from .lens_distortion import LensCalibrationError, correct_pil_image, inspect_camera_group
+    from .plumb_line_calibration import estimate_runtime_calibration
 except ImportError:  # Script execution places this directory on sys.path.
-    from camera_undistort import DEFAULT_MINIMUM_DISPLACEMENT_PX, undistort_pil_image
+    from lens_distortion import LensCalibrationError, correct_pil_image, inspect_camera_group
+    from plumb_line_calibration import estimate_runtime_calibration
 
 
 def _normalize_heading_deg(val):
@@ -75,7 +77,6 @@ SRC_IMAGES_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else None  # optional so
 USE_THERMAL = '--use-thermal' in sys.argv  # flag to use thermal images if available
 CORRECT_LENS_DISTORTION = (
     '--correct-lens-distortion' in sys.argv
-    or '--undistort-thermal' in sys.argv  # backward-compatible internal flag
 )
 
 # Use the full session directory path (new project structure)
@@ -135,7 +136,7 @@ try:
     # so we ensure correct rotation is applied (overwrite any existing files).
     # Rotation now always happens before inference, so post-inference calls
     # should NOT re-rotate. Only populate when a source images dir is provided.
-    need_populate = CAM_META.exists() and SRC_IMAGES_DIR is not None
+    need_populate = SRC_IMAGES_DIR is not None and (CAM_META.exists() or CORRECT_LENS_DISTORTION)
     print(f"[rotation] CAM_META path: {CAM_META}")
     print(f"[rotation] CAM_META.exists(): {need_populate}")
 
@@ -177,6 +178,57 @@ try:
             
             if not use_thermal_for_rotation:
                 print(f"[rotation] Using RGB images for rotation (USE_THERMAL={USE_THERMAL})")
+
+            runtime_calibrations = {}
+            runtime_estimations = {}
+            if CORRECT_LENS_DISTORTION:
+                source_candidates = [
+                    path for path in src_files
+                    if path.is_file() and path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.bmp')
+                ]
+                camera_groups = {}
+                for source_path in source_candidates:
+                    try:
+                        camera_group = inspect_camera_group(source_path)
+                        camera_groups.setdefault(camera_group, []).append(source_path)
+                    except LensCalibrationError as exc:
+                        raise LensCalibrationError(
+                            f"Runtime lens calibration could not inspect {source_path.name}: {exc}"
+                        ) from exc
+                for camera_group, group_paths in camera_groups.items():
+                    inference_samples = []
+                    for source_path in group_paths:
+                        selected_path = source_path
+                        if use_thermal_for_rotation and source_path.name in src_thermal_pairs:
+                            thermal_path = SRC_IMAGES_DIR / src_thermal_pairs[source_path.name]
+                            preview_path = thermal_path.with_name(thermal_path.stem + '_preview.png')
+                            if preview_path.exists():
+                                selected_path = preview_path
+                        inference_samples.append(selected_path)
+                    print(
+                        f"[undistort] Calibrating {camera_group.label} at runtime from "
+                        "the best three of up to eight sampled image(s)"
+                    )
+                    calibration, estimation = estimate_runtime_calibration(
+                        inference_samples,
+                        camera_group,
+                        log=lambda message: print(f"[undistort] {message}"),
+                    )
+                    runtime_estimations[camera_group] = estimation
+                    if calibration is None:
+                        reason = estimation.get('reason', 'independent validation did not accept a safe model')
+                        raise LensCalibrationError(
+                            f"Automatic lens correction was not applied to {camera_group.label}: {reason} "
+                            "No images were modified. Expand ‘Advanced’ above, untick "
+                            "‘Correct lens distortion automatically’, and run again."
+                        )
+                    runtime_calibrations[camera_group] = calibration
+                    candidate = estimation.get('candidate', {})
+                    print(
+                        f"[undistort] Accepted runtime model for {camera_group.label}; "
+                        f"validation improvement={float(candidate.get('validation_improvement', 0)) * 100:.1f}%, "
+                        f"maximum displacement={float(candidate.get('maximum_displacement_px', 0)):.2f}px"
+                    )
             
             for p in sorted(src_images.glob('*')):
                 if not p.is_file():
@@ -264,27 +316,27 @@ try:
                 if CORRECT_LENS_DISTORTION:
                     original_image = p_img
                     try:
-                        p_img, correction_record = undistort_pil_image(p_img, p)
-                    finally:
+                        current_group = inspect_camera_group(p)
+                        calibration = runtime_calibrations.get(current_group)
+                        if calibration is None:
+                            raise LensCalibrationError(
+                                f"No accepted runtime calibration exists for {current_group.label}."
+                            )
+                        p_img, correction_record = correct_pil_image(
+                            p_img, current_group, calibration
+                        )
+                    except LensCalibrationError:
+                        if p_img is not original_image:
+                            p_img.close()
+                        raise
+                    else:
                         if p_img is not original_image:
                             original_image.close()
                     preprocessing_records[fname] = correction_record
-                    correction_status = correction_record["status"]
-                    if correction_status == "corrected":
-                        print(
-                            f"[undistort] Corrected {fname}; maximum displacement "
-                            f"{correction_record['maximum_displacement_px']:.2f}px using "
-                            f"{correction_record['calibration']['source']} "
-                            f"({correction_record['calibration']['profile_id']})"
-                        )
-                    elif correction_status == "skipped_already_corrected":
-                        print(f"[undistort] Skipped {fname}; metadata says lens correction is already applied")
-                    else:
-                        print(
-                            f"[undistort] Skipped {fname}; maximum displacement "
-                            f"{correction_record['maximum_displacement_px']:.2f}px is below the "
-                            f"{correction_record['minimum_displacement_px']:.2f}px threshold"
-                        )
+                    print(
+                        f"[undistort] Corrected {fname}; maximum displacement "
+                        f"{correction_record['maximum_displacement_px']:.2f}px using the validated runtime model"
+                    )
 
                 try:
                     with p_img as im:
@@ -363,17 +415,25 @@ try:
                         "lens_correction_enabled": True,
                         "undistort_thermal": True,
                         "image_count": len(preprocessing_records),
-                        "minimum_displacement_px": DEFAULT_MINIMUM_DISPLACEMENT_PX,
                         "status_counts": status_counts,
+                        "runtime_estimations": {
+                            camera_group.label: record for camera_group, record in runtime_estimations.items()
+                        },
                         "images": preprocessing_records,
                     }, indent=2),
                     encoding='utf-8',
                 )
                 summary = ", ".join(f"{key}={value}" for key, value in sorted(status_counts.items())) or "no images"
-                print(
-                    f"[undistort] Summary: {summary}; minimum displacement="
-                    f"{DEFAULT_MINIMUM_DISPLACEMENT_PX:.2f}px"
-                )
+                estimation_summary = []
+                for camera_group, record in runtime_estimations.items():
+                    candidate = record.get("candidate", {})
+                    estimation_summary.append(
+                        f"{camera_group.label}: runtime model accepted "
+                        f"({float(candidate.get('validation_improvement', 0)) * 100:.1f}% validation improvement)"
+                    )
+                if estimation_summary:
+                    summary += "; " + "; ".join(estimation_summary)
+                print(f"[undistort] Summary: {summary}")
                 print(f"[undistort] Metadata written: {preprocessing_path}")
         else:
             print(f"[rotation] SKIPPED: src_images does not exist")

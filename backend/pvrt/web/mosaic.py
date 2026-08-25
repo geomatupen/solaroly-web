@@ -51,7 +51,7 @@ def prepare_rotation_and_mosaic(
         len(camera_meta) if camera_meta else 0,
     )
 
-    if input_type != "images" or not camera_meta:
+    if input_type != "images" or (not camera_meta and not undistort_thermal):
         return RotationResult(
             input_type=input_type,
             run_images_dir=run_images_dir,
@@ -65,7 +65,13 @@ def prepare_rotation_and_mosaic(
 
         cm_path = session_dir / "camera_meta.json"
         if not cm_path.exists():
-            raise RuntimeError(f"camera_meta.json not found at {cm_path}")
+            if undistort_thermal:
+                cm_path.write_text("{}", encoding="utf-8")
+                log.info(
+                    "UI:INFO:test: No camera metadata file was available; runtime calibration will group images by readable identity fields and dimensions."
+                )
+            else:
+                raise RuntimeError(f"camera_meta.json not found at {cm_path}")
         cm_size = cm_path.stat().st_size
         try:
             cm_json = json.loads(cm_path.read_text(encoding="utf-8"))
@@ -95,9 +101,10 @@ def prepare_rotation_and_mosaic(
                 cmd.append("--correct-lens-distortion")
                 log.info("UI:INFO:test: Checking lens distortion before north-up rotation…")
                 log.info(
-                    "UI:INFO:test: Lens-correction rules: skip images already marked corrected; "
-                    "skip calibrated displacement below 2.00 px; correct displacement at or above "
-                    "2.00 px; stop if correction status or calibration cannot be determined."
+                    "UI:INFO:test: Runtime lens calibration groups images by camera and dimensions, "
+                    "checks eight evenly spaced samples and uses the best three, traces repeated straight structures, "
+                    "and withholds traces for independent validation. If a safe shared radial model is "
+                    "not proven, preparation stops before any corrected image is written."
                 )
 
             proc = subprocess.run(
@@ -129,7 +136,15 @@ def prepare_rotation_and_mosaic(
                     log.warning("[rotation script] %s", line)
             if proc.returncode != 0:
                 error_lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
-                helpful = next((line for line in error_lines if "Cannot correct lens distortion" in line), None)
+                helpful = next(
+                    (
+                        line
+                        for line in error_lines
+                        if "Automatic lens correction was not applied" in line
+                        or "Runtime lens calibration" in line
+                    ),
+                    None,
+                )
                 raise RuntimeError(helpful or (error_lines[-1] if error_lines else "Image preparation failed."))
             time.sleep(0.3)
         else:

@@ -1155,6 +1155,23 @@ function syncOptimizeDatasetFromTest(){
 
 function onTestDatasetChange(){
   const ds = getSelectedDataset();
+  const selectedDataset = Array.isArray(datasetsCache)
+    ? datasetsCache.find(item => item && item.name === ds)
+    : null;
+  const isOrthophoto = selectedDataset?.input_type === 'tif';
+  const lensCheckbox = document.getElementById('chkUndistortThermal');
+  const lensHint = document.getElementById('lensCorrectionHint');
+  if(lensCheckbox){
+    lensCheckbox.disabled = isOrthophoto;
+    lensCheckbox.title = isOrthophoto
+      ? 'Lens correction is skipped for orthophotos.'
+      : '';
+  }
+  if(lensHint){
+    lensHint.textContent = isOrthophoto
+      ? 'Skipped for orthophotos because they are already geometrically corrected products.'
+      : 'Optional runtime calibration from repeated straight structures; stops safely if correction cannot be proven.';
+  }
   const sel = document.getElementById('selOptimizeDataset');
   if(ds && sel){
     sel.value = ds;

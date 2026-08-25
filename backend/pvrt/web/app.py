@@ -2276,6 +2276,7 @@ def _list_datasets() -> list[dict]:
             "count": _count_top_level_images(p),
             "mtime": int(p.stat().st_mtime),
             "colmap_ready": _colmap_ready(p.name),
+            "input_type": _detect_image_input_type(p),
         })
     return items
 
@@ -3354,7 +3355,7 @@ async def api_test_run(
     channel_count: int = Form(3),
     accurate_locations: bool = Form(default=False),
     mosaic_enabled: bool = Form(default=False),
-    undistort_thermal: bool = Form(default=True),
+    undistort_thermal: bool = Form(default=False),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
@@ -3418,6 +3419,11 @@ async def api_test_run(
         "UI:INFO:test: Input detected: %s.",
         "orthomosaic GeoTIFF" if input_type == "tif" else "image folder",
     )
+    if input_type == "tif" and undistort_thermal:
+        test_logger.info(
+            "UI:OK:test: Lens correction skipped: orthophotos are already geometrically corrected products."
+        )
+        undistort_thermal = False
 
     accurate_locations = bool(accurate_locations)
     if accurate_locations and input_type != "images":
@@ -3674,16 +3680,8 @@ async def api_test_run(
     if input_type == "images":
         test_logger.info(
             "UI:INFO:test: Automatic lens correction is %s.",
-            "enabled (strict)" if undistort_thermal else "disabled by user",
+            "enabled with fail-closed runtime calibration" if undistort_thermal else "disabled by user",
         )
-        if undistort_thermal and not camera_meta:
-            message = (
-                "Cannot correct lens distortion because camera metadata could not be read. "
-                "Disable ‘Correct lens distortion automatically’ and run again, or provide images with calibration metadata."
-            )
-            _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=message)
-            test_logger.error("UI:ERR:test: %s", message)
-            raise HTTPException(status_code=400, detail=message)
 
     # ===== PRE-INFERENCE IMAGE ROTATION & OPTIONAL MOSAIC =====
     test_logger.info("UI:INFO:test: Finalizing prepared inputs…")
