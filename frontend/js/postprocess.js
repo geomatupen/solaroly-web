@@ -14,6 +14,7 @@
     workflows: [],
     scanComplete: false,
     editing: null,
+    loadingPromise: null,
   };
 
   const PREVIEW_STYLES = {
@@ -88,8 +89,6 @@
     byId("ppCombineStep").hidden = true;
     byId("ppRegularizeStep").hidden = true;
     byId("ppProgressWrap").hidden = true;
-    byId("ppOutputs").hidden = true;
-    byId("ppOutputs").replaceChildren();
     byId("ppLogWrap").hidden = true;
     byId("ppLog").textContent = "";
     clearPreviewLayers();
@@ -119,8 +118,9 @@
     byId("ppMapStatus").textContent = "Scan a GeoJSON to preview it.";
   }
 
-  function createPreviewGeoJsonLayer(stage, geojson) {
-    const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
+  function createPreviewGeoJsonLayer(stage, geojson, label = null) {
+    const style = { ...(PREVIEW_STYLES[stage] || PREVIEW_STYLES.source) };
+    if (label) style.label = label;
     const editableStage = ["combined", "regularized", "edited"].includes(stage);
     const baseStyle = {
       color: style.color,
@@ -166,7 +166,7 @@
         });
       },
     });
-    return { layer, baseStyle };
+    return { layer, baseStyle, label: style.label };
   }
 
   function fitVisibleLayers() {
@@ -563,7 +563,7 @@
     byId("ppFitLayers").disabled = !state.previewLayers.size;
   }
 
-  async function loadPreviewLayer(stage, url, expectedCount = null) {
+  async function loadPreviewLayer(stage, url, expectedCount = null, label = null) {
     if (!url || state.previewLayers.get(stage)?.url === url || state.previewLoading.has(stage)) return;
     const map = ensurePreviewMap();
     if (!map) {
@@ -577,7 +577,7 @@
       const geojson = await requestJson(url, { cache: "no-store" });
       const existing = state.previewLayers.get(stage);
       if (existing && map.hasLayer(existing.layer)) map.removeLayer(existing.layer);
-      const created = createPreviewGeoJsonLayer(stage, geojson);
+      const created = createPreviewGeoJsonLayer(stage, geojson, label);
       const layer = created.layer;
       // Show the newest stage by itself initially. Users can turn earlier stages
       // back on for comparison using the layer list.
@@ -586,7 +586,7 @@
       }
       layer.addTo(map);
       state.previewLayers.set(stage, {
-        label: style.label,
+        label: created.label,
         color: style.color,
         count: expectedCount ?? geojson.features?.length ?? 0,
         layer,
@@ -614,12 +614,22 @@
     }
     if (status.outputs?.edited?.url) {
       const latest = (status.manual_revisions || []).at(-1);
-      void loadPreviewLayer("edited", status.outputs.edited.url, latest?.feature_count);
+      void loadPreviewLayer("edited", status.outputs.edited.url, latest?.feature_count, editedLayerName(status));
     }
   }
 
   function workflowDisplayName(workflow) {
     return workflow.display_name || workflow.parameters?.output_name || workflow.id;
+  }
+
+  function editedLayerName(workflow) {
+    const latest = (workflow?.manual_revisions || []).at(-1);
+    let sourceStage = String(latest?.source_stage || "").toLowerCase();
+    if (!["combined", "regularized"].includes(sourceStage)) {
+      const path = String(workflow?.outputs?.edited?.path || "");
+      sourceStage = path.split("/").pop().startsWith("regularized_") ? "regularized" : "combined";
+    }
+    return `${sourceStage}_edited`;
   }
 
   function sourceIdentity(path) {
@@ -665,7 +675,9 @@
       const id = document.createElement("small");
       id.textContent = `ID: ${workflow.id}`;
       id.title = workflow.id;
-      const stages = Object.keys(workflow.outputs || {}).join(" + ") || workflow.stage || "No output";
+      const stages = Object.keys(workflow.outputs || {})
+        .map(stage => stage === "edited" ? editedLayerName(workflow) : stage)
+        .join(" + ") || workflow.stage || "No output";
       const status = document.createElement("small");
       status.textContent = `${workflow.status || "unknown"} · ${stages}`;
       info.append(name, id, status);
@@ -724,7 +736,6 @@
             state.workflowId = null;
             clearPreviewLayers();
             byId("ppRegularize").disabled = true;
-            byId("ppOutputs").hidden = true;
           }
           await restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value);
           setMessage("Saved output deleted.", "ok");
@@ -755,27 +766,38 @@
 
   async function loadResults(force = false) {
     if (state.loaded && !force) return;
+    if (state.loadingPromise) return state.loadingPromise;
     const select = byId("ppResult");
     const previous = select.value;
+    select.replaceChildren();
+    addOption(select, "", "Loading test results…");
+    select.disabled = true;
     setMessage("Loading test results…");
-    try {
-      const payload = await requestJson("/api/sessions", { cache: "no-store" });
-      select.replaceChildren();
-      addOption(select, "", "Select a result…");
-      for (const result of payload.sessions || []) {
-        const name = result.display_name || result.name;
-        const status = result.status === "complete" ? "Complete" : "Incomplete";
-        addOption(select, result.id || result.name, `${name} · ${status} · ID: ${result.id || result.name}`);
+    state.loadingPromise = (async () => {
+      try {
+        const payload = await requestJson("/api/sessions", { cache: "no-store" });
+        select.replaceChildren();
+        addOption(select, "", "Select a result…");
+        for (const result of payload.sessions || []) {
+          const name = result.display_name || result.name;
+          const status = result.status === "complete" ? "Complete" : "Incomplete";
+          addOption(select, result.id || result.name, `${name} · ${status} · ID: ${result.id || result.name}`);
+        }
+        if (previous && [...select.options].some(option => option.value === previous)) {
+          select.value = previous;
+        }
+        select.disabled = select.options.length <= 1;
+        state.loaded = true;
+        setMessage(select.options.length > 1 ? "Select a result and GeoJSON to begin." : "No test results are available.", select.options.length > 1 ? "" : "warn");
+        if (select.value) await loadGeojsons();
+      } catch (error) {
+        select.replaceChildren();
+        addOption(select, "", "Could not load test results");
+        select.disabled = true;
+        setMessage(error.message, "err");
       }
-      if (previous && [...select.options].some(option => option.value === previous)) {
-        select.value = previous;
-      }
-      state.loaded = true;
-      setMessage(select.options.length > 1 ? "Select a result and GeoJSON to begin." : "No test results are available.", select.options.length > 1 ? "" : "warn");
-      if (select.value) await loadGeojsons();
-    } catch (error) {
-      setMessage(error.message, "err");
-    }
+    })().finally(() => { state.loadingPromise = null; });
+    return state.loadingPromise;
   }
 
   async function restoreLatestWorkflow(resultId, inputPath, preferredId = null) {
@@ -918,36 +940,12 @@
     byId("ppProgressText").textContent = `${message || "Processing…"} ${Math.round(value)}%`;
   }
 
-  function renderOutputs(outputs = {}) {
-    const container = byId("ppOutputs");
-    container.replaceChildren();
-    const entries = Object.entries(outputs).filter(([, output]) => output?.url);
-    if (!entries.length) {
-      container.hidden = true;
-      return;
-    }
-    const title = document.createElement("strong");
-    title.textContent = "Outputs:";
-    container.appendChild(title);
-    for (const [stage, output] of entries) {
-      const link = document.createElement("a");
-      link.href = output.url;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.download = "";
-      link.textContent = stage === "regularized" ? "Regularized GeoJSON" : "Combined GeoJSON";
-      container.appendChild(link);
-    }
-    container.hidden = false;
-  }
-
   function applyWorkflow(status) {
     showProgress(status.progress, status.message);
     if (Array.isArray(status.log)) {
       byId("ppLog").textContent = status.log.join("\n");
       byId("ppLogWrap").hidden = !status.log.length;
     }
-    renderOutputs(status.outputs);
     syncOutputPreviews(status);
     const running = status.status === "queued" || status.status === "running";
     byId("ppCombine").disabled = running || !state.analysis;

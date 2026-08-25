@@ -361,6 +361,7 @@ let _resultsTabLoaded = false;
 let _resultsTabLoading = null;
 let _mapTabLoaded = false;
 let _mapTabLoading = null;
+const _mapDetachedRasterLayers = new Set();
 
 async function ensureResultsTabLoaded(force = false){
   if(!force && _resultsTabLoaded) return;
@@ -407,6 +408,7 @@ window.showSharedOverlayOnMap = showSharedOverlayOnMap;
 function switchToTab(tabId){
   $$(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab === tabId));
   $$(".tabPanel").forEach(p=>p.classList.toggle("active", p.id === tabId));
+  setMapRasterLayersAttached(tabId === "tab-map");
   if(tabId === "tab-map" && MAP){ 
     setTimeout(()=>{
       MAP.invalidateSize();
@@ -437,6 +439,22 @@ function switchToTab(tabId){
   if(tabId === "tab-test"){
     if(document.getElementById('btnTestAssetResults')?.classList.contains('active')) loadSessions(false);
     else loadDatasets();
+  }
+}
+
+function setMapRasterLayersAttached(attached){
+  if(!MAP) return;
+  if(attached){
+    for(const layer of _mapDetachedRasterLayers){
+      try{ if(!MAP.hasLayer(layer)) layer.addTo(MAP); }catch(_){ }
+    }
+    _mapDetachedRasterLayers.clear();
+    return;
+  }
+  for(const layer of [imagesLayerGroup, TIF_TILE_GROUP]){
+    if(!layer || !MAP.hasLayer(layer)) continue;
+    _mapDetachedRasterLayers.add(layer);
+    try{ MAP.removeLayer(layer); }catch(_){ }
   }
 }
 

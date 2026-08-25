@@ -187,7 +187,7 @@ def create_postprocess_router(
         files.extend(
             path
             for path in (result_dir / "postprocess").glob("*/*.geojson")
-            if not path.name.startswith("edited_")
+            if not path.name.startswith("edited_") and path.name != "edited.geojson"
         )
         items = []
         for path in sorted(set(files), key=lambda item: (item.stat().st_mtime, item.name), reverse=True):
@@ -197,7 +197,7 @@ def create_postprocess_router(
                 stage = "combined"
             elif path.name == "regularized.geojson":
                 stage = "regularized"
-            elif path.name == "edited.geojson":
+            elif path.name in {"combined_edited.geojson", "regularized_edited.geojson"}:
                 stage = "edited"
             items.append(
                 {
@@ -406,7 +406,14 @@ def create_postprocess_router(
         if not source.is_file():
             raise HTTPException(status_code=404, detail=f"The {stage} GeoJSON is not available.")
         base_name = request.name or status.get("display_name") or status.get("parameters", {}).get("output_name") or workflow_id
-        display_name = f"{str(base_name).strip()} — {stage.title()}"
+        stage_label = stage.title()
+        if stage == "edited":
+            edited_records = status.get("manual_revisions") or []
+            edited_source = str((edited_records[-1] if edited_records else {}).get("source_stage") or "combined").lower()
+            if edited_source not in {"combined", "regularized"}:
+                edited_source = "combined"
+            stage_label = f"{edited_source}_edited"
+        display_name = f"{str(base_name).strip()} — {stage_label}"
         overlay_id = _safe_name(f"postprocess-{workflow_id[:54]}-{stage}", f"postprocess-{uuid.uuid4().hex[:10]}")
         overlay_dir = (Path(get_overlays_dir()).resolve() / overlay_id).resolve()
         if overlay_dir.parent != Path(get_overlays_dir()).resolve():
@@ -451,6 +458,21 @@ def create_postprocess_router(
             raise HTTPException(status_code=400, detail="Edited data must be a GeoJSON FeatureCollection.")
         if len(features) > 500_000:
             raise HTTPException(status_code=400, detail="Edited GeoJSON contains too many features.")
+        current = read_status(workflow_dir)
+        previous_edits = current.get("manual_revisions") or []
+        source_stage = stage
+        if stage == "edited":
+            source_stage = next(
+                (
+                    str(record.get("source_stage") or "").lower()
+                    for record in reversed(previous_edits)
+                    if str(record.get("source_stage") or "").lower() in {"combined", "regularized"}
+                ),
+                "",
+            )
+            if source_stage not in {"combined", "regularized"}:
+                previous_path = str((current.get("outputs") or {}).get("edited", {}).get("path") or "")
+                source_stage = "regularized" if Path(previous_path).name.startswith("regularized_") else "combined"
         cleaned_features = []
         for index, feature in enumerate(features):
             if not isinstance(feature, dict) or feature.get("type") != "Feature":
@@ -460,25 +482,32 @@ def create_postprocess_router(
                 raise HTTPException(status_code=400, detail=f"Feature {index} is not a polygon.")
             cleaned = dict(feature)
             properties = dict(cleaned.get("properties") or {})
-            properties["manual_edit_source_stage"] = stage
+            properties["manual_edit_source_stage"] = source_stage
             cleaned["properties"] = properties
             cleaned_features.append(cleaned)
-        output_path = workflow_dir / "edited.geojson"
+        output_path = workflow_dir / f"{source_stage}_edited.geojson"
         _atomic_json(output_path, {"type": "FeatureCollection", "features": cleaned_features})
-        for legacy_path in workflow_dir.glob("edited_*.geojson"):
+        superseded_paths = list(workflow_dir.glob("edited_*.geojson"))
+        superseded_paths.extend(workflow_dir / name for name in (
+            "edited.geojson",
+            "combined_edited.geojson",
+            "regularized_edited.geojson",
+        ))
+        for legacy_path in set(superseded_paths):
+            if legacy_path == output_path or not legacy_path.is_file():
+                continue
             try:
                 legacy_path.unlink()
             except OSError as exc:
                 log.warning("Could not remove superseded edited GeoJSON %s: %s", legacy_path, exc)
         relative = output_path.relative_to(result_dir).as_posix()
-        current = read_status(workflow_dir)
         outputs = dict(current.get("outputs") or {})
         outputs["edited"] = {"path": relative}
-        revision_name = request.name or f"{current.get('display_name') or workflow_id} — Edited"
+        revision_name = request.name or f"{current.get('display_name') or workflow_id} — {source_stage}_edited"
         edited_record = {
             "id": "edited",
             "name": revision_name,
-            "source_stage": stage,
+            "source_stage": source_stage,
             "path": relative,
             "feature_count": len(cleaned_features),
             "updated_at": datetime.now().isoformat(),

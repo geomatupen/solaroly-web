@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260824a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260824h" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260825a" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -456,7 +456,7 @@
         <div class="postprocessSelection">
           <div>
             <label for="ppResult">Test result</label>
-            <select id="ppResult"><option value="">Select a result…</option></select>
+            <select id="ppResult" disabled><option value="">Loading test results…</option></select>
           </div>
           <div>
             <label for="ppGeojson">Source GeoJSON</label>
@@ -528,7 +528,6 @@
           </article>
         </div>
 
-        <div id="ppOutputs" class="postprocessOutputs" hidden></div>
         <details id="ppLogWrap" class="postprocessLogWrap" hidden>
           <summary>Processing log</summary>
           <pre id="ppLog" class="logPane"></pre>
@@ -1105,8 +1104,8 @@
   <script src="js/map.js?v=20260824c"></script>
   <script src="js/colmap.js?v=20260301b"></script>
   <script src="js/map-overlay.js?v=20260824b"></script>
-  <script src="js/main.js?v=20260824e"></script>
-  <script src="js/postprocess.js?v=20260824x"></script>
+  <script src="js/main.js?v=20260825b"></script>
+  <script src="js/postprocess.js?v=20260825d"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

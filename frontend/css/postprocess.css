@@ -357,22 +357,6 @@
 
 .postprocessFieldsCompact { grid-template-columns: 1fr; }
 
-.postprocessOutputs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  margin-top: 14px;
-  padding: 12px;
-  border: 1px solid rgba(24, 183, 106, .35);
-  border-radius: 9px;
-  background: rgba(24, 183, 106, .08);
-}
-
-.postprocessOutputs[hidden] { display: none; }
-.postprocessOutputs strong { margin-right: 4px; }
-.postprocessOutputs a { color: #7eb8ff; }
-
 .postprocessLogWrap { margin-top: 12px; }
 .postprocessLogWrap summary { cursor: pointer; color: #cdd6df; }
 .postprocessLogWrap .logPane { height: 180px; margin-top: 8px; }
