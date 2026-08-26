@@ -298,7 +298,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessMap .leaflet-interactive { cursor: pointer; }
 
 .solarPanelIdTooltip,
-.solarRowIdTooltip {
+.leaflet-tooltip.solarRowIdTooltip {
   pointer-events: none;
   border: 1px solid rgba(148, 163, 184, .6);
   border-radius: 5px;
@@ -312,14 +312,27 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 
 .solarRowIdTooltip {
-  border-color: rgba(239, 68, 68, .8);
-  color: #fecaca;
-  font-size: 12px;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #fff !important;
+  font-size: 11px;
   letter-spacing: .02em;
+  padding: 0 !important;
+  text-shadow:
+    -1px -1px 0 rgba(0, 0, 0, .95),
+     0 -1px 0 rgba(0, 0, 0, .95),
+     1px -1px 0 rgba(0, 0, 0, .95),
+    -1px  0   0 rgba(0, 0, 0, .95),
+     1px  0   0 rgba(0, 0, 0, .95),
+    -1px  1px 0 rgba(0, 0, 0, .95),
+     0  1px 0 rgba(0, 0, 0, .95),
+     1px  1px 0 rgba(0, 0, 0, .95);
 }
 
 .solarPanelIdTooltip::before,
-.solarRowIdTooltip::before { display: none; }
+.solarRowIdTooltip::before { display: none !important; }
 
 .postprocessEditPanel {
   margin: 8px 0;
