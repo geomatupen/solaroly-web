@@ -483,30 +483,39 @@
       <div class="card">
         <div class="row between postprocessHeader">
           <div>
-            <h2>Panel post-processing</h2>
-            <p class="muted">Join panel polygons split at inference tile edges, then regularize their shape.</p>
+            <h2>Post-processing</h2>
+            <p class="muted">Refine segmentation polygons or prepare anomaly predictions for panel-level reporting.</p>
           </div>
           <button id="ppRefresh" class="secondary" type="button">Refresh results</button>
         </div>
 
         <div class="postprocessWorkspace">
         <div class="postprocessControls">
+        <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
+          <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
+          <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
+        </div>
         <div class="postprocessSelection">
           <div>
             <label for="ppResult">Test result</label>
             <select id="ppResult" disabled><option value="">Loading test results…</option></select>
           </div>
+        </div>
+        <div id="ppSegmentationControls">
+        <div class="postprocessSelection postprocessSourceSelection">
           <div>
             <label for="ppGeojson">Source GeoJSON</label>
             <select id="ppGeojson" disabled><option value="">Select a GeoJSON…</option></select>
           </div>
           <button id="ppAnalyze" type="button" disabled>Scan GeoJSON</button>
         </div>
+        </div>
         <div id="ppMessage" class="statusLine" aria-live="polite"></div>
         <div id="ppProgressWrap" class="progressWrap" hidden>
           <div class="progressBar"><span id="ppProgressBar" style="width:0%"></span></div>
           <div id="ppProgressText" class="progressText">Waiting…</div>
         </div>
+        <div id="ppSegmentationWorkflow">
         <div id="ppSummary" class="postprocessSummary" hidden></div>
 
         <div class="postprocessSteps">
@@ -564,6 +573,101 @@
               <button id="ppRegularize" type="button" disabled>Regularize polygons</button>
             </div>
           </article>
+
+          <article id="ppHierarchyStep" class="postprocessStep" hidden>
+            <div class="postprocessStepNumber">3</div>
+            <div class="postprocessStepBody">
+              <h3>Build panel rows and IDs</h3>
+              <p class="muted tiny">Group neighbouring, similarly oriented panels into larger row rectangles, then assign deterministic row and panel IDs.</p>
+              <div class="postprocessFields">
+                <div>
+                  <label for="ppHierarchySource">Regularized output</label>
+                  <select id="ppHierarchySource" disabled><option value="">Select a regularized output…</option></select>
+                </div>
+                <div>
+                  <label for="ppRowAngle">Orientation tolerance (degrees)</label>
+                  <input id="ppRowAngle" type="number" value="12" min="0" max="45" step="1" />
+                </div>
+                <div>
+                  <label for="ppRowLateral">Lateral distance factor</label>
+                  <input id="ppRowLateral" type="number" value="1.5" min="0.25" max="10" step="0.1" />
+                </div>
+                <div>
+                  <label for="ppRowGap">Along-row gap factor</label>
+                  <input id="ppRowGap" type="number" value="2.5" min="0.25" max="20" step="0.1" />
+                </div>
+              </div>
+              <button id="ppBuildHierarchy" type="button" disabled>Build rows and assign IDs</button>
+            </div>
+          </article>
+        </div>
+        </div>
+
+        <div id="ppAnomalyControls" hidden>
+          <div class="postprocessSelection postprocessSourceSelection">
+            <div>
+              <label for="ppAnomalyGeojson">Prediction GeoJSON</label>
+              <select id="ppAnomalyGeojson" disabled><option value="">Select anomaly predictions…</option></select>
+            </div>
+            <button id="ppScanAnomalies" type="button" disabled>Scan predictions</button>
+          </div>
+          <div class="postprocessSteps">
+            <article id="ppDeduplicateStep" class="postprocessStep" hidden>
+              <div class="postprocessStepNumber">1</div>
+              <div class="postprocessStepBody">
+                <h3>Deduplicate overlapping predictions</h3>
+                <p class="muted tiny">Keep the strongest same-class prediction when overlapping source images detect the same anomaly. Geometry is not moved.</p>
+                <div class="postprocessFields">
+                  <div>
+                    <label for="ppAnomalyOutputName">Output name</label>
+                    <input id="ppAnomalyOutputName" type="text" value="anomaly_postprocess" maxlength="80" />
+                  </div>
+                  <div>
+                    <label for="ppAnomalyIou">Minimum IoU</label>
+                    <input id="ppAnomalyIou" type="number" value="0.35" min="0" max="1" step="0.05" />
+                  </div>
+                  <div>
+                    <label for="ppAnomalyDistance">Maximum centre distance (m)</label>
+                    <input id="ppAnomalyDistance" type="number" value="0.35" min="0" max="100" step="0.05" />
+                  </div>
+                  <div>
+                    <label for="ppAnomalyOverlap">Minimum smaller-polygon overlap</label>
+                    <input id="ppAnomalyOverlap" type="number" value="0.55" min="0" max="1" step="0.05" />
+                  </div>
+                </div>
+                <button id="ppDeduplicate" type="button" disabled>Deduplicate anomalies</button>
+              </div>
+            </article>
+            <article id="ppAdjustAnomaliesStep" class="postprocessStep" hidden>
+              <div class="postprocessStepNumber">2</div>
+              <div class="postprocessStepBody">
+                <h3>Review and adjust placement</h3>
+                <p class="muted tiny">In Processing layers, choose the deduplicated layer and click Edit this layer. Move, rotate, reshape, or delete selected polygons with undo/redo, then save one edited layer before assignment.</p>
+              </div>
+            </article>
+            <article id="ppAssociateStep" class="postprocessStep" hidden>
+              <div class="postprocessStepNumber">3</div>
+              <div class="postprocessStepBody">
+                <h3>Assign anomalies to panels</h3>
+                <p class="muted tiny">Use the selected identified-panel layer to attach panel and parent-row IDs. Unassigned and nearest-only matches are flagged for review.</p>
+                <div class="postprocessFields postprocessFieldsCompact">
+                  <div>
+                    <label for="ppPanelReference">Identified panels</label>
+                    <select id="ppPanelReference" disabled><option value="">Select identified panels…</option></select>
+                  </div>
+                  <div>
+                    <label for="ppAssociationOverlap">Minimum anomaly overlap</label>
+                    <input id="ppAssociationOverlap" type="number" value="0.20" min="0" max="1" step="0.05" />
+                  </div>
+                  <div>
+                    <label for="ppAssociationDistance">Nearest fallback distance (m)</label>
+                    <input id="ppAssociationDistance" type="number" value="0.50" min="0" max="100" step="0.05" />
+                  </div>
+                </div>
+                <button id="ppAssociate" type="button" disabled>Assign panel and row IDs</button>
+              </div>
+            </article>
+          </div>
         </div>
 
         <details id="ppLogWrap" class="postprocessLogWrap" hidden>
@@ -609,6 +713,8 @@
                 </div>
                 <div class="postprocessEditActions">
                   <button id="ppEditVertices" class="tiny" type="button">Edit vertices</button>
+                  <button id="ppMovePolygons" class="secondary tiny" type="button">Move polygons</button>
+                  <button id="ppRotatePolygons" class="secondary tiny" type="button">Rotate polygons</button>
                   <button id="ppDeletePolygons" class="secondary tiny" type="button">Delete polygons</button>
                   <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo</button>
                   <button id="ppRedoEdits" class="secondary tiny" type="button" disabled>Redo</button>
@@ -1247,7 +1353,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260825j"></script>
+  <script src="js/postprocess.js?v=20260826a"></script>
+  <script src="js/postprocess_segmentation.js?v=20260826a"></script>
+  <script src="js/postprocess_anomaly.js?v=20260826a"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

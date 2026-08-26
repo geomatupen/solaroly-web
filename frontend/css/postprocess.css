@@ -10,6 +10,27 @@
 
 .postprocessControls { min-width: 0; }
 
+.postprocessModeTabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.postprocessModeTabs button {
+  border-radius: 8px 8px 0 0;
+  border-bottom: 2px solid transparent;
+}
+
+.postprocessModeTabs button.active {
+  border-bottom-color: var(--accent);
+  background: rgba(43, 135, 255, .18);
+  color: #fff;
+}
+
+.postprocessSourceSelection { margin-top: 10px; }
+
 .postprocessPreview {
   position: sticky;
   top: 16px;
@@ -274,6 +295,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessLayerItem.locked { opacity: .48; }
 .postprocessMap.vertexMode .leaflet-interactive { cursor: pointer; }
 .postprocessMap.deleteMode .leaflet-interactive { cursor: crosshair; }
+.postprocessMap.moveMode .leaflet-interactive { cursor: move; }
+.postprocessMap.rotateMode .leaflet-interactive { cursor: alias; }
 
 .postprocessMap .marker-icon {
   width: 14px !important;
@@ -409,7 +432,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 
 .postprocessSelection select,
-.postprocessFields input { width: 100%; }
+.postprocessFields input,
+.postprocessFields select { width: 100%; }
 
 .postprocessSummary {
   display: grid;

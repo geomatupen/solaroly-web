@@ -16,7 +16,14 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..postprocess import analyze_geojson, combine_tile_fragments, regularize_polygons
+from ..postprocess import (
+    analyze_geojson,
+    associate_anomalies,
+    build_panel_hierarchy,
+    combine_tile_fragments,
+    deduplicate_anomalies,
+    regularize_polygons,
+)
 
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="geojson-postprocess")
@@ -42,6 +49,28 @@ class CombineRequest(BaseModel):
 
 class RegularizeRequest(BaseModel):
     max_area_change_percent: float = Field(default=35.0, ge=0.0, le=1000.0)
+
+
+class HierarchyRequest(BaseModel):
+    input_path: str
+    max_orientation_difference_deg: float = Field(default=12.0, ge=0.0, le=45.0)
+    max_lateral_distance_factor: float = Field(default=1.5, ge=0.25, le=10.0)
+    max_along_gap_factor: float = Field(default=2.5, ge=0.25, le=20.0)
+
+
+class DeduplicateAnomaliesRequest(BaseModel):
+    input_path: str
+    output_name: str = "anomaly_postprocess"
+    minimum_iou: float = Field(default=0.35, ge=0.0, le=1.0)
+    maximum_center_distance_m: float = Field(default=0.35, ge=0.0, le=100.0)
+    minimum_smaller_overlap: float = Field(default=0.55, ge=0.0, le=1.0)
+
+
+class AssociateAnomaliesRequest(BaseModel):
+    panel_path: str
+    panel_result_id: str | None = None
+    minimum_overlap: float = Field(default=0.20, ge=0.0, le=1.0)
+    maximum_distance_m: float = Field(default=0.50, ge=0.0, le=100.0)
 
 
 class RenameWorkflowRequest(BaseModel):
@@ -180,6 +209,47 @@ def create_postprocess_router(
 
         return callback
 
+    @router.get("/postprocess/panel-layers")
+    async def list_identified_panel_layers() -> dict[str, Any]:
+        sessions_root = Path(get_sessions_dir()).resolve()
+        items: list[dict[str, Any]] = []
+        if not sessions_root.is_dir():
+            return {"ok": True, "layers": items}
+        for result_dir in (path for path in sessions_root.iterdir() if path.is_dir()):
+            workflow_root = result_dir / "postprocess"
+            if not workflow_root.is_dir():
+                continue
+            for workflow_dir in (path for path in workflow_root.iterdir() if path.is_dir()):
+                try:
+                    status = read_status(workflow_dir)
+                except HTTPException:
+                    continue
+                candidates = [("identified_panels", (status.get("outputs") or {}).get("identified_panels"))]
+                revision = (status.get("manual_revisions") or [{}])[-1]
+                if revision.get("source_stage") == "identified_panels":
+                    candidates.append(("identified_panels_edited", (status.get("outputs") or {}).get("edited")))
+                for stage, output in candidates:
+                    if not output or not output.get("path"):
+                        continue
+                    source = (result_dir / output["path"]).resolve()
+                    try:
+                        source.relative_to(result_dir)
+                    except ValueError:
+                        continue
+                    if not source.is_file():
+                        continue
+                    items.append({
+                        "result_id": result_dir.name,
+                        "workflow_id": workflow_dir.name,
+                        "workflow_name": status.get("display_name") or workflow_dir.name,
+                        "stage": stage,
+                        "path": source.relative_to(result_dir).as_posix(),
+                        "url": media_url(source),
+                        "mtime": int(source.stat().st_mtime),
+                    })
+        items.sort(key=lambda item: item["mtime"], reverse=True)
+        return {"ok": True, "layers": items}
+
     @router.get("/{result_id}/postprocess/geojsons")
     async def list_geojsons(result_id: str) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
@@ -193,11 +263,16 @@ def create_postprocess_router(
         for path in sorted(set(files), key=lambda item: (item.stat().st_mtime, item.name), reverse=True):
             relative = path.relative_to(result_dir).as_posix()
             stage = "source"
-            if path.name == "combined.geojson":
-                stage = "combined"
-            elif path.name == "regularized.geojson":
-                stage = "regularized"
-            elif path.name in {"combined_edited.geojson", "regularized_edited.geojson"}:
+            stage_names = {
+                "combined.geojson": "combined",
+                "regularized.geojson": "regularized",
+                "panel_rows.geojson": "panel_rows",
+                "identified_panels.geojson": "identified_panels",
+                "deduplicated.geojson": "deduplicated",
+                "associated.geojson": "associated",
+            }
+            stage = stage_names.get(path.name, stage)
+            if path.name.endswith("_edited.geojson"):
                 stage = "edited"
             items.append(
                 {
@@ -352,6 +427,175 @@ def create_postprocess_router(
         _EXECUTOR.submit(run)
         return {"ok": True, "id": workflow_id, "status": "queued", "stage": "regularize"}
 
+    @router.post("/{result_id}/postprocess/{workflow_id}/hierarchy")
+    async def hierarchy(
+        result_id: str, workflow_id: str, request: HierarchyRequest
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        status = read_status(workflow_dir)
+        if status.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="This workflow is already running.")
+        input_path = resolve_input(result_dir, request.input_path)
+        try:
+            input_path.relative_to(workflow_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Select an output from this segmentation workflow.") from exc
+        update_status(
+            workflow_dir,
+            status="queued",
+            stage="hierarchy",
+            progress=0,
+            message="Queued panel-row hierarchy generation.",
+            hierarchy_parameters=request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+        )
+
+        def run() -> None:
+            rows_path = workflow_dir / "panel_rows.geojson"
+            panels_path = workflow_dir / "identified_panels.geojson"
+            try:
+                stats = build_panel_hierarchy(
+                    input_path,
+                    rows_path,
+                    panels_path,
+                    max_orientation_difference_deg=request.max_orientation_difference_deg,
+                    max_lateral_distance_factor=request.max_lateral_distance_factor,
+                    max_along_gap_factor=request.max_along_gap_factor,
+                    callback=progress_callback(workflow_dir, "hierarchy"),
+                )
+                latest = read_status(workflow_dir)
+                outputs = dict(latest.get("outputs") or {})
+                outputs.update({
+                    "panel_rows": {"path": rows_path.relative_to(result_dir).as_posix()},
+                    "identified_panels": {"path": panels_path.relative_to(result_dir).as_posix()},
+                })
+                update_status(
+                    workflow_dir,
+                    status="complete",
+                    stage="hierarchy",
+                    progress=100,
+                    message="Panel rows and IDs are ready.",
+                    hierarchy_stats=stats,
+                    outputs=outputs,
+                )
+                log.info("UI:OK:postprocess: Panel hierarchy ready for %s", result_dir.name)
+            except Exception as exc:
+                append_log(workflow_dir, f"ERROR: {exc}")
+                update_status(workflow_dir, status="failed", stage="hierarchy", message=str(exc), error=str(exc))
+                log.exception("Panel hierarchy generation failed for %s", result_dir.name)
+
+        _EXECUTOR.submit(run)
+        return {"ok": True, "id": workflow_id, "status": "queued", "stage": "hierarchy"}
+
+    @router.post("/{result_id}/postprocess/anomalies/deduplicate")
+    async def deduplicate(result_id: str, request: DeduplicateAnomaliesRequest) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        input_path = resolve_input(result_dir, request.input_path)
+        prefix = _safe_name(request.output_name, "anomaly_postprocess")
+        workflow_id = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        workflow_dir = result_dir / "postprocess" / workflow_id
+        workflow_dir.mkdir(parents=True, exist_ok=False)
+        initial = {
+            "ok": True,
+            "id": workflow_id,
+            "workflow_kind": "anomaly",
+            "display_name": request.output_name.strip() or prefix,
+            "result_id": result_dir.name,
+            "status": "queued",
+            "stage": "deduplicate",
+            "progress": 0,
+            "message": "Queued anomaly deduplication.",
+            "created_at": datetime.now().isoformat(),
+            "input_path": input_path.relative_to(result_dir).as_posix(),
+            "parameters": request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+            "outputs": {},
+        }
+        _atomic_json(workflow_dir / "status.json", initial)
+        _atomic_json(workflow_dir / "postprocess_meta.json", initial)
+
+        def run() -> None:
+            output_path = workflow_dir / "deduplicated.geojson"
+            try:
+                stats = deduplicate_anomalies(
+                    input_path,
+                    output_path,
+                    minimum_iou=request.minimum_iou,
+                    maximum_center_distance_m=request.maximum_center_distance_m,
+                    minimum_smaller_overlap=request.minimum_smaller_overlap,
+                    callback=progress_callback(workflow_dir, "deduplicate"),
+                )
+                update_status(
+                    workflow_dir,
+                    status="complete",
+                    stage="deduplicate",
+                    progress=100,
+                    message="Deduplicated anomaly GeoJSON is ready.",
+                    deduplicate_stats=stats,
+                    outputs={"deduplicated": {"path": output_path.relative_to(result_dir).as_posix()}},
+                )
+                log.info("UI:OK:postprocess: Anomaly deduplication ready for %s", result_dir.name)
+            except Exception as exc:
+                append_log(workflow_dir, f"ERROR: {exc}")
+                update_status(workflow_dir, status="failed", stage="deduplicate", message=str(exc), error=str(exc))
+                log.exception("Anomaly deduplication failed for %s", result_dir.name)
+
+        _EXECUTOR.submit(run)
+        return initial
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/associate")
+    async def associate(
+        result_id: str, workflow_id: str, request: AssociateAnomaliesRequest
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        status = read_status(workflow_dir)
+        if status.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="This workflow is already running.")
+        anomaly_output = (status.get("outputs") or {}).get("edited") or (status.get("outputs") or {}).get("deduplicated") or {}
+        anomaly_path = resolve_input(result_dir, str(anomaly_output.get("path") or ""))
+        panel_result_dir = resolve_result(request.panel_result_id or result_id)
+        panel_path = resolve_input(panel_result_dir, request.panel_path)
+        update_status(
+            workflow_dir,
+            status="queued",
+            stage="associate",
+            progress=0,
+            message="Queued anomaly-to-panel association.",
+            association_parameters=request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+        )
+
+        def run() -> None:
+            output_path = workflow_dir / "associated.geojson"
+            try:
+                stats = associate_anomalies(
+                    anomaly_path,
+                    panel_path,
+                    output_path,
+                    minimum_overlap=request.minimum_overlap,
+                    maximum_distance_m=request.maximum_distance_m,
+                    callback=progress_callback(workflow_dir, "associate"),
+                )
+                latest = read_status(workflow_dir)
+                outputs = dict(latest.get("outputs") or {})
+                outputs["associated"] = {"path": output_path.relative_to(result_dir).as_posix()}
+                update_status(
+                    workflow_dir,
+                    status="complete",
+                    stage="associate",
+                    progress=100,
+                    message="Anomalies are associated with panel and row IDs.",
+                    association_stats=stats,
+                    outputs=outputs,
+                )
+                log.info("UI:OK:postprocess: Anomaly association ready for %s", result_dir.name)
+            except Exception as exc:
+                append_log(workflow_dir, f"ERROR: {exc}")
+                update_status(workflow_dir, status="failed", stage="associate", message=str(exc), error=str(exc))
+                log.exception("Anomaly association failed for %s", result_dir.name)
+
+        _EXECUTOR.submit(run)
+        return {"ok": True, "id": workflow_id, "status": "queued", "stage": "associate"}
+
     @router.get("/{result_id}/postprocess/{workflow_id}")
     async def workflow_status(result_id: str, workflow_id: str) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
@@ -405,7 +649,8 @@ def create_postprocess_router(
     ) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
         workflow_dir = resolve_workflow(result_dir, workflow_id)
-        if stage not in {"combined", "regularized", "edited"}:
+        allowed_stages = {"combined", "regularized", "panel_rows", "identified_panels", "deduplicated", "associated", "edited"}
+        if stage not in allowed_stages:
             raise HTTPException(status_code=400, detail="Only generated post-processing outputs can be sent to Map.")
         status = read_status(workflow_dir)
         output = (status.get("outputs") or {}).get(stage) or {}
@@ -425,7 +670,7 @@ def create_postprocess_router(
         if stage == "edited":
             edited_records = status.get("manual_revisions") or []
             edited_source = str((edited_records[-1] if edited_records else {}).get("source_stage") or "combined").lower()
-            if edited_source not in {"combined", "regularized"}:
+            if edited_source not in allowed_stages - {"edited"}:
                 edited_source = "combined"
             stage_label = f"{edited_source}_edited"
         display_name = f"{str(base_name).strip()} — {stage_label}"
@@ -468,7 +713,8 @@ def create_postprocess_router(
     ) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
         workflow_dir = resolve_workflow(result_dir, workflow_id)
-        if stage not in {"combined", "regularized", "edited"}:
+        editable_stages = {"combined", "regularized", "panel_rows", "identified_panels", "deduplicated", "associated", "edited"}
+        if stage not in editable_stages:
             raise HTTPException(status_code=400, detail="This layer cannot be edited.")
         geojson = request.geojson
         features = geojson.get("features") if isinstance(geojson, dict) else None
@@ -484,13 +730,13 @@ def create_postprocess_router(
                 (
                     str(record.get("source_stage") or "").lower()
                     for record in reversed(previous_edits)
-                    if str(record.get("source_stage") or "").lower() in {"combined", "regularized"}
+                    if str(record.get("source_stage") or "").lower() in editable_stages - {"edited"}
                 ),
                 "",
             )
-            if source_stage not in {"combined", "regularized"}:
+            if source_stage not in editable_stages - {"edited"}:
                 previous_path = str((current.get("outputs") or {}).get("edited", {}).get("path") or "")
-                source_stage = "regularized" if Path(previous_path).name.startswith("regularized_") else "combined"
+                source_stage = Path(previous_path).name.removesuffix("_edited.geojson") or "combined"
         cleaned_features = []
         for index, feature in enumerate(features):
             if not isinstance(feature, dict) or feature.get("type") != "Feature":
@@ -510,6 +756,10 @@ def create_postprocess_router(
             "edited.geojson",
             "combined_edited.geojson",
             "regularized_edited.geojson",
+            "panel_rows_edited.geojson",
+            "identified_panels_edited.geojson",
+            "deduplicated_edited.geojson",
+            "associated_edited.geojson",
         ))
         for legacy_path in set(superseded_paths):
             if legacy_path == output_path or not legacy_path.is_file():
