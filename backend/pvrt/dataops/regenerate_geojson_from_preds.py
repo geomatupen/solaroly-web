@@ -283,10 +283,17 @@ try:
                             continue
                 heading = _camera_heading_from_entry(cam_entry, cam_session_meta)
 
-                # Keep the camera/gimbal orientation selected by
-                # _camera_heading_from_entry. Aircraft yaw describes the flight
-                # body, not necessarily the image's top edge; substituting it can
-                # introduce a 180-degree flip when the gimbal looks backward.
+                # Preserve the pre-2026-08-25 rotation behavior. DJI camera and
+                # aircraft headings can use opposite reference directions; when
+                # they differ by more than 90 degrees, aircraft yaw produced the
+                # established north-up orientation used by existing results.
+                if heading is not None and cam_entry and isinstance(cam_entry, dict):
+                    gimbal = _coerce_float(cam_entry.get('rotation_gimbal'))
+                    aircraft = _coerce_float(cam_entry.get('rotation_aircraft'))
+                    if gimbal is not None and aircraft is not None:
+                        diff = abs(gimbal - aircraft)
+                        if diff > 90:
+                            heading = _normalize_heading_deg(aircraft)
                 
                 rot = _camera_heading_to_overlay_rotation(heading)
                 # Rotate images to north-up orientation
