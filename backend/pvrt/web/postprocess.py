@@ -231,6 +231,25 @@ def create_postprocess_router(
                 candidate.unlink()
         return outputs
 
+    def remove_linked_overlays(result_id: str, workflow_id: str, stage: str | None = None) -> None:
+        overlays_root = Path(get_overlays_dir()).resolve()
+        if not overlays_root.is_dir():
+            return
+        for overlay_dir in overlays_root.iterdir():
+            if not overlay_dir.is_dir():
+                continue
+            try:
+                metadata = json.loads((overlay_dir / ".overlay_meta.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (
+                metadata.get("reference_kind") == "postprocess"
+                and metadata.get("source_result") == result_id
+                and metadata.get("workflow_id") == workflow_id
+                and (stage is None or metadata.get("stage") == stage)
+            ):
+                shutil.rmtree(overlay_dir)
+
     @router.get("/postprocess/panel-layers")
     async def list_identified_panel_layers() -> dict[str, Any]:
         sessions_root = Path(get_sessions_dir()).resolve()
@@ -694,23 +713,46 @@ def create_postprocess_router(
         if status.get("status") in {"queued", "running"}:
             raise HTTPException(status_code=409, detail="A running workflow cannot be deleted.")
         shutil.rmtree(workflow_dir)
-        overlays_root = Path(get_overlays_dir()).resolve()
-        if overlays_root.is_dir():
-            for overlay_dir in overlays_root.iterdir():
-                if not overlay_dir.is_dir():
-                    continue
-                try:
-                    metadata = json.loads((overlay_dir / ".overlay_meta.json").read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if (
-                    metadata.get("reference_kind") == "postprocess"
-                    and metadata.get("source_result") == result_dir.name
-                    and metadata.get("workflow_id") == workflow_dir.name
-                ):
-                    shutil.rmtree(overlay_dir)
+        remove_linked_overlays(result_dir.name, workflow_dir.name)
         log.info("UI:OK:postprocess: Deleted workflow %s for %s", workflow_id, result_id)
         return {"ok": True, "deleted": workflow_id}
+
+    @router.delete("/{result_id}/postprocess/{workflow_id}/edited")
+    async def delete_edited_layer(result_id: str, workflow_id: str) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        status = read_status(workflow_dir)
+        if status.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="An edited layer cannot be deleted while its workflow is running.")
+        output = (status.get("outputs") or {}).get("edited") or {}
+        raw_path = str(output.get("path") or "")
+        if not raw_path:
+            raise HTTPException(status_code=404, detail="This workflow has no edited layer.")
+        edited_path = (result_dir / raw_path).resolve()
+        try:
+            edited_path.relative_to(workflow_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid edited layer path.") from exc
+
+        edited_paths = set(workflow_dir.glob("*_edited.geojson"))
+        edited_paths.update(workflow_dir.glob("edited_*.geojson"))
+        edited_paths.add(workflow_dir / "edited.geojson")
+        edited_paths.add(edited_path)
+        for path in edited_paths:
+            if path.is_file():
+                path.unlink()
+
+        outputs = dict(status.get("outputs") or {})
+        outputs.pop("edited", None)
+        update_status(
+            workflow_dir,
+            outputs=outputs,
+            manual_revisions=[],
+            message="Edited layer deleted. Base processing layers were preserved.",
+        )
+        remove_linked_overlays(result_dir.name, workflow_dir.name, "edited")
+        log.info("UI:OK:postprocess: Deleted edited layer from workflow %s for %s", workflow_id, result_id)
+        return read_status(workflow_dir)
 
     @router.post("/{result_id}/postprocess/{workflow_id}/{stage}/share")
     async def share_workflow_layer(

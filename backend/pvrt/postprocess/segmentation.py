@@ -91,6 +91,32 @@ def _projection_interval(geometry: Any, axis_x: float, axis_y: float) -> tuple[f
     return min(values), max(values)
 
 
+def _map_reading_order(
+    arrays: list[list[int]],
+    inner_row_geometries: list[Any],
+) -> list[list[int]]:
+    """Order arrays like text: horizontal bands top-to-bottom, then left-to-right."""
+    records = []
+    short_dimensions = []
+    for indices in arrays:
+        geometry = unary_union([inner_row_geometries[index] for index in indices]).convex_hull.minimum_rotated_rectangle
+        centre = geometry.centroid
+        short, _, _ = _rectangle_measurements(geometry)
+        short_dimensions.append(short)
+        records.append({"indices": indices, "x": centre.x, "y": centre.y})
+    band_tolerance = max(0.05, statistics.median(short_dimensions) * 0.75)
+    remaining = sorted(records, key=lambda record: (-record["y"], record["x"]))
+    ordered: list[list[int]] = []
+    while remaining:
+        anchor = remaining[0]
+        band = [record for record in remaining if abs(record["y"] - anchor["y"]) <= band_tolerance]
+        band_ids = {id(record) for record in band}
+        remaining = [record for record in remaining if id(record) not in band_ids]
+        band.sort(key=lambda record: (record["x"], -record["y"]))
+        ordered.extend(record["indices"] for record in band)
+    return ordered
+
+
 def build_panel_hierarchy(
     input_path: Path,
     output_path: Path,
@@ -183,12 +209,8 @@ def build_panel_hierarchy(
     arrays: dict[int, list[int]] = {}
     for index in range(len(inner_rows)):
         arrays.setdefault(array_groups.find(index), []).append(index)
-    ordered_arrays = sorted(
-        arrays.values(),
-        key=lambda indices: (
-            -statistics.mean(panel.centre_y for index in indices for panel in inner_rows[index]),
-            statistics.mean(panel.centre_x for index in indices for panel in inner_rows[index]),
-        ),
+    ordered_arrays = _map_reading_order(
+        list(arrays.values()), inner_row_geometries
     )
     row_features: list[dict[str, Any]] = []
     panel_features: list[dict[str, Any]] = []
@@ -199,11 +221,20 @@ def build_panel_hierarchy(
         array_panels = [panel for index in inner_row_indices for panel in inner_rows[index]]
         orientation = _average_orientation(array_panels)
         row_geometry = unary_union([panel.geometry for panel in array_panels]).convex_hull.minimum_rotated_rectangle
+        minx, miny, maxx, maxy = row_geometry.bounds
+        array_is_horizontal = (maxx - minx) >= (maxy - miny)
         ordered_inner_rows = sorted(
             (inner_rows[index] for index in inner_row_indices),
-            key=lambda component: (
-                -statistics.mean(panel.centre_y for panel in component),
-                statistics.mean(panel.centre_x for panel in component),
+            key=(
+                (lambda component: (
+                    -statistics.mean(panel.centre_y for panel in component),
+                    statistics.mean(panel.centre_x for panel in component),
+                ))
+                if array_is_horizontal
+                else (lambda component: (
+                    statistics.mean(panel.centre_x for panel in component),
+                    -statistics.mean(panel.centre_y for panel in component),
+                ))
             ),
         )
         row_properties = {
@@ -218,12 +249,18 @@ def build_panel_hierarchy(
         for inner_row_index, component in enumerate(ordered_inner_rows):
             inner_row_total += 1
             inner_row_label = _letter_label(inner_row_index)
-            inner_orientation = _average_orientation(component)
-            radians = math.radians((inner_orientation + 90.0) % 180.0)
-            axis_x, axis_y = math.cos(radians), math.sin(radians)
-            if axis_x < -1e-9 or (abs(axis_x) <= 1e-9 and axis_y < 0):
-                axis_x, axis_y = -axis_x, -axis_y
-            component.sort(key=lambda panel: panel.centre_x * axis_x + panel.centre_y * axis_y)
+            component_geometry = unary_union([panel.geometry for panel in component]).bounds
+            component_is_horizontal = (
+                component_geometry[2] - component_geometry[0]
+                >= component_geometry[3] - component_geometry[1]
+            )
+            component.sort(
+                key=(
+                    (lambda panel: (panel.centre_x, -panel.centre_y))
+                    if component_is_horizontal
+                    else (lambda panel: (-panel.centre_y, panel.centre_x))
+                )
+            )
             for panel_number, panel in enumerate(component, start=1):
                 properties = dict(panel.properties)
                 properties.update({

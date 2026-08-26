@@ -61,6 +61,32 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 {"1000-A1", "1000-A2", "1000-A3", "1000-B1", "1000-B2", "1000-B3"},
             )
 
+    def test_row_ids_follow_map_reading_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "regularized.geojson"
+            locations = [
+                ("top_left", 500000.0, 5500100.0),
+                ("top_right", 500010.0, 5500099.7),
+                ("bottom_left", 500000.0, 5500090.0),
+                ("bottom_right", 500010.0, 5500090.2),
+            ]
+            _write(source, [
+                _feature(box(x, y, x + 1.0, y + 1.8), class_name="panel", marker=marker)
+                for marker, x, y in locations
+            ])
+            hierarchy_path = root / "panel_hierarchy.geojson"
+            build_panel_hierarchy(source, hierarchy_path)
+            features = json.loads(hierarchy_path.read_text(encoding="utf-8"))["features"]
+            panels = [item["properties"] for item in features if item["properties"].get("panel_id")]
+            row_by_marker = {item["marker"]: item["row_id"] for item in panels}
+            self.assertEqual(row_by_marker, {
+                "top_left": "1000",
+                "top_right": "1001",
+                "bottom_left": "1002",
+                "bottom_right": "1003",
+            })
+
     def test_deduplicates_then_associates_anomalies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

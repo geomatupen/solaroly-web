@@ -15,6 +15,7 @@
     scanComplete: false,
     editing: null,
     loadingPromise: null,
+    resultLoadingTimer: null,
     referenceLayers: new Map(),
     referenceToken: 0,
     temporarySequence: 0,
@@ -723,6 +724,27 @@
     }
   }
 
+  async function deleteEditedLayer(item) {
+    if (!state.workflowId || state.editing) return;
+    if (!window.confirm(`Delete “${item.label}”? The base processing layers and source data will be preserved.`)) return;
+    try {
+      const resultId = byId("ppResult").value;
+      setMessage(`Deleting ${item.label}…`);
+      await requestJson(
+        `/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(state.workflowId)}/edited`,
+        { method: "DELETE" },
+      );
+      const stale = state.previewLayers.get("edited");
+      if (stale && state.map?.hasLayer(stale.layer)) state.map.removeLayer(stale.layer);
+      state.previewLayers.delete("edited");
+      renderPreviewLayers();
+      await restoreLatestWorkflow(resultId, byId("ppGeojson").value, state.workflowId);
+      setMessage("Edited layer deleted. Base processing layers were preserved.", "ok");
+    } catch (error) {
+      setMessage(error.message, "err");
+    }
+  }
+
   function updateEditHistoryControls(message = "") {
     const editing = state.editing;
     if (!editing) return;
@@ -1137,6 +1159,14 @@
         layerMenu.menu.appendChild(send);
       }
       layerMenu.menu.appendChild(download);
+      if (key === "edited") {
+        layerMenu.menu.appendChild(layerMenuButton(
+          "Delete edited layer",
+          layerMenu.menu,
+          () => deleteEditedLayer(item),
+          { disabled: Boolean(state.editing), danger: true },
+        ));
+      }
       actions.appendChild(layerMenu.wrapper);
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
@@ -1208,8 +1238,8 @@
   }
 
   async function syncOutputPreviews(status) {
-    const replaceableBaseStages = ["combined", "regularized", "panel_hierarchy", "panel_rows", "identified_panels"];
-    for (const stage of replaceableBaseStages) {
+    const removableStages = ["combined", "regularized", "panel_hierarchy", "panel_rows", "identified_panels", "edited"];
+    for (const stage of removableStages) {
       if (status.outputs?.[stage] || !state.previewLayers.has(stage)) continue;
       const stale = state.previewLayers.get(stage);
       if (state.map?.hasLayer(stale.layer)) state.map.removeLayer(stale.layer);
@@ -1459,18 +1489,42 @@
     select.appendChild(option);
   }
 
+  function stopResultLoadingAnimation(select) {
+    if (state.resultLoadingTimer !== null) {
+      window.clearInterval(state.resultLoadingTimer);
+      state.resultLoadingTimer = null;
+    }
+    select.removeAttribute("aria-busy");
+  }
+
+  function startResultLoadingAnimation(select) {
+    stopResultLoadingAnimation(select);
+    select.setAttribute("aria-busy", "true");
+    let dotCount = 1;
+    const render = () => {
+      const option = select.options[0];
+      if (!option) return;
+      option.textContent = `Loading test results${".".repeat(dotCount)}`;
+      dotCount = dotCount === 3 ? 1 : dotCount + 1;
+    };
+    render();
+    state.resultLoadingTimer = window.setInterval(render, 400);
+  }
+
   async function loadResults(force = false) {
     if (state.loaded && !force) return;
     if (state.loadingPromise) return state.loadingPromise;
     const select = byId("ppResult");
     const previous = select.value;
     select.replaceChildren();
-    addOption(select, "", "Loading test results…");
+    addOption(select, "", "Loading test results.");
     select.disabled = true;
+    startResultLoadingAnimation(select);
     setMessage("Loading test results…");
     state.loadingPromise = (async () => {
       try {
         const payload = await requestJson("/api/sessions", { cache: "no-store" });
+        stopResultLoadingAnimation(select);
         select.replaceChildren();
         addOption(select, "", "Select a result…");
         for (const result of payload.sessions || []) {
@@ -1486,12 +1540,16 @@
         setMessage(select.options.length > 1 ? "Select a result and GeoJSON to begin." : "No test results are available.", select.options.length > 1 ? "" : "warn");
         if (select.value) await loadGeojsons();
       } catch (error) {
+        stopResultLoadingAnimation(select);
         select.replaceChildren();
         addOption(select, "", "Could not load test results");
         select.disabled = true;
         setMessage(error.message, "err");
       }
-    })().finally(() => { state.loadingPromise = null; });
+    })().finally(() => {
+      stopResultLoadingAnimation(select);
+      state.loadingPromise = null;
+    });
     return state.loadingPromise;
   }
 

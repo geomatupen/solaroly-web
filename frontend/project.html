@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260826i" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260826j" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -494,7 +494,7 @@
         <div class="postprocessSelection">
           <div>
             <label for="ppResult">Test result</label>
-            <select id="ppResult" disabled><option value="">Loading test results…</option></select>
+            <select id="ppResult" disabled aria-busy="true"><option value="">Loading test results.</option></select>
           </div>
         </div>
         <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
@@ -1374,7 +1374,7 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260826g"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260826h"></script>
+  <script src="js/postprocess.js?v=20260826j"></script>
   <script src="js/postprocess_segmentation.js?v=20260826h"></script>
   <script src="js/postprocess_anomaly.js?v=20260826f"></script>
   <script>
