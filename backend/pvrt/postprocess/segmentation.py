@@ -75,6 +75,22 @@ def _average_orientation(panels: list[Panel]) -> float:
     return (math.degrees(math.atan2(sine, cosine)) / 2.0) % 180.0
 
 
+def _letter_label(index: int) -> str:
+    """Return spreadsheet-style labels: A..Z, AA..AZ, BA..."""
+    label = ""
+    value = index + 1
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        label = chr(65 + remainder) + label
+    return label
+
+
+def _projection_interval(geometry: Any, axis_x: float, axis_y: float) -> tuple[float, float]:
+    rectangle = geometry.minimum_rotated_rectangle
+    values = [x * axis_x + y * axis_y for x, y in rectangle.exterior.coords]
+    return min(values), max(values)
+
+
 def build_panel_hierarchy(
     input_path: Path,
     rows_output_path: Path,
@@ -83,6 +99,7 @@ def build_panel_hierarchy(
     max_orientation_difference_deg: float = 12.0,
     max_lateral_distance_factor: float = 1.5,
     max_along_gap_factor: float = 2.5,
+    max_inner_row_gap_factor: float = 1.0,
     callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Group panel rectangles into rows and assign stable row/panel identifiers."""
@@ -134,38 +151,91 @@ def build_panel_hierarchy(
     components: dict[int, list[Panel]] = {}
     for index, panel in enumerate(panels):
         components.setdefault(groups.find(index), []).append(panel)
-    ordered_components = sorted(
-        components.values(),
-        key=lambda component: (-statistics.mean(panel.centre_y for panel in component), statistics.mean(panel.centre_x for panel in component)),
+    inner_rows = list(components.values())
+    inner_row_geometries = [
+        unary_union([panel.geometry for panel in component]).convex_hull.minimum_rotated_rectangle
+        for component in inner_rows
+    ]
+    array_groups = _Groups(len(inner_rows))
+    _notify(callback, 53, "Grouping adjacent inner rows into solar arrays…")
+    for first_index, first_component in enumerate(inner_rows):
+        first_geometry = inner_row_geometries[first_index]
+        first_orientation = _average_orientation(first_component)
+        row_angle = math.radians((first_orientation + 90.0) % 180.0)
+        row_axis_x, row_axis_y = math.cos(row_angle), math.sin(row_angle)
+        first_interval = _projection_interval(first_geometry, row_axis_x, row_axis_y)
+        for second_index in range(first_index + 1, len(inner_rows)):
+            second_component = inner_rows[second_index]
+            if first_component[0].class_key != second_component[0].class_key:
+                continue
+            if _angle_difference(first_orientation, _average_orientation(second_component)) > max_orientation_difference_deg:
+                continue
+            second_geometry = inner_row_geometries[second_index]
+            if first_geometry.distance(second_geometry) > median_short * max_inner_row_gap_factor:
+                continue
+            second_interval = _projection_interval(second_geometry, row_axis_x, row_axis_y)
+            overlap = max(0.0, min(first_interval[1], second_interval[1]) - max(first_interval[0], second_interval[0]))
+            smaller_span = min(first_interval[1] - first_interval[0], second_interval[1] - second_interval[0])
+            if smaller_span > 0 and overlap / smaller_span >= 0.35:
+                array_groups.union(first_index, second_index)
+
+    arrays: dict[int, list[int]] = {}
+    for index in range(len(inner_rows)):
+        arrays.setdefault(array_groups.find(index), []).append(index)
+    ordered_arrays = sorted(
+        arrays.values(),
+        key=lambda indices: (
+            -statistics.mean(panel.centre_y for index in indices for panel in inner_rows[index]),
+            statistics.mean(panel.centre_x for index in indices for panel in inner_rows[index]),
+        ),
     )
     row_features: list[dict[str, Any]] = []
     panel_features: list[dict[str, Any]] = []
     _notify(callback, 62, "Assigning row and panel identifiers…")
-    for row_number, component in enumerate(ordered_components, start=1):
-        row_id = f"ROW-{row_number:04d}"
-        orientation = _average_orientation(component)
-        radians = math.radians((orientation + 90.0) % 180.0)
-        component.sort(key=lambda panel: panel.centre_x * math.cos(radians) + panel.centre_y * math.sin(radians))
-        row_geometry = unary_union([panel.geometry for panel in component]).convex_hull.minimum_rotated_rectangle
+    inner_row_total = 0
+    for array_number, inner_row_indices in enumerate(ordered_arrays, start=1000):
+        row_id = str(array_number)
+        array_panels = [panel for index in inner_row_indices for panel in inner_rows[index]]
+        orientation = _average_orientation(array_panels)
+        row_geometry = unary_union([panel.geometry for panel in array_panels]).convex_hull.minimum_rotated_rectangle
+        ordered_inner_rows = sorted(
+            (inner_rows[index] for index in inner_row_indices),
+            key=lambda component: (
+                -statistics.mean(panel.centre_y for panel in component),
+                statistics.mean(panel.centre_x for panel in component),
+            ),
+        )
         row_properties = {
             "postprocess_stage": "panel_rows",
             "row_id": row_id,
-            "panel_count": len(component),
+            "panel_count": len(array_panels),
+            "inner_row_count": len(ordered_inner_rows),
             "orientation_deg": round(orientation, 4),
             "area_m2": float(row_geometry.area),
         }
         row_features.append(feature(row_geometry, row_properties, to_wgs84))
-        for panel_number, panel in enumerate(component, start=1):
-            properties = dict(panel.properties)
-            properties.update({
-                "postprocess_stage": "identified_panels",
-                "row_id": row_id,
-                "panel_id": f"{row_id}-PANEL-{panel_number:04d}",
-                "panel_order": panel_number,
-                "row_panel_count": len(component),
-                "source_panel_index": panel.source_index,
-            })
-            panel_features.append(feature(panel.geometry, properties, to_wgs84))
+        for inner_row_index, component in enumerate(ordered_inner_rows):
+            inner_row_total += 1
+            inner_row_label = _letter_label(inner_row_index)
+            inner_orientation = _average_orientation(component)
+            radians = math.radians((inner_orientation + 90.0) % 180.0)
+            axis_x, axis_y = math.cos(radians), math.sin(radians)
+            if axis_x < -1e-9 or (abs(axis_x) <= 1e-9 and axis_y < 0):
+                axis_x, axis_y = -axis_x, -axis_y
+            component.sort(key=lambda panel: panel.centre_x * axis_x + panel.centre_y * axis_y)
+            for panel_number, panel in enumerate(component, start=1):
+                properties = dict(panel.properties)
+                properties.update({
+                    "postprocess_stage": "identified_panels",
+                    "row_id": row_id,
+                    "inner_row": inner_row_label,
+                    "panel_number": panel_number,
+                    "panel_id": f"{row_id}-{inner_row_label}{panel_number}",
+                    "row_panel_count": len(array_panels),
+                    "inner_row_panel_count": len(component),
+                    "source_panel_index": panel.source_index,
+                })
+                panel_features.append(feature(panel.geometry, properties, to_wgs84))
     metadata = {"source": str(input_path), "metric_crs": metric_crs.to_string()}
     write_feature_collection(rows_output_path, row_features, **metadata)
     write_feature_collection(panels_output_path, panel_features, **metadata)
@@ -175,7 +245,8 @@ def build_panel_hierarchy(
         "invalid_input_features": invalid,
         "panel_count": len(panel_features),
         "row_count": len(row_features),
-        "singleton_rows": sum(1 for component in ordered_components if len(component) == 1),
+        "inner_row_count": inner_row_total,
+        "singleton_rows": sum(1 for indices in ordered_arrays if sum(len(inner_rows[index]) for index in indices) == 1),
         "metric_crs": metric_crs.to_string(),
         "rows_output_path": str(rows_output_path),
         "panels_output_path": str(panels_output_path),

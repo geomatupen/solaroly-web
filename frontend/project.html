@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260825e" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260826b" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -577,8 +577,8 @@
           <article id="ppHierarchyStep" class="postprocessStep" hidden>
             <div class="postprocessStepNumber">3</div>
             <div class="postprocessStepBody">
-              <h3>Build panel rows and IDs</h3>
-              <p class="muted tiny">Group neighbouring, similarly oriented panels into larger row rectangles, then assign deterministic row and panel IDs.</p>
+              <h3>Build merged rows and panel IDs</h3>
+              <p class="muted tiny">Group neighbouring panels into inner rows, merge adjacent inner rows into one editable GeoJSON rectangle, and assign IDs such as 1000-A1.</p>
               <div class="postprocessFields">
                 <div>
                   <label for="ppHierarchySource">Regularized output</label>
@@ -596,8 +596,12 @@
                   <label for="ppRowGap">Along-row gap factor</label>
                   <input id="ppRowGap" type="number" value="2.5" min="0.25" max="20" step="0.1" />
                 </div>
+                <div>
+                  <label for="ppInnerRowGap">Merge inner-row gap factor</label>
+                  <input id="ppInnerRowGap" type="number" value="1.0" min="0" max="10" step="0.1" />
+                </div>
               </div>
-              <button id="ppBuildHierarchy" type="button" disabled>Build rows and assign IDs</button>
+              <button id="ppBuildHierarchy" type="button" disabled>Build merged rows and assign IDs</button>
             </div>
           </article>
         </div>
@@ -1353,7 +1357,7 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260825b"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260826a"></script>
+  <script src="js/postprocess.js?v=20260826b"></script>
   <script src="js/postprocess_segmentation.js?v=20260826a"></script>
   <script src="js/postprocess_anomaly.js?v=20260826a"></script>
   <script>

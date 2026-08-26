@@ -31,18 +31,23 @@ class PostprocessWorkflowTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "regularized.geojson"
             panels = [
-                _feature(box(500000 + column * 1.15, 5500000 - row * 4, 500001 + column * 1.15, 5500001.8 - row * 4), class_name="panel")
+                _feature(box(500000 + column * 1.15, 5500000 - row * 2, 500001 + column * 1.15, 5500001.8 - row * 2), class_name="panel")
                 for row in range(2)
                 for column in range(3)
             ]
             _write(source, panels)
             rows_path, panels_path = root / "rows.geojson", root / "panels.geojson"
             stats = build_panel_hierarchy(source, rows_path, panels_path)
-            self.assertEqual(stats["row_count"], 2)
+            self.assertEqual(stats["row_count"], 1)
+            self.assertEqual(stats["inner_row_count"], 2)
             identified = json.loads(panels_path.read_text(encoding="utf-8"))["features"]
             self.assertEqual(len(identified), 6)
-            self.assertEqual({item["properties"]["row_id"] for item in identified}, {"ROW-0001", "ROW-0002"})
+            self.assertEqual({item["properties"]["row_id"] for item in identified}, {"1000"})
             self.assertEqual(len({item["properties"]["panel_id"] for item in identified}), 6)
+            self.assertEqual(
+                {item["properties"]["panel_id"] for item in identified},
+                {"1000-A1", "1000-A2", "1000-A3", "1000-B1", "1000-B2", "1000-B3"},
+            )
 
     def test_deduplicates_then_associates_anomalies(self):
         with tempfile.TemporaryDirectory() as temporary:

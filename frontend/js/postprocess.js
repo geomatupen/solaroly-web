@@ -41,6 +41,57 @@
 
   const byId = id => document.getElementById(id);
 
+  function closeLayerMenus(except = null) {
+    document.querySelectorAll(".postprocessLayerMenu, .postprocessWorkflowMenu").forEach(menu => {
+      if (menu !== except) menu.hidden = true;
+    });
+  }
+
+  function layerMenuButton(label, menu, action, { disabled = false, danger = false } = {}) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.disabled = disabled;
+    if (danger) button.classList.add("danger");
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      menu.hidden = true;
+      action();
+    });
+    return button;
+  }
+
+  function createLayerMenu(label, disabled = false) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "postprocessLayerMenuWrap";
+    const dots = document.createElement("button");
+    dots.type = "button";
+    dots.className = "iconDots";
+    dots.textContent = "⋮";
+    dots.disabled = disabled;
+    dots.setAttribute("aria-label", `Options for ${label}`);
+    const menu = document.createElement("div");
+    menu.className = "postprocessLayerMenu";
+    menu.hidden = true;
+    dots.addEventListener("click", event => {
+      event.stopPropagation();
+      const willOpen = menu.hidden;
+      closeLayerMenus(menu);
+      menu.hidden = !willOpen;
+      menu.classList.remove("openUp");
+      if (willOpen) {
+        const scroller = wrapper.closest(".postprocessLayerList");
+        const menuBounds = menu.getBoundingClientRect();
+        const scrollerBounds = scroller?.getBoundingClientRect();
+        if (scrollerBounds && menuBounds.bottom > scrollerBounds.bottom - 4) {
+          menu.classList.add("openUp");
+        }
+      }
+    });
+    wrapper.append(dots, menu);
+    return { wrapper, menu };
+  }
+
   function showListLoading(id, message) {
     const container = byId(id);
     container.replaceChildren();
@@ -242,29 +293,20 @@
       opacity.title = "Reference opacity";
       opacity.addEventListener("input", () => setReferenceOpacity(item, Number(opacity.value)));
       actions.appendChild(opacity);
-      const focus = document.createElement("button");
-      focus.type = "button";
-      focus.className = "secondary tiny";
-      focus.textContent = "Focus";
-      focus.disabled = !item.loaded;
-      focus.addEventListener("click", () => {
+      const layerMenu = createLayerMenu(item.label, Boolean(item.loading));
+      layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
         const bounds = item.bounds || item.layer?.getBounds?.();
         if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
-      });
-      actions.appendChild(focus);
+      }, { disabled: !item.loaded }));
       if (item.temporary) {
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "secondary tiny";
-        remove.textContent = "Remove";
-        remove.addEventListener("click", () => {
+        layerMenu.menu.appendChild(layerMenuButton("Remove", layerMenu.menu, () => {
           if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
           state.referenceLayers.delete(id);
           renderReferenceLayers();
           byId("ppReferenceStatus").textContent = "Temporary layer removed. No project file was changed.";
-        });
-        actions.appendChild(remove);
+        }, { danger: true }));
       }
+      actions.appendChild(layerMenu.wrapper);
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
     }
@@ -980,40 +1022,33 @@
       const detail = document.createElement("small");
       detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Read-only" : ""}`;
       text.append(name, detail);
-      const focus = document.createElement("button");
-      focus.type = "button";
-      focus.className = "secondary tiny";
-      focus.textContent = "Focus";
-      focus.addEventListener("click", () => {
+      const layerMenu = createLayerMenu(item.label, Boolean(state.editing));
+      layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
         const bounds = item.layer.getBounds?.();
         if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
-      });
+      }));
       const download = document.createElement("a");
-      download.className = "postprocessLayerDownload";
       download.href = item.url;
       download.download = "";
       download.title = `Download ${item.label} GeoJSON`;
       download.textContent = "Download";
+      download.addEventListener("click", () => { layerMenu.menu.hidden = true; });
       const actions = document.createElement("div");
       actions.className = "postprocessLayerActions";
-      actions.appendChild(focus);
       if (GENERATED_STAGES.has(key)) {
-        const edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "secondary tiny";
-        edit.textContent = isEditing ? "Editing" : "Edit this layer";
-        edit.disabled = Boolean(state.editing);
-        edit.addEventListener("click", () => beginEditing(key));
-        actions.appendChild(edit);
-        const send = document.createElement("button");
-        send.type = "button";
-        send.className = "secondary tiny";
-        send.textContent = "Link to Map";
-        send.disabled = Boolean(state.editing);
-        send.addEventListener("click", () => sendLayerToMap(key, send));
-        actions.appendChild(send);
+        layerMenu.menu.appendChild(layerMenuButton(
+          isEditing ? "Editing" : "Edit this layer",
+          layerMenu.menu,
+          () => beginEditing(key),
+          { disabled: Boolean(state.editing) },
+        ));
+        const send = layerMenuButton("Link to Map", layerMenu.menu, () => sendLayerToMap(key, send), {
+          disabled: Boolean(state.editing),
+        });
+        layerMenu.menu.appendChild(send);
       }
-      actions.appendChild(download);
+      layerMenu.menu.appendChild(download);
+      actions.appendChild(layerMenu.wrapper);
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
     }
@@ -1031,11 +1066,17 @@
     updateFitButton();
   }
 
-  async function loadPreviewLayer(stage, url, expectedCount = null, label = null) {
-    if (!url || state.previewLayers.get(stage)?.url === url || state.previewLoading.has(stage)) return;
+  async function loadPreviewLayer(stage, url, expectedCount = null, label = null, showAlongside = false) {
+    if (!url || state.previewLoading.has(stage)) return;
     const map = ensurePreviewMap();
     if (!map) {
       byId("ppMapStatus").textContent = "Map preview is unavailable because Leaflet did not load.";
+      return;
+    }
+    const alreadyLoaded = state.previewLayers.get(stage);
+    if (alreadyLoaded?.url === url) {
+      if (showAlongside && !map.hasLayer(alreadyLoaded.layer)) alreadyLoaded.layer.addTo(map);
+      renderPreviewLayers();
       return;
     }
     state.previewLoading.add(stage);
@@ -1050,8 +1091,10 @@
       const layer = created.layer;
       // Show the newest stage by itself initially. Users can turn earlier stages
       // back on for comparison using the layer list.
-      for (const item of state.previewLayers.values()) {
-        if (map.hasLayer(item.layer)) map.removeLayer(item.layer);
+      if (!showAlongside) {
+        for (const item of state.previewLayers.values()) {
+          if (map.hasLayer(item.layer)) map.removeLayer(item.layer);
+        }
       }
       layer.addTo(map);
       state.previewLayers.set(stage, {
@@ -1075,7 +1118,7 @@
     }
   }
 
-  function syncOutputPreviews(status) {
+  async function syncOutputPreviews(status) {
     const counts = {
       combined: status.combine_stats?.output_features,
       regularized: status.regularize_stats?.output_features,
@@ -1085,12 +1128,30 @@
       associated: status.association_stats?.output_features,
     };
     for (const stage of GENERATED_STAGES) {
-      if (stage === "edited" || !status.outputs?.[stage]?.url) continue;
-      void loadPreviewLayer(stage, status.outputs[stage].url, counts[stage]);
+      if (["edited", "panel_rows", "identified_panels"].includes(stage) || !status.outputs?.[stage]?.url) continue;
+      await loadPreviewLayer(stage, status.outputs[stage].url, counts[stage]);
+    }
+    if (status.outputs?.identified_panels?.url || status.outputs?.panel_rows?.url) {
+      if (status.outputs?.identified_panels?.url) {
+        await loadPreviewLayer(
+          "identified_panels",
+          status.outputs.identified_panels.url,
+          counts.identified_panels,
+        );
+      }
+      if (status.outputs?.panel_rows?.url) {
+        await loadPreviewLayer(
+          "panel_rows",
+          status.outputs.panel_rows.url,
+          counts.panel_rows,
+          null,
+          true,
+        );
+      }
     }
     if (status.outputs?.edited?.url) {
       const latest = (status.manual_revisions || []).at(-1);
-      void loadPreviewLayer("edited", status.outputs.edited.url, latest?.feature_count, editedLayerName(status));
+      await loadPreviewLayer("edited", status.outputs.edited.url, latest?.feature_count, editedLayerName(status));
     }
   }
 
@@ -1476,7 +1537,7 @@
       byId("ppLog").textContent = status.log.join("\n");
       byId("ppLogWrap").hidden = !status.log.length;
     }
-    syncOutputPreviews(status);
+    void syncOutputPreviews(status);
     const running = status.status === "queued" || status.status === "running";
     const hasCombined = Boolean(status.outputs?.combined);
     byId("ppCombine").disabled = running || !state.analysis;
@@ -1650,6 +1711,7 @@
     document.addEventListener("keydown", event => {
       if (event.key === "Escape" && !document.fullscreenElement) exitPreviewFullscreen();
     });
+    document.addEventListener("click", () => closeLayerMenus());
     document.addEventListener("keydown", event => {
       if (!state.editing || !(event.ctrlKey || event.metaKey)) return;
       const key = event.key.toLowerCase();
