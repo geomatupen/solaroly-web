@@ -20,12 +20,14 @@
     temporarySequence: 0,
     previewHoverReset: null,
     mode: "segmentation",
+    segmentationStepPhase: null,
   };
 
   const GENERATED_STAGES = new Set([
-    "combined", "regularized", "panel_rows", "identified_panels",
+    "combined", "regularized", "panel_hierarchy", "panel_rows", "identified_panels",
     "deduplicated", "associated", "edited",
   ]);
+  const SHAREABLE_STAGES = new Set([...GENERATED_STAGES, "solar_panels", "solar_rows"]);
 
   const PREVIEW_STYLES = {
     source: { label: "Source", color: "#38bdf8", weight: 1, fillOpacity: 0.08 },
@@ -33,6 +35,7 @@
     regularized: { label: "Regularized", color: "#22c55e", weight: 2, fillOpacity: 0.16 },
     panel_rows: { label: "Panel rows", color: "#ef4444", weight: 3, fillOpacity: 0.05 },
     identified_panels: { label: "Identified panels", color: "#14b8a6", weight: 2, fillOpacity: 0.14 },
+    panel_hierarchy: { label: "Merged rows and panel IDs", color: "#14b8a6", weight: 2, fillOpacity: 0.12 },
     panel_reference: { label: "Panel reference", color: "#14b8a6", weight: 2, fillOpacity: 0.08 },
     deduplicated: { label: "Deduplicated anomalies", color: "#f97316", weight: 2, fillOpacity: 0.22 },
     associated: { label: "Associated anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
@@ -40,6 +43,75 @@
   };
 
   const byId = id => document.getElementById(id);
+  let replacementResolver = null;
+
+  function finishReplacementConfirmation(confirmed) {
+    byId("ppReplacementModal")?.classList.add("hidden");
+    const resolve = replacementResolver;
+    replacementResolver = null;
+    if (resolve) resolve(Boolean(confirmed));
+  }
+
+  function confirmReplacement(title, message) {
+    if (replacementResolver) finishReplacementConfirmation(false);
+    byId("ppReplacementTitle").textContent = title;
+    byId("ppReplacementMessage").textContent = message;
+    byId("ppReplacementModal").classList.remove("hidden");
+    byId("ppReplacementConfirm").focus();
+    return new Promise(resolve => { replacementResolver = resolve; });
+  }
+
+  function initCollapsibleSteps() {
+    document.querySelectorAll(".postprocessStep").forEach(step => {
+      const body = step.querySelector(":scope > .postprocessStepBody");
+      const heading = body?.querySelector(":scope > h3");
+      if (!body || !heading || body.querySelector(":scope > .postprocessStepTitleRow")) return;
+      const titleRow = document.createElement("div");
+      titleRow.className = "postprocessStepTitleRow";
+      body.insertBefore(titleRow, heading);
+      titleRow.appendChild(heading);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "secondary tiny postprocessStepCollapse";
+      toggle.textContent = "−";
+      toggle.title = "Minimize step";
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.addEventListener("click", () => {
+        const collapsed = step.classList.toggle("collapsed");
+        toggle.textContent = collapsed ? "+" : "−";
+        toggle.title = collapsed ? "Expand step" : "Minimize step";
+        toggle.setAttribute("aria-expanded", String(!collapsed));
+      });
+      titleRow.appendChild(toggle);
+    });
+  }
+
+  function setStepCollapsed(step, collapsed) {
+    if (!step) return;
+    step.classList.toggle("collapsed", collapsed);
+    const toggle = step.querySelector(".postprocessStepCollapse");
+    if (!toggle) return;
+    toggle.textContent = collapsed ? "+" : "−";
+    toggle.title = collapsed ? "Expand step" : "Minimize step";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  function syncSegmentationStepProgress(status = null) {
+    const outputs = status?.outputs || {};
+    const hasCombined = Boolean(outputs.combined);
+    const hasRegularized = Boolean(outputs.regularized);
+    const hasHierarchy = Boolean(
+      outputs.panel_hierarchy || outputs.panel_rows || outputs.identified_panels
+    );
+    const canShow = state.scanComplete || hasCombined || hasRegularized || hasHierarchy;
+    if (!canShow) return;
+    const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep")];
+    steps.forEach(step => { step.hidden = false; });
+    const phase = hasHierarchy ? 0 : hasRegularized ? 3 : hasCombined ? 2 : 1;
+    if (phase === state.segmentationStepPhase) return;
+    state.segmentationStepPhase = phase;
+    steps.forEach((step, index) => setStepCollapsed(step, phase === 0 || index + 1 !== phase));
+  }
 
   function closeLayerMenus(except = null) {
     document.querySelectorAll(".postprocessLayerMenu, .postprocessWorkflowMenu").forEach(menu => {
@@ -167,6 +239,7 @@
     state.analysis = null;
     state.scanComplete = false;
     state.workflowId = null;
+    state.segmentationStepPhase = null;
     state.pollToken += 1;
     byId("ppSummary").hidden = true;
     byId("ppSummary").replaceChildren();
@@ -499,21 +572,36 @@
       fillOpacity: style.fillOpacity,
       opacity: 1,
     };
+    const featureStyle = feature => {
+      if (stage === "panel_hierarchy" && feature?.properties?.postprocess_stage === "panel_rows") {
+        return {
+          ...baseStyle,
+          color: "#ef4444",
+          fillColor: "#ef4444",
+          weight: 3,
+          dashArray: "8 4",
+          fillOpacity: 0.035,
+        };
+      }
+      return baseStyle;
+    };
     const layer = window.L.geoJSON(geojson, {
       renderer: window.L.svg({ padding: 0.5 }),
       pmIgnore: !editableStage,
-      style: () => baseStyle,
+      style: featureStyle,
       onEachFeature: (feature, polygonLayer) => {
+        const polygonBaseStyle = featureStyle(feature);
         polygonLayer.options.pmIgnore = !editableStage;
+        window.bindSolarFeatureIdentifier?.(feature, polygonLayer);
         let hovered = false;
         const resetHover = () => {
           if (!hovered) return;
           hovered = false;
           if (state.previewHoverReset === resetHover) state.previewHoverReset = null;
           if (state.editing?.selectedLayer === polygonLayer) return;
-          if (!state.editing) polygonLayer.setStyle(baseStyle);
+          if (!state.editing) polygonLayer.setStyle(polygonBaseStyle);
           else if (state.editing.stage === stage) {
-            polygonLayer.setStyle({ ...baseStyle, weight: baseStyle.weight + 1, fillOpacity: 0.28, opacity: 1 });
+            polygonLayer.setStyle({ ...polygonBaseStyle, weight: polygonBaseStyle.weight + 1, fillOpacity: 0.28, opacity: 1 });
           }
         };
         polygonLayer.on("mouseover", event => {
@@ -523,8 +611,8 @@
           hovered = true;
           event.target.setStyle({
             color: "#ffffff",
-            weight: style.weight + 2,
-            fillColor: style.color,
+            weight: polygonBaseStyle.weight + 2,
+            fillColor: polygonBaseStyle.fillColor,
             fillOpacity: 0.38,
           });
           state.previewHoverReset = resetHover;
@@ -576,7 +664,8 @@
     preview.classList.toggle("postprocessFullscreen", active);
     document.body.classList.toggle("postprocessFullscreenOpen", active);
     const button = byId("ppFullscreen");
-    button.textContent = active ? "Exit fullscreen" : "Fullscreen";
+    button.title = active ? "Exit fullscreen" : "Open fullscreen";
+    button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-pressed", String(active));
     window.setTimeout(() => state.map?.invalidateSize(), 50);
   }
@@ -608,7 +697,7 @@
   }
 
   async function sendLayerToMap(stage, button) {
-    if (!state.workflowId || !GENERATED_STAGES.has(stage)) return;
+    if (!state.workflowId || !SHAREABLE_STAGES.has(stage)) return;
     const original = button.textContent;
     button.disabled = true;
     button.textContent = "Sending…";
@@ -1119,9 +1208,18 @@
   }
 
   async function syncOutputPreviews(status) {
+    const replaceableBaseStages = ["combined", "regularized", "panel_hierarchy", "panel_rows", "identified_panels"];
+    for (const stage of replaceableBaseStages) {
+      if (status.outputs?.[stage] || !state.previewLayers.has(stage)) continue;
+      const stale = state.previewLayers.get(stage);
+      if (state.map?.hasLayer(stale.layer)) state.map.removeLayer(stale.layer);
+      state.previewLayers.delete(stage);
+    }
+    renderPreviewLayers();
     const counts = {
       combined: status.combine_stats?.output_features,
       regularized: status.regularize_stats?.output_features,
+      panel_hierarchy: status.hierarchy_stats?.output_features,
       panel_rows: status.hierarchy_stats?.row_count,
       identified_panels: status.hierarchy_stats?.panel_count,
       deduplicated: status.deduplicate_stats?.output_features,
@@ -1199,6 +1297,63 @@
     const visibleWorkflows = state.workflows.filter(workflow =>
       state.mode === "anomaly" ? workflow.workflow_kind === "anomaly" : workflow.workflow_kind !== "anomaly"
     );
+    if (state.mode === "segmentation") {
+      const deliverableWorkflow = visibleWorkflows.find(workflow =>
+        workflow.id === state.workflowId && workflow.outputs?.solar_panels && workflow.outputs?.solar_rows
+      ) || visibleWorkflows.find(workflow => workflow.outputs?.solar_panels && workflow.outputs?.solar_rows);
+      if (deliverableWorkflow) {
+        state.workflowId = deliverableWorkflow.id;
+        const definitions = [
+          ["solar_panels", "Solar panels", deliverableWorkflow.hierarchy_stats?.panel_count],
+          ["solar_rows", "Solar rows", deliverableWorkflow.hierarchy_stats?.row_count],
+        ];
+        for (const [stage, label, count] of definitions) {
+          const output = deliverableWorkflow.outputs[stage];
+          const item = document.createElement("div");
+          item.className = "postprocessWorkflowItem";
+          const info = document.createElement("div");
+          info.className = "postprocessWorkflowInfo";
+          const name = document.createElement("strong");
+          name.textContent = label;
+          const id = document.createElement("small");
+          id.textContent = `ID: ${deliverableWorkflow.id} · ${stage}`;
+          const detail = document.createElement("small");
+          detail.textContent = `${Number(count || 0).toLocaleString()} polygons · Complete`;
+          info.append(name, id, detail);
+          const dots = document.createElement("button");
+          dots.type = "button";
+          dots.className = "iconDots";
+          dots.textContent = "⋮";
+          dots.setAttribute("aria-label", `Options for ${label}`);
+          const menu = document.createElement("div");
+          menu.className = "postprocessWorkflowMenu";
+          menu.hidden = true;
+          const download = document.createElement("a");
+          download.href = output.url;
+          download.download = "";
+          download.textContent = "Download";
+          download.addEventListener("click", () => { menu.hidden = true; });
+          const send = document.createElement("button");
+          send.type = "button";
+          send.textContent = "Link to Map";
+          send.addEventListener("click", () => {
+            menu.hidden = true;
+            void sendLayerToMap(stage, send);
+          });
+          menu.append(download, send);
+          dots.addEventListener("click", event => {
+            event.stopPropagation();
+            const willOpen = menu.hidden;
+            closeLayerMenus(menu);
+            menu.hidden = !willOpen;
+          });
+          item.append(info, dots, menu);
+          container.appendChild(item);
+        }
+        populateRegularizeSources(state.workflowId);
+        return;
+      }
+    }
     if (!visibleWorkflows.length) {
       container.innerHTML = '<div class="muted tiny">No saved outputs.</div>';
       populateRegularizeSources();
@@ -1495,6 +1650,7 @@
       });
       state.analysis = payload.summary;
       state.scanComplete = true;
+      syncSegmentationStepProgress();
       renderAnalysis(payload.summary);
       byId("ppCombineStep").hidden = false;
       const source = state.geojsonFiles.find(file => file.path === inputPath);
@@ -1538,14 +1694,11 @@
       byId("ppLogWrap").hidden = !status.log.length;
     }
     void syncOutputPreviews(status);
+    if (state.mode === "segmentation") syncSegmentationStepProgress(status);
     const running = status.status === "queued" || status.status === "running";
     const hasCombined = Boolean(status.outputs?.combined);
     byId("ppCombine").disabled = running || !state.analysis;
     byId("ppRegularize").disabled = running || !hasCombined;
-    if (hasCombined) {
-      byId("ppCombineStep").hidden = false;
-      byId("ppRegularizeStep").hidden = false;
-    }
     if (status.status === "failed") setMessage(status.error || status.message || "Post-processing failed.", "err");
     else if (status.status === "complete") setMessage(status.message || "Post-processing complete.", "ok");
     else setMessage(status.message || "Post-processing…");
@@ -1584,6 +1737,22 @@
     const inputPath = byId("ppGeojson").value;
     byId("ppCombine").disabled = true;
     byId("ppRegularize").disabled = true;
+    const existingWorkflow = state.workflows.find(item =>
+      item.workflow_kind !== "anomaly"
+      && sourceIdentity(item.input_path) === sourceIdentity(inputPath)
+      && item.outputs?.combined
+    );
+    if (existingWorkflow) {
+      const confirmed = await confirmReplacement(
+        "Replace combined fragments?",
+        "This replaces the existing Combined layer. Its Regularized and Merged rows/IDs base layers are removed because they were generated from the previous combined geometry.",
+      );
+      if (!confirmed) {
+        byId("ppCombine").disabled = false;
+        byId("ppRegularize").disabled = !existingWorkflow.outputs?.combined;
+        return;
+      }
+    }
     showProgress(0, "Starting fragment combining…");
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/combine`, {
@@ -1591,6 +1760,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           input_path: inputPath,
+          workflow_id: existingWorkflow?.id || null,
           output_name: byId("ppOutputName").value.trim() || "solar_panels",
           edge_tolerance_px: numberValue("ppEdgeTolerance"),
           gap_tolerance_px: numberValue("ppGapTolerance"),
@@ -1617,6 +1787,14 @@
     }
     state.workflowId = selectedWorkflow;
     const resultId = byId("ppResult").value;
+    const workflow = state.workflows.find(item => item.id === selectedWorkflow);
+    if (workflow?.outputs?.regularized) {
+      const confirmed = await confirmReplacement(
+        "Replace regularized polygons?",
+        "This replaces the existing Regularized layer. Its Merged rows/IDs base layer is removed because it was generated from the previous regularized geometry.",
+      );
+      if (!confirmed) return;
+    }
     byId("ppRegularize").disabled = true;
     showProgress(0, "Starting polygon regularization…");
     try {
@@ -1638,6 +1816,13 @@
     if (state.initialized) return;
     state.initialized = true;
     try { window.L?.PM?.setOptIn(true); } catch (_) {}
+    initCollapsibleSteps();
+    byId("ppReplacementConfirm")?.addEventListener("click", () => finishReplacementConfirmation(true));
+    byId("ppReplacementCancel")?.addEventListener("click", () => finishReplacementConfirmation(false));
+    byId("ppReplacementClose")?.addEventListener("click", () => finishReplacementConfirmation(false));
+    byId("ppReplacementModal")?.addEventListener("click", event => {
+      if (event.target === byId("ppReplacementModal")) finishReplacementConfirmation(false);
+    });
     // Keep activation self-contained. This also works if an older cached copy of
     // the shared tab controller is still present in the browser.
     byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
@@ -1781,6 +1966,7 @@
     selectWorkflow,
     setMessage,
     setMode,
+    confirmReplacement,
   };
   window.PostProcessTab = { init, activate };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

@@ -278,6 +278,7 @@ function filterAnomalyLayer(def, activeStems, filterActive){
     }),
     onEachFeature: (feature, layer) => {
       addGeoJsonHoverHighlight(feature, layer);
+      window.bindSolarFeatureIdentifier?.(feature, layer);
       try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
     }
   });

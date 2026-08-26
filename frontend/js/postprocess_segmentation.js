@@ -13,10 +13,6 @@
   }
 
   function hierarchySource(workflow) {
-    const latestRevision = (workflow.manual_revisions || []).at(-1);
-    if (latestRevision?.source_stage === "regularized" && workflow.outputs?.edited?.path) {
-      return workflow.outputs.edited.path;
-    }
     return workflow.outputs?.regularized?.path || "";
   }
 
@@ -42,7 +38,6 @@
     else if (select.options.length > 1) select.selectedIndex = 1;
     select.disabled = workflows.length === 0;
     byId("ppBuildHierarchy").disabled = !select.value;
-    byId("ppHierarchyStep").hidden = workflows.length === 0;
   }
 
   async function buildHierarchy() {
@@ -52,6 +47,14 @@
     const option = select.selectedOptions[0];
     const workflowId = option?.dataset.workflowId;
     if (!context.resultId || !workflowId || !select.value) return;
+    const workflow = context.workflows.find(item => item.id === workflowId);
+    if (workflow?.outputs?.panel_hierarchy || workflow?.outputs?.panel_rows || workflow?.outputs?.identified_panels) {
+      const confirmed = await workspace.confirmReplacement(
+        "Replace merged rows and panel IDs?",
+        "This replaces the existing Merged rows/IDs base layer with a newly generated hierarchy from the selected regularized polygons.",
+      );
+      if (!confirmed) return;
+    }
     byId("ppBuildHierarchy").disabled = true;
     workspace.setMessage("Starting panel-row hierarchy generation…");
     try {

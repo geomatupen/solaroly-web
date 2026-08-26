@@ -107,7 +107,10 @@ def associate_anomalies(
     """Attach panel and row IDs to anomalies without changing their geometry."""
     _notify(callback, 2, "Reading anomaly and identified-panel layers…")
     anomaly_payload, anomalies, invalid_anomalies = load_polygon_features(anomaly_path)
-    _, panels, invalid_panels = load_polygon_features(panel_path)
+    _, loaded_panels, invalid_panels = load_polygon_features(panel_path)
+    panels = [record for record in loaded_panels if record[2].get("panel_id")]
+    if not panels:
+        raise ValueError("The selected hierarchy layer does not contain identified panel features.")
     metric_crs = infer_metric_crs([item[1] for item in anomalies] + [item[1] for item in panels])
     to_wgs84 = transformer(metric_crs, "EPSG:4326")
     projected_panels = [

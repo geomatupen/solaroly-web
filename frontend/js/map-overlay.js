@@ -5,6 +5,31 @@
 // Overlay registry for user-uploaded files
 let mapOverlayLayers = {};
 
+function bindSolarFeatureIdentifier(feature, layer) {
+  const properties = feature?.properties || {};
+  const panelId = String(properties.panel_id || "").trim();
+  const rowId = String(properties.row_id || "").trim();
+  try {
+    if (panelId) {
+      layer.bindTooltip(panelId, {
+        className: "solarPanelIdTooltip",
+        direction: "top",
+        sticky: true,
+        opacity: 0.96,
+      });
+    } else if (rowId && properties.postprocess_stage === "panel_rows") {
+      layer.bindTooltip(`Row ${rowId}`, {
+        className: "solarRowIdTooltip",
+        direction: "center",
+        permanent: true,
+        opacity: 0.94,
+      });
+    }
+  } catch (_) { /* geometry type does not support a tooltip */ }
+}
+
+window.bindSolarFeatureIdentifier = bindSolarFeatureIdentifier;
+
 /**
  * Reusable TIF tiling function
  * Creates tile layers from a GeoTIFF tile definition
@@ -171,6 +196,7 @@ async function uploadGeoJsonOverlay() {
       },
       onEachFeature: (feature, layer) => {
         window.addGeoJsonHoverHighlight?.(feature, layer);
+        bindSolarFeatureIdentifier(feature, layer);
         if (feature.properties) {
           let popupContent = '<div class="mini">';
           for (const [key, val] of Object.entries(feature.properties)) {
@@ -384,6 +410,7 @@ async function addSavedGeoJsonOverlay(overlay, options = {}) {
     style: { color: '#22c55e', weight: 2, fillColor: '#22c55e', fillOpacity: 0.2 },
     onEachFeature: (feature, featureLayer) => {
       window.addGeoJsonHoverHighlight?.(feature, featureLayer);
+      bindSolarFeatureIdentifier(feature, featureLayer);
       if (!feature?.properties) return;
       const rows = Object.entries(feature.properties)
         .slice(0, 20)

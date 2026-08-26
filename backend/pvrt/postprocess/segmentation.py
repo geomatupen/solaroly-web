@@ -93,9 +93,10 @@ def _projection_interval(geometry: Any, axis_x: float, axis_y: float) -> tuple[f
 
 def build_panel_hierarchy(
     input_path: Path,
-    rows_output_path: Path,
-    panels_output_path: Path,
+    output_path: Path,
     *,
+    rows_output_path: Path | None = None,
+    panels_output_path: Path | None = None,
     max_orientation_difference_deg: float = 12.0,
     max_lateral_distance_factor: float = 1.5,
     max_along_gap_factor: float = 2.5,
@@ -237,17 +238,23 @@ def build_panel_hierarchy(
                 })
                 panel_features.append(feature(panel.geometry, properties, to_wgs84))
     metadata = {"source": str(input_path), "metric_crs": metric_crs.to_string()}
-    write_feature_collection(rows_output_path, row_features, **metadata)
-    write_feature_collection(panels_output_path, panel_features, **metadata)
+    hierarchy_features = row_features + panel_features
+    write_feature_collection(output_path, hierarchy_features, **metadata)
+    if rows_output_path is not None:
+        write_feature_collection(rows_output_path, row_features, **metadata)
+    if panels_output_path is not None:
+        write_feature_collection(panels_output_path, panel_features, **metadata)
     _notify(callback, 100, "Panel hierarchy is ready.")
     return {
         "input_features": len(payload["features"]),
         "invalid_input_features": invalid,
         "panel_count": len(panel_features),
         "row_count": len(row_features),
+        "output_features": len(hierarchy_features),
         "inner_row_count": inner_row_total,
         "singleton_rows": sum(1 for indices in ordered_arrays if sum(len(inner_rows[index]) for index in indices) == 1),
         "metric_crs": metric_crs.to_string(),
-        "rows_output_path": str(rows_output_path),
-        "panels_output_path": str(panels_output_path),
+        "output_path": str(output_path),
+        "rows_output_path": str(rows_output_path) if rows_output_path else None,
+        "panels_output_path": str(panels_output_path) if panels_output_path else None,
     }

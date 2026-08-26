@@ -55,7 +55,7 @@
     const anomalySelect = byId("ppAnomalyGeojson");
     const previousAnomaly = anomalySelect.value;
     const candidates = context.geojsonFiles.filter(file =>
-      !["panel_rows", "identified_panels", "combined", "regularized"].includes(file.stage)
+      !["panel_hierarchy", "solar_panels", "solar_rows", "panel_rows", "identified_panels", "combined", "regularized"].includes(file.stage)
     );
     anomalySelect.replaceChildren();
     addOption(anomalySelect, "", context.resultId ? "Select anomaly predictions…" : "Select a test result first…");

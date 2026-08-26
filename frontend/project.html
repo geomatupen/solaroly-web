@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260826b" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260826g" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -486,20 +486,20 @@
             <h2>Post-processing</h2>
             <p class="muted">Refine segmentation polygons or prepare anomaly predictions for panel-level reporting.</p>
           </div>
-          <button id="ppRefresh" class="secondary" type="button">Refresh results</button>
+          <button id="ppRefresh" class="secondary" type="button"><span aria-hidden="true">↻</span> Refresh results</button>
         </div>
 
         <div class="postprocessWorkspace">
         <div class="postprocessControls">
-        <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
-          <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
-          <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
-        </div>
         <div class="postprocessSelection">
           <div>
             <label for="ppResult">Test result</label>
             <select id="ppResult" disabled><option value="">Loading test results…</option></select>
           </div>
+        </div>
+        <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
+          <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
+          <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
         </div>
         <div id="ppSegmentationControls">
         <div class="postprocessSelection postprocessSourceSelection">
@@ -687,8 +687,8 @@
               <p class="muted tiny">Toggle and compare each available product.</p>
             </div>
             <div class="postprocessPreviewHeaderActions">
-              <button id="ppFitLayers" class="secondary tiny" type="button" disabled>Fit visible</button>
-              <button id="ppFullscreen" class="secondary tiny" type="button" aria-pressed="false">Fullscreen</button>
+              <button id="ppFitLayers" class="secondary tiny postprocessIconButton" type="button" title="Fit visible layers" aria-label="Fit visible layers" disabled><span aria-hidden="true">⌖</span></button>
+              <button id="ppFullscreen" class="secondary tiny postprocessIconButton" type="button" title="Open fullscreen" aria-label="Open fullscreen" aria-pressed="false"><span aria-hidden="true">⛶</span></button>
             </div>
           </div>
           <div class="postprocessPreviewWorkspace">
@@ -702,7 +702,7 @@
                   <h3>Reference layers</h3>
                   <small class="muted">Linked imagery is read-only and is not copied.</small>
                 </div>
-                <button id="ppAddTemporaryLayer" class="secondary tiny" type="button">Add temporary GeoJSON</button>
+                <button id="ppAddTemporaryLayer" class="secondary tiny" type="button"><span aria-hidden="true">＋</span> Add temporary GeoJSON</button>
                 <input id="ppTemporaryLayerFile" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
               </div>
               <div id="ppReferenceStatus" class="statusLine tiny">Select a test result to find linked imagery.</div>
@@ -875,6 +875,23 @@
       <div class="modalFooter">
         <button id="btnStartUpload">Start upload</button>
         <button id="btnCancelUpload" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ppReplacementModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppReplacementTitle">
+    <div class="modalContent postprocessReplacementModalContent">
+      <div class="modalHeader">
+        <h3 id="ppReplacementTitle">Replace existing output?</h3>
+        <button id="ppReplacementClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p id="ppReplacementMessage"></p>
+        <p class="muted tiny">Separate edited copies are preserved.</p>
+      </div>
+      <div class="modalFooter">
+        <button id="ppReplacementCancel" class="secondary" type="button">Cancel</button>
+        <button id="ppReplacementConfirm" type="button">Replace output</button>
       </div>
     </div>
   </div>
@@ -1353,13 +1370,13 @@
   </div>
 
   <script src="js/utils.js?v=20260825m"></script>
-  <script src="js/map.js?v=20260825o"></script>
+  <script src="js/map.js?v=20260826g"></script>
   <script src="js/colmap.js?v=20260825o"></script>
-  <script src="js/map-overlay.js?v=20260825b"></script>
+  <script src="js/map-overlay.js?v=20260826g"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260826b"></script>
-  <script src="js/postprocess_segmentation.js?v=20260826a"></script>
-  <script src="js/postprocess_anomaly.js?v=20260826a"></script>
+  <script src="js/postprocess.js?v=20260826h"></script>
+  <script src="js/postprocess_segmentation.js?v=20260826h"></script>
+  <script src="js/postprocess_anomaly.js?v=20260826f"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

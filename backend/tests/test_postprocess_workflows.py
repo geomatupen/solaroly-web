@@ -36,11 +36,23 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 for column in range(3)
             ]
             _write(source, panels)
-            rows_path, panels_path = root / "rows.geojson", root / "panels.geojson"
-            stats = build_panel_hierarchy(source, rows_path, panels_path)
+            hierarchy_path = root / "panel_hierarchy.geojson"
+            rows_path = root / "solar_rows.geojson"
+            panels_path = root / "solar_panels.geojson"
+            stats = build_panel_hierarchy(
+                source,
+                hierarchy_path,
+                rows_output_path=rows_path,
+                panels_output_path=panels_path,
+            )
             self.assertEqual(stats["row_count"], 1)
             self.assertEqual(stats["inner_row_count"], 2)
-            identified = json.loads(panels_path.read_text(encoding="utf-8"))["features"]
+            hierarchy = json.loads(hierarchy_path.read_text(encoding="utf-8"))["features"]
+            identified = [item for item in hierarchy if item["properties"].get("panel_id")]
+            rows = [item for item in hierarchy if item["properties"].get("postprocess_stage") == "panel_rows"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(json.loads(rows_path.read_text(encoding="utf-8"))["features"]), 1)
+            self.assertEqual(len(json.loads(panels_path.read_text(encoding="utf-8"))["features"]), 6)
             self.assertEqual(len(identified), 6)
             self.assertEqual({item["properties"]["row_id"] for item in identified}, {"1000"})
             self.assertEqual(len({item["properties"]["panel_id"] for item in identified}), 6)
