@@ -37,7 +37,10 @@
     if ([...select.options].some(option => option.value === previous)) select.value = previous;
     else if (select.options.length > 1) select.selectedIndex = 1;
     select.disabled = workflows.length === 0;
-    byId("ppBuildHierarchy").disabled = !select.value;
+    const selectedWorkflowId = select.selectedOptions[0]?.dataset.workflowId;
+    const selectedWorkflow = workflows.find(workflow => workflow.id === selectedWorkflowId);
+    byId("ppBuildHierarchy").disabled = !select.value
+      || ["queued", "running"].includes(selectedWorkflow?.status);
   }
 
   async function buildHierarchy() {
@@ -47,16 +50,28 @@
     const option = select.selectedOptions[0];
     const workflowId = option?.dataset.workflowId;
     if (!context.resultId || !workflowId || !select.value) return;
-    const workflow = context.workflows.find(item => item.id === workflowId);
-    if (workflow?.outputs?.panel_hierarchy || workflow?.outputs?.panel_rows || workflow?.outputs?.identified_panels) {
+    let workflow = context.workflows.find(item => item.id === workflowId);
+    workspace.setMessage("Checking the existing Rows GeoJSON before replacement…");
+    try {
+      workflow = await workspace.requestJson(
+        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(workflowId)}`,
+        { cache: "no-store" },
+      );
+    } catch (error) {
+      workspace.setMessage(`Could not check the existing Rows output: ${error.message}`, "err");
+      return;
+    }
+    const hasExistingHierarchy = Boolean(workflow?.outputs?.solar_rows);
+    if (hasExistingHierarchy) {
       const confirmed = await workspace.confirmReplacement(
-        "Replace merged rows and panel IDs?",
-        "This replaces the existing Merged rows/IDs base layer with a newly generated hierarchy from the selected regularized polygons.",
+        "Replace rows and assigned IDs?",
+        "The existing Rows GeoJSON will be replaced, and panel/row IDs in the selected Regularized GeoJSON will be assigned again. Manual changes in those files may be lost.",
       );
       if (!confirmed) return;
     }
+    const inputPath = select.value;
     byId("ppBuildHierarchy").disabled = true;
-    workspace.setMessage("Starting panel-row hierarchy generation…");
+    workspace.setMessage("Starting row generation and ID assignment…");
     try {
       workspace.selectWorkflow(workflowId);
       const payload = await workspace.requestJson(
@@ -65,7 +80,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            input_path: select.value,
+            input_path: inputPath,
             max_orientation_difference_deg: Number(byId("ppRowAngle").value),
             max_lateral_distance_factor: Number(byId("ppRowLateral").value),
             max_along_gap_factor: Number(byId("ppRowGap").value),

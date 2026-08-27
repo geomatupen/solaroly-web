@@ -245,10 +245,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessLayerMenuWrap { position: relative; flex: 0 0 auto; }
 
 .postprocessLayerMenu {
-  position: absolute;
-  z-index: 1100;
-  top: 34px;
-  right: 0;
+  position: fixed;
+  z-index: 7000;
   display: flex;
   flex-direction: column;
   min-width: 132px;
@@ -260,7 +258,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 
 .postprocessLayerMenu[hidden] { display: none; }
-.postprocessLayerMenu.openUp { top: auto; bottom: 34px; }
 .postprocessLayerMenu button,
 .postprocessLayerMenu a {
   display: block;
@@ -516,6 +513,18 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessSelection > div { min-width: 0; }
 .postprocessSelection select { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.postprocessResultSelectWrap { position: relative; }
+.postprocessResultSelectWrap select { padding-right: 52px; }
+.postprocessSelectSpinner {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 29px;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  pointer-events: none;
+}
 .postprocessSourceSelection > button { max-width: 100%; white-space: nowrap; }
 
 .postprocessIconButton {
@@ -612,6 +621,31 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessReplacementModalContent { max-width: 520px; }
 .postprocessReplacementModalContent .modalBody p { line-height: 1.5; }
+
+.postprocessGenerationDetailsModalContent { width: min(680px, 92vw); max-width: 680px; }
+.postprocessGenerationDetailsBody { max-height: min(68vh, 620px); overflow-y: auto; }
+.postprocessGenerationDetailsBody > p { margin: 0 0 14px; }
+.postprocessGenerationDetailsBody section + section { margin-top: 18px; }
+.postprocessGenerationDetailsBody h4 { margin: 0 0 8px; }
+.postprocessGenerationDetailsGrid {
+  display: grid;
+  grid-template-columns: minmax(150px, .7fr) minmax(0, 1.3fr);
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.postprocessGenerationDetailsGrid dt,
+.postprocessGenerationDetailsGrid dd {
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.postprocessGenerationDetailsGrid dt { color: var(--muted); background: rgba(255, 255, 255, .025); }
+.postprocessGenerationDetailsGrid dd { color: #e6edf3; }
+.postprocessGenerationDetailsGrid > :nth-last-child(-n + 2) { border-bottom: 0; }
 
 .postprocessFields {
   display: grid;

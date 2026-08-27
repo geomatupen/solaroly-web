@@ -4635,13 +4635,7 @@ def api_list_overlays():
                 source_path.relative_to(workflow_dir)
                 if source_path.suffix.lower() != ".geojson" or not source_path.is_file():
                     raise FileNotFoundError(source_path)
-                stage_label = stage.title()
-                if stage == "edited":
-                    edits = status.get("manual_revisions") or []
-                    edited_source = str((edits[-1] if edits else {}).get("source_stage") or "combined").lower()
-                    if edited_source not in {"combined", "regularized"}:
-                        edited_source = "combined"
-                    stage_label = f"{edited_source}_edited"
+                stage_label = "Rows" if stage == "solar_rows" else stage.title()
                 workflow_name = status.get("display_name") or status.get("parameters", {}).get("output_name") or workflow_id
                 reference_name = f"{str(workflow_name).strip()} — {stage_label}"
                 result.append({

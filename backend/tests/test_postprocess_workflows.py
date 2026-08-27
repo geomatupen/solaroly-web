@@ -87,6 +87,32 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 "bottom_right": "1003",
             })
 
+    def test_assigns_panel_ids_in_place_and_writes_rows_separately(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            regularized_path = root / "regularized.geojson"
+            rows_path = root / "solar_rows.geojson"
+            _write(regularized_path, [
+                _feature(box(500000 + column * 1.15, 5500000, 500001 + column * 1.15, 5500001.8), class_name="panel")
+                for column in range(3)
+            ])
+
+            build_panel_hierarchy(
+                regularized_path,
+                None,
+                rows_output_path=rows_path,
+                panels_output_path=regularized_path,
+            )
+
+            panels = json.loads(regularized_path.read_text(encoding="utf-8"))["features"]
+            rows = json.loads(rows_path.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(len(panels), 3)
+            self.assertTrue(all(item["properties"].get("panel_id") for item in panels))
+            self.assertEqual({item["properties"]["row_id"] for item in panels}, {"1000"})
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["properties"]["row_id"], "1000")
+            self.assertFalse((root / "panel_hierarchy.geojson").exists())
+
     def test_deduplicates_then_associates_anomalies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

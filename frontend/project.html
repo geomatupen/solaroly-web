@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260826k" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260826n" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -494,7 +494,10 @@
         <div class="postprocessSelection">
           <div>
             <label for="ppResult">Test result</label>
-            <select id="ppResult" disabled aria-busy="true"><option value="">Loading test results.</option></select>
+            <div class="postprocessResultSelectWrap">
+              <select id="ppResult" disabled aria-busy="true"><option value="">Loading test results…</option></select>
+              <span id="ppResultSpinner" class="spinner postprocessSelectSpinner" aria-hidden="true"></span>
+            </div>
           </div>
         </div>
         <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
@@ -577,8 +580,8 @@
           <article id="ppHierarchyStep" class="postprocessStep" hidden>
             <div class="postprocessStepNumber">3</div>
             <div class="postprocessStepBody">
-              <h3>Build merged rows and panel IDs</h3>
-              <p class="muted tiny">Group neighbouring panels into inner rows, merge adjacent inner rows into one editable GeoJSON rectangle, and assign IDs such as 1000-A1.</p>
+              <h3>Build rows and assign IDs</h3>
+              <p class="muted tiny">Group neighbouring regularized panels, create one Rows layer, and assign row and panel IDs such as 1000-A1 directly to the appropriate layers.</p>
               <div class="postprocessFields">
                 <div>
                   <label for="ppHierarchySource">Regularized output</label>
@@ -586,7 +589,7 @@
                 </div>
                 <div>
                   <label for="ppRowAngle">Orientation tolerance (degrees)</label>
-                  <input id="ppRowAngle" type="number" value="12" min="0" max="45" step="1" />
+                  <input id="ppRowAngle" type="number" value="15" min="0" max="45" step="1" />
                 </div>
                 <div>
                   <label for="ppRowLateral">Lateral distance factor</label>
@@ -594,14 +597,14 @@
                 </div>
                 <div>
                   <label for="ppRowGap">Along-row gap factor</label>
-                  <input id="ppRowGap" type="number" value="2.5" min="0.25" max="20" step="0.1" />
+                  <input id="ppRowGap" type="number" value="1.5" min="0.25" max="20" step="0.1" />
                 </div>
                 <div>
                   <label for="ppInnerRowGap">Merge inner-row gap factor</label>
-                  <input id="ppInnerRowGap" type="number" value="1.0" min="0" max="10" step="0.1" />
+                  <input id="ppInnerRowGap" type="number" value="0.8" min="0" max="10" step="0.1" />
                 </div>
               </div>
-              <button id="ppBuildHierarchy" type="button" disabled>Build merged rows and assign IDs</button>
+              <button id="ppBuildHierarchy" type="button" disabled>Build rows and assign IDs</button>
             </div>
           </article>
         </div>
@@ -646,7 +649,7 @@
               <div class="postprocessStepNumber">2</div>
               <div class="postprocessStepBody">
                 <h3>Review and adjust placement</h3>
-                <p class="muted tiny">In Processing layers, choose the deduplicated layer and click Edit this layer. Move, rotate, reshape, or delete selected polygons with undo/redo, then save one edited layer before assignment.</p>
+                <p class="muted tiny">In Processing layers, choose the deduplicated layer and click Edit this layer. Move, rotate, reshape, or delete selected polygons with undo/redo, then save the changes directly to that layer before assignment.</p>
               </div>
             </article>
             <article id="ppAssociateStep" class="postprocessStep" hidden>
@@ -887,11 +890,24 @@
       </div>
       <div class="modalBody">
         <p id="ppReplacementMessage"></p>
-        <p class="muted tiny">Separate edited copies are preserved.</p>
+        <p class="muted tiny">Manual changes in files replaced by this operation will be lost.</p>
       </div>
       <div class="modalFooter">
         <button id="ppReplacementCancel" class="secondary" type="button">Cancel</button>
         <button id="ppReplacementConfirm" type="button">Replace output</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ppGenerationDetailsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppGenerationDetailsTitle">
+    <div class="modalContent postprocessGenerationDetailsModalContent">
+      <div class="modalHeader">
+        <h3 id="ppGenerationDetailsTitle">Generation details</h3>
+        <button id="ppGenerationDetailsClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div id="ppGenerationDetailsContent" class="modalBody postprocessGenerationDetailsBody"></div>
+      <div class="modalFooter">
+        <button id="ppGenerationDetailsDone" class="secondary" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -1374,8 +1390,8 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260826g"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260826j"></script>
-  <script src="js/postprocess_segmentation.js?v=20260826h"></script>
+  <script src="js/postprocess.js?v=20260826p"></script>
+  <script src="js/postprocess_segmentation.js?v=20260826l"></script>
   <script src="js/postprocess_anomaly.js?v=20260826f"></script>
   <script>
     // Display active project name in header

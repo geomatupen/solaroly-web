@@ -119,14 +119,14 @@ def _map_reading_order(
 
 def build_panel_hierarchy(
     input_path: Path,
-    output_path: Path,
+    output_path: Path | None,
     *,
     rows_output_path: Path | None = None,
     panels_output_path: Path | None = None,
-    max_orientation_difference_deg: float = 12.0,
+    max_orientation_difference_deg: float = 15.0,
     max_lateral_distance_factor: float = 1.5,
-    max_along_gap_factor: float = 2.5,
-    max_inner_row_gap_factor: float = 1.0,
+    max_along_gap_factor: float = 1.5,
+    max_inner_row_gap_factor: float = 0.8,
     callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Group panel rectangles into rows and assign stable row/panel identifiers."""
@@ -276,7 +276,8 @@ def build_panel_hierarchy(
                 panel_features.append(feature(panel.geometry, properties, to_wgs84))
     metadata = {"source": str(input_path), "metric_crs": metric_crs.to_string()}
     hierarchy_features = row_features + panel_features
-    write_feature_collection(output_path, hierarchy_features, **metadata)
+    if output_path is not None:
+        write_feature_collection(output_path, hierarchy_features, **metadata)
     if rows_output_path is not None:
         write_feature_collection(rows_output_path, row_features, **metadata)
     if panels_output_path is not None:
@@ -291,7 +292,7 @@ def build_panel_hierarchy(
         "inner_row_count": inner_row_total,
         "singleton_rows": sum(1 for indices in ordered_arrays if sum(len(inner_rows[index]) for index in indices) == 1),
         "metric_crs": metric_crs.to_string(),
-        "output_path": str(output_path),
+        "output_path": str(output_path) if output_path else None,
         "rows_output_path": str(rows_output_path) if rows_output_path else None,
         "panels_output_path": str(panels_output_path) if panels_output_path else None,
     }
