@@ -311,6 +311,13 @@ def create_postprocess_router(
                         continue
                     if not source.is_file():
                         continue
+                    rows_output = workflow_outputs.get("solar_rows") or {}
+                    rows_source = (result_dir / str(rows_output.get("path") or "")).resolve()
+                    try:
+                        rows_source.relative_to(result_dir)
+                    except ValueError:
+                        rows_source = Path()
+                    has_rows = bool(rows_output.get("path") and rows_source.is_file())
                     items.append({
                         "result_id": result_dir.name,
                         "workflow_id": workflow_dir.name,
@@ -319,6 +326,9 @@ def create_postprocess_router(
                         "path": source.relative_to(result_dir).as_posix(),
                         "url": media_url(source),
                         "mtime": int(source.stat().st_mtime),
+                        "rows_path": rows_source.relative_to(result_dir).as_posix() if has_rows else "",
+                        "rows_url": media_url(rows_source) if has_rows else None,
+                        "rows_mtime": int(rows_source.stat().st_mtime) if has_rows else None,
                     })
         items.sort(key=lambda item: item["mtime"], reverse=True)
         return {"ok": True, "layers": items}

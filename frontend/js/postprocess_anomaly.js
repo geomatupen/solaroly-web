@@ -51,6 +51,28 @@
     refresh(api()?.getContext());
   }
 
+  async function showSegmentationReferences(option, context = api()?.getContext()) {
+    if (!option?.dataset.url || context?.mode !== "anomaly") return;
+    await api()?.loadPreviewLayer(
+      "segmentation_regularized_reference",
+      option.dataset.url,
+      null,
+      "Final regularized panels (read-only)",
+      true,
+      option.dataset.mtime,
+    );
+    if (option.dataset.rowsUrl) {
+      await api()?.loadPreviewLayer(
+        "segmentation_rows_reference",
+        option.dataset.rowsUrl,
+        null,
+        "Final rows (visual reference)",
+        true,
+        option.dataset.rowsMtime,
+      );
+    }
+  }
+
   function refresh(context = api()?.getContext()) {
     if (!context) return;
     const workflow = context.workflows.find(item => item.id === context.workflowId && item.workflow_kind === "anomaly");
@@ -97,17 +119,31 @@
 
     const panelSelect = byId("ppPanelReference");
     const previousPanel = panelSelect.value;
+    const availablePanelLayers = context.segmentationResultId
+      ? panelLayers.filter(layer => layer.result_id === context.segmentationResultId)
+      : panelLayers;
     panelSelect.replaceChildren();
-    addOption(panelSelect, "", "Select identified panels…");
-    panelLayers.forEach((layer, index) => addOption(
+    addOption(panelSelect, "", "Select final regularized panels…");
+    availablePanelLayers.forEach((layer, index) => addOption(
       panelSelect,
       `${layer.result_id}::${layer.path}`,
-      `${layer.workflow_name}${index === 0 ? " · Latest" : ""} · ${layer.result_id} · ${layer.stage}`,
-      { resultId: layer.result_id, path: layer.path, url: layer.url },
+      `${layer.workflow_name}${index === 0 ? " · Latest" : ""} · ${layer.result_id} · Regularized`,
+      {
+        resultId: layer.result_id,
+        path: layer.path,
+        url: layer.url,
+        mtime: layer.mtime,
+        rowsPath: layer.rows_path,
+        rowsUrl: layer.rows_url,
+        rowsMtime: layer.rows_mtime,
+      },
     ));
     if ([...panelSelect.options].some(option => option.value === previousPanel)) panelSelect.value = previousPanel;
-    else if (panelLayers.length) panelSelect.selectedIndex = 1;
-    panelSelect.disabled = panelLayers.length === 0;
+    else if (availablePanelLayers.length) panelSelect.selectedIndex = 1;
+    panelSelect.disabled = availablePanelLayers.length === 0;
+    if (context.mode === "anomaly" && panelSelect.selectedOptions[0]?.dataset.url) {
+      void showSegmentationReferences(panelSelect.selectedOptions[0], context);
+    }
 
     byId("ppAdjustAnomaliesStep").hidden = false;
     byId("ppAssociateStep").hidden = false;
@@ -223,7 +259,7 @@
       const workflow = context?.workflows.find(item => item.id === context.workflowId);
       byId("ppAssociate").disabled = !event.target.value || !workflow?.outputs?.deduplicated;
       const option = event.target.selectedOptions[0];
-      if (option?.dataset.url) void api()?.loadPreviewLayer("panel_reference", option.dataset.url, null, "Panel reference (read-only)");
+      if (option?.dataset.url) void showSegmentationReferences(option, context);
     });
     byId("ppScanAnomalies")?.addEventListener("click", scanPredictions);
     byId("ppDeduplicate")?.addEventListener("click", deduplicate);

@@ -52,6 +52,8 @@
     regularized: { label: "Regularized", color: "#22c55e", weight: 2, fillOpacity: 0.16 },
     solar_rows: { label: "Rows", color: "#ef4444", weight: 3, fillOpacity: 0.05 },
     panel_reference: { label: "Panel reference", color: "#14b8a6", weight: 2, fillOpacity: 0.08 },
+    segmentation_regularized_reference: { label: "Final regularized panels", color: "#22c55e", weight: 2, fillOpacity: 0.10 },
+    segmentation_rows_reference: { label: "Final rows", color: "#ef4444", weight: 3, fillOpacity: 0.035 },
     deduplicated: { label: "Deduplicated anomalies", color: "#f97316", weight: 2, fillOpacity: 0.22 },
     associated: { label: "Associated anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
   };
@@ -1092,7 +1094,7 @@
       opacity: 1,
     };
     const featureStyle = feature => {
-      if (stage === "solar_rows") {
+      if (stage === "solar_rows" || stage === "segmentation_rows_reference") {
         return {
           ...baseStyle,
           color: "#ef4444",
@@ -1742,7 +1744,8 @@
       const name = document.createElement("strong");
       name.textContent = item.label;
       const detail = document.createElement("small");
-      detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Original preserved" : ""}`;
+      const readOnlyReference = key === "segmentation_regularized_reference" || key === "segmentation_rows_reference";
+      detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Original preserved" : readOnlyReference ? " · Read-only" : ""}`;
       text.append(name, detail);
       const layerMenu = createLayerMenu(item.label, Boolean(state.editing), "processing");
       layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
@@ -2282,7 +2285,10 @@
       return;
     }
     setMessage("");
-    void loadReferenceSources(resultId);
+    // Both modes use the segmentation run's imagery as their common spatial
+    // reference, even when anomaly predictions come from a different run.
+    const referenceResultId = state.currentJob?.sources?.segmentation?.result_id || resultId;
+    void loadReferenceSources(referenceResultId);
     try {
       const [earlyWorkflow, payload] = await Promise.all([
         loadSavedOutputsFirst(resultId, requestedContext),
@@ -3478,6 +3484,7 @@
       sourcePath: byId("ppGeojson")?.value || "",
       configuredResultId: state.currentJob?.sources?.[state.mode]?.result_id || "",
       configuredSourcePath: state.currentJob?.sources?.[state.mode]?.path || "",
+      segmentationResultId: state.currentJob?.sources?.segmentation?.result_id || "",
       workflowId: state.workflowId,
       workflows: state.workflows.slice(),
       geojsonFiles: state.geojsonFiles.slice(),
