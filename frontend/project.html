@@ -852,6 +852,25 @@
 
   </main>
 
+  <div id="ppJobModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppJobModalTitle">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h3 id="ppJobModalTitle">Create post-processing job</h3>
+        <button id="ppJobModalClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p id="ppJobModalMessage" class="muted tiny"></p>
+        <label id="ppJobNameLabel" for="ppJobName">Job name</label>
+        <input id="ppJobName" type="text" maxlength="128" autocomplete="off" />
+      </div>
+      <div class="modalFooter">
+        <button id="ppJobModalCancel" class="secondary" type="button">Cancel</button>
+        <button id="ppJobModalDelete" class="secondary danger" type="button" hidden>Delete job</button>
+        <button id="ppJobModalSave" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Upload Modal -->
   <div id="uploadModal" class="modal hidden">
     <div class="modalContent">
@@ -1398,7 +1417,7 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260826g"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827c"></script>
+  <script src="js/postprocess.js?v=20260827d"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
   <script src="js/postprocess_anomaly.js?v=20260827a"></script>
   <script>

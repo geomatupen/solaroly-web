@@ -2161,12 +2161,13 @@
     menu.title = "Job options";
     menu.addEventListener("click", async event => {
       event.stopPropagation();
-      const action = window.prompt("Type rename or delete", "rename");
-      if (action === "rename") {
-        const next = window.prompt("Job name", job.name || job.id);
-        if (next?.trim()) await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: next.trim() }) });
+      const action = await showJobModal("menu", job.name || job.id);
+      if (action?.type === "rename") {
+        const renamed = await showJobModal("rename", job.name || job.id);
+        if (!renamed?.name) return;
+        await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: renamed.name }) });
         await loadJobs();
-      } else if (action === "delete" && window.confirm(`Delete “${job.name || job.id}”?`)) {
+      } else if (action?.type === "delete") {
         await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
         await loadJobs();
       }
@@ -2176,10 +2177,54 @@
   }
 
   async function createJob() {
-    const name = window.prompt("Job name", "Post-processing job");
-    if (!name?.trim()) return;
-    const payload = await requestJson("/api/postprocess-jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+    const action = await showJobModal("create", "Post-processing job");
+    if (!action?.name) return;
+    const payload = await requestJson("/api/postprocess-jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: action.name }) });
     await openJob(payload.job);
+  }
+
+  function showJobModal(mode, value) {
+    const modal = byId("ppJobModal");
+    const input = byId("ppJobName");
+    const save = byId("ppJobModalSave");
+    const deleteButton = byId("ppJobModalDelete");
+    if (!modal || !input || !save) return Promise.resolve(null);
+    byId("ppJobModalTitle").textContent = mode === "create" ? "Create post-processing job" : "Rename post-processing job";
+    byId("ppJobModalMessage").textContent = mode === "delete"
+      ? `Delete “${value}”? This removes the job metadata and derived outputs.`
+      : "Give this workspace a name. Test-run source files remain unchanged.";
+    input.value = value || "";
+    input.hidden = mode === "delete" || mode === "menu";
+    save.textContent = mode === "create" ? "Create job" : mode === "delete" ? "Delete job" : "Save name";
+    save.classList.toggle("danger", mode === "delete");
+    deleteButton.hidden = mode !== "menu";
+    if (mode === "menu") {
+      input.hidden = true;
+      byId("ppJobModalMessage").textContent = "Choose an operation for this job.";
+      save.textContent = "Rename";
+    }
+    modal.classList.remove("hidden");
+    input.focus();
+    return new Promise(resolve => {
+      const finish = result => {
+        modal.classList.add("hidden");
+        save.onclick = null;
+        deleteButton.onclick = null;
+        byId("ppJobModalCancel").onclick = null;
+        byId("ppJobModalClose").onclick = null;
+        resolve(result);
+      };
+      save.onclick = () => {
+        if (mode === "menu") return finish({ type: "rename", name: value });
+        if (mode === "delete") return finish({ type: "delete" });
+        const name = input.value.trim();
+        if (name) finish({ type: mode, name });
+      };
+      deleteButton.onclick = () => finish({ type: "delete" });
+      byId("ppJobModalCancel").onclick = () => finish(null);
+      byId("ppJobModalClose").onclick = () => finish(null);
+      input.onkeydown = event => { if (event.key === "Enter") save.click(); if (event.key === "Escape") finish(null); };
+    });
   }
 
   async function openJob(job) {
