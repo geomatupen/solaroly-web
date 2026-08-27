@@ -524,7 +524,17 @@
   }
 
   function polygonPopupHtml(feature, label) {
-    const properties = Object.entries(feature?.properties || {}).slice(0, 20);
+    const values = feature?.properties || {};
+    const priorityKeys = [
+      "anomaly_count", "anomaly_ids", "anomaly_id",
+      "panel_id", "row_id", "association_method",
+      "panel_overlap_fraction", "panel_distance_m", "review_required",
+    ];
+    const orderedKeys = [
+      ...priorityKeys.filter(key => Object.prototype.hasOwnProperty.call(values, key)),
+      ...Object.keys(values).filter(key => !priorityKeys.includes(key)),
+    ];
+    const properties = orderedKeys.slice(0, 30).map(key => [key, values[key]]);
     const rows = properties.map(([key, value]) =>
       `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</td></tr>`
     ).join("");
@@ -762,6 +772,13 @@
     }
     state.modeCache.clear();
     document.dispatchEvent(new CustomEvent("postprocess:cache-reset"));
+  }
+
+  function invalidateCachedMode(mode) {
+    const cached = state.modeCache.get(mode);
+    if (!cached) return;
+    detachLayerCollection(cached.previewLayers);
+    state.modeCache.delete(mode);
   }
 
   function setReferenceOpacity(item, opacity) {
@@ -3556,6 +3573,7 @@
     setMode,
     setStepsLoading,
     confirmReplacement,
+    invalidateCachedMode,
     getInternalControl: id => internalControls.get(id) || null,
   };
   window.PostProcessTab = { init, activate, createJob };

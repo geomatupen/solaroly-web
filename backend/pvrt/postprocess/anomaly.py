@@ -24,6 +24,14 @@ def _intersection_over_union(first: Any, second: Any) -> float:
     return float(intersection / union) if union > 0 else 0.0
 
 
+def _anomaly_id(properties: dict[str, Any], source_index: int) -> str:
+    for key in ("anomaly_id", "detection_id", "prediction_id"):
+        value = str(properties.get(key) or "").strip()
+        if value:
+            return value
+    return f"ANOM-{source_index + 1:06d}"
+
+
 def deduplicate_anomalies(
     input_path: Path,
     output_path: Path,
@@ -77,6 +85,7 @@ def deduplicate_anomalies(
     for source_index, geometry, properties, duplicates in kept:
         output_properties = dict(properties)
         output_properties.update({
+            "anomaly_id": _anomaly_id(output_properties, source_index),
             "postprocess_stage": "deduplicated_anomalies",
             "source_anomaly_index": source_index,
             "duplicate_count": len(duplicates),
@@ -99,6 +108,7 @@ def associate_anomalies(
     anomaly_path: Path,
     panel_path: Path,
     output_path: Path,
+    panel_output_path: Path | None = None,
     *,
     minimum_overlap: float = 0.20,
     maximum_distance_m: float = 0.50,
@@ -107,7 +117,7 @@ def associate_anomalies(
     """Attach panel and row IDs to anomalies without changing their geometry."""
     _notify(callback, 2, "Reading anomaly and identified-panel layers…")
     anomaly_payload, anomalies, invalid_anomalies = load_polygon_features(anomaly_path)
-    _, loaded_panels, invalid_panels = load_polygon_features(panel_path)
+    panel_payload, loaded_panels, invalid_panels = load_polygon_features(panel_path)
     panels = [record for record in loaded_panels if record[2].get("panel_id")]
     if not panels:
         raise ValueError("The selected hierarchy layer does not contain identified panel features.")
@@ -122,6 +132,7 @@ def associate_anomalies(
     assigned = 0
     nearest_assigned = 0
     unassigned = 0
+    panel_anomaly_ids: dict[str, list[str]] = {}
     total = max(1, len(anomalies))
     for position, (source_index, geometry, properties) in enumerate(anomalies):
         projected = project_geometry(geometry, "EPSG:4326", metric_crs)
@@ -149,7 +160,9 @@ def associate_anomalies(
             best_panel = None
             unassigned += 1
         output_properties = dict(properties)
+        anomaly_id = _anomaly_id(output_properties, source_index)
         output_properties.update({
+            "anomaly_id": anomaly_id,
             "postprocess_stage": "associated_anomalies",
             "source_anomaly_index": source_index,
             "association_method": method,
@@ -159,6 +172,10 @@ def associate_anomalies(
             "row_id": best_panel[1].get("row_id") if best_panel else None,
             "review_required": method != "overlap",
         })
+        if best_panel:
+            panel_id = str(best_panel[1].get("panel_id") or "")
+            if panel_id:
+                panel_anomaly_ids.setdefault(panel_id, []).append(anomaly_id)
         output_features.append(feature(projected, output_properties, to_wgs84))
         if position % 250 == 0:
             _notify(callback, 12 + int(78 * position / total), "Assigning anomalies to panels and rows…")
@@ -169,6 +186,24 @@ def associate_anomalies(
         panel_source=str(panel_path),
         metric_crs=metric_crs.to_string(),
     )
+    panels_with_anomalies = len(panel_anomaly_ids)
+    if panel_output_path is not None:
+        updated_panels = []
+        for panel_feature in panel_payload["features"]:
+            updated = dict(panel_feature) if isinstance(panel_feature, dict) else panel_feature
+            if isinstance(updated, dict):
+                properties = dict(updated.get("properties") or {})
+                panel_id = str(properties.get("panel_id") or "")
+                anomaly_ids = panel_anomaly_ids.get(panel_id, [])
+                properties["anomaly_count"] = len(anomaly_ids)
+                properties["anomaly_ids"] = anomaly_ids
+                updated["properties"] = properties
+            updated_panels.append(updated)
+        panel_metadata = {
+            key: value for key, value in panel_payload.items()
+            if key not in {"type", "features"}
+        }
+        write_feature_collection(panel_output_path, updated_panels, **panel_metadata)
     _notify(callback, 100, "Anomaly-to-panel association is complete.")
     return {
         "input_features": len(anomaly_payload["features"]),
@@ -178,6 +213,8 @@ def associate_anomalies(
         "assigned": assigned,
         "assigned_by_nearest": nearest_assigned,
         "unassigned": unassigned,
+        "panels_with_anomalies": panels_with_anomalies,
+        "panel_features_updated": len(panel_payload["features"]) if panel_output_path is not None else 0,
         "metric_crs": metric_crs.to_string(),
         "output_path": str(output_path),
     }

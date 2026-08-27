@@ -71,6 +71,7 @@ class DeduplicateAnomaliesRequest(BaseModel):
 class AssociateAnomaliesRequest(BaseModel):
     panel_path: str
     panel_result_id: str | None = None
+    panel_workflow_id: str | None = None
     minimum_overlap: float = Field(default=0.20, ge=0.0, le=1.0)
     maximum_distance_m: float = Field(default=0.50, ge=0.0, le=100.0)
 
@@ -746,6 +747,16 @@ def create_postprocess_router(
         anomaly_path = resolve_input(result_dir, str(anomaly_output.get("path") or ""))
         panel_result_dir = resolve_result(request.panel_result_id or result_id)
         panel_path = resolve_input(panel_result_dir, request.panel_path)
+        panel_workflow_dir = (
+            resolve_workflow(panel_result_dir, request.panel_workflow_id)
+            if request.panel_workflow_id
+            else None
+        )
+        if panel_workflow_dir is not None:
+            try:
+                panel_path.relative_to(panel_workflow_dir)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Selected panels do not belong to the supplied segmentation workflow.") from exc
         update_status(
             workflow_dir,
             status="queued",
@@ -762,10 +773,25 @@ def create_postprocess_router(
                     anomaly_path,
                     panel_path,
                     output_path,
+                    panel_output_path=panel_path,
                     minimum_overlap=request.minimum_overlap,
                     maximum_distance_m=request.maximum_distance_m,
                     callback=progress_callback(workflow_dir, "associate"),
                 )
+                stats["panel_updated_mtime"] = int(panel_path.stat().st_mtime_ns)
+                if panel_workflow_dir is not None:
+                    panel_status = read_status(panel_workflow_dir)
+                    update_status(
+                        panel_workflow_dir,
+                        anomaly_association={
+                            "anomaly_result_id": result_dir.name,
+                            "anomaly_workflow_id": workflow_id,
+                            "associated_anomalies": stats["assigned"],
+                            "panels_with_anomalies": stats["panels_with_anomalies"],
+                            "updated_at": datetime.now().isoformat(),
+                        },
+                        outputs=panel_status.get("outputs") or {},
+                    )
                 latest = read_status(workflow_dir)
                 outputs = dict(latest.get("outputs") or {})
                 outputs["associated"] = {"path": output_path.relative_to(result_dir).as_posix()}

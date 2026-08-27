@@ -130,6 +130,7 @@
       `${layer.workflow_name}${index === 0 ? " · Latest" : ""} · ${layer.result_id} · Regularized`,
       {
         resultId: layer.result_id,
+        workflowId: layer.workflow_id,
         path: layer.path,
         url: layer.url,
         mtime: layer.mtime,
@@ -230,6 +231,7 @@
           body: JSON.stringify({
             panel_path: panelOption.dataset.path,
             panel_result_id: panelOption.dataset.resultId,
+            panel_workflow_id: panelOption.dataset.workflowId,
             minimum_overlap: Number(byId("ppAssociationOverlap").value),
             maximum_distance_m: Number(byId("ppAssociationDistance").value),
           }),
@@ -265,7 +267,19 @@
     byId("ppDeduplicate")?.addEventListener("click", deduplicate);
     byId("ppAssociate")?.addEventListener("click", associate);
     document.addEventListener("postprocess:data", event => refresh(event.detail));
-    document.addEventListener("postprocess:workflow", event => refresh(event.detail.context));
+    document.addEventListener("postprocess:workflow", event => {
+      refresh(event.detail.context);
+      const status = event.detail.status;
+      if (event.detail.context?.mode !== "anomaly"
+        || status?.status !== "complete"
+        || !status?.outputs?.associated
+        || !status?.association_stats?.panel_updated_mtime) return;
+      const option = byId("ppPanelReference").selectedOptions[0];
+      if (!option?.dataset.url) return;
+      option.dataset.mtime = String(status.association_stats.panel_updated_mtime);
+      void showSegmentationReferences(option, event.detail.context);
+      api()?.invalidateCachedMode("segmentation");
+    });
     document.addEventListener("postprocess:cache-reset", () => {
       scannedPath = "";
       scanningPath = "";
