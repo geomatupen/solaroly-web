@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827q" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260827s" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -873,11 +873,18 @@
           <input id="ppJobName" type="text" maxlength="128" autocomplete="off" placeholder="e.g., East field anomaly review" />
         </div>
         <div id="ppJobSourceFields" class="modalContentField">
+          <strong>Segmentation source</strong>
           <label for="ppJobSourceResult">Test result</label>
           <select id="ppJobSourceResult"><option value="">Select a result…</option></select>
           <label for="ppJobSourceGeojson">Source GeoJSON</label>
           <select id="ppJobSourceGeojson" disabled><option value="">Select a GeoJSON…</option></select>
           <div id="ppJobSourceSummary" class="muted tiny">Select a result and GeoJSON to scan the source.</div>
+          <strong>Anomaly source</strong>
+          <label for="ppJobAnomalyResult">Test result</label>
+          <select id="ppJobAnomalyResult"><option value="">Select a result…</option></select>
+          <label for="ppJobAnomalyGeojson">Anomalies GeoJSON</label>
+          <select id="ppJobAnomalyGeojson" disabled><option value="">Select a GeoJSON…</option></select>
+          <div id="ppJobAnomalySummary" class="muted tiny">Select a result and anomalies GeoJSON to scan the source.</div>
         </div>
       </div>
       <div class="modalFooter">
@@ -901,9 +908,14 @@
       <div class="modalHeader"><h3 id="ppJobConfigTitle">Edit job configuration</h3><button id="ppJobConfigClose" class="iconBtn" type="button" aria-label="Close">&times;</button></div>
       <div class="modalBody">
         <div class="modalContentField">
+          <strong>Segmentation source</strong>
           <label for="ppConfigSourceResult">Test result</label><select id="ppConfigSourceResult"></select>
           <label for="ppConfigSourceGeojson">Source GeoJSON</label><select id="ppConfigSourceGeojson"></select>
           <div id="ppConfigSourceSummary" class="muted tiny"></div>
+          <strong>Anomaly source</strong>
+          <label for="ppConfigAnomalyResult">Test result</label><select id="ppConfigAnomalyResult"></select>
+          <label for="ppConfigAnomalyGeojson">Anomalies GeoJSON</label><select id="ppConfigAnomalyGeojson"></select>
+          <div id="ppConfigAnomalySummary" class="muted tiny"></div>
         </div>
       </div>
       <div class="modalFooter"><button id="ppJobConfigCancel" class="secondary" type="button">Cancel</button><button id="ppJobConfigSave" type="button">Save configuration</button></div>
@@ -1464,9 +1476,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827a"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827zb"></script>
+  <script src="js/postprocess.js?v=20260827zg"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
-  <script src="js/postprocess_anomaly.js?v=20260827a"></script>
+  <script src="js/postprocess_anomaly.js?v=20260827c"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

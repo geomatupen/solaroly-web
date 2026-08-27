@@ -119,6 +119,25 @@
   margin-bottom: 6px;
 }
 
+#ppJobModal .modalContent,
+#ppJobConfigModal .modalContent {
+  max-width: 520px;
+}
+
+#ppJobSourceFields > strong,
+#ppJobConfigModal .modalContentField > strong {
+  display: block;
+  margin-top: 4px;
+  color: #e6edf3;
+}
+
+#ppJobSourceFields > strong:not(:first-child),
+#ppJobConfigModal .modalContentField > strong:not(:first-child) {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
 #ppJobNameField input {
   display: block;
   width: 100%;

@@ -928,13 +928,13 @@
   }
 
   function lockProcessingControls(locked) {
-    byId("ppResult").disabled = locked;
-    byId("ppGeojson").disabled = locked || !byId("ppResult").value;
+    byId("ppResult").disabled = locked || Boolean(state.currentJob);
+    byId("ppGeojson").disabled = locked || Boolean(state.currentJob) || !byId("ppResult").value;
     byId("ppAnalyze").disabled = locked || !byId("ppGeojson").value;
     byId("ppRefresh").disabled = locked;
     byId("ppSegmentationTab").disabled = locked;
     byId("ppAnomalyTab").disabled = locked;
-    byId("ppAnomalyGeojson").disabled = locked || !byId("ppResult").value;
+    byId("ppAnomalyGeojson").disabled = locked || Boolean(state.currentJob) || !byId("ppResult").value;
     byId("ppRegularizeSource").disabled = locked || !state.workflows.some(item => item.outputs?.combined);
     if (locked) {
       byId("ppCombine").disabled = true;
@@ -1619,7 +1619,8 @@
     if (state.loaded && !force) return;
     if (state.loadingPromise) return state.loadingPromise;
     const select = byId("ppResult");
-    const previous = select.value;
+    const configuredResultId = state.currentJob?.sources?.[state.mode]?.result_id || "";
+    const previous = configuredResultId || select.value;
     select.replaceChildren();
     addOption(select, "", "Loading test results…");
     select.disabled = true;
@@ -1639,7 +1640,7 @@
         if (previous && [...select.options].some(option => option.value === previous)) {
           select.value = previous;
         }
-        select.disabled = select.options.length <= 1;
+        select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
         state.loaded = true;
         setMessage(select.options.length > 1 ? "Select a result and GeoJSON to begin." : "No test results are available.", select.options.length > 1 ? "" : "warn");
         if (select.value) await loadGeojsons();
@@ -1750,12 +1751,17 @@
       const previousSource = earlyWorkflow
         ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(earlyWorkflow.input_path))
         : null;
+      const configuredSegmentationPath = state.currentJob?.sources?.segmentation?.path || "";
+      const configuredSource = configuredSegmentationPath
+        ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(configuredSegmentationPath))
+        : null;
       const predictions = [...select.options].find(option => option.value.toLowerCase() === "predictions.geojson")
         || [...select.options].find(option => option.value.toLowerCase() === "anomalies.geojson");
-      if (previousSource) select.value = previousSource.value;
+      if (configuredSource) select.value = configuredSource.value;
+      else if (previousSource) select.value = previousSource.value;
       else if (predictions) select.value = predictions.value;
       else if (select.options.length > 1) select.selectedIndex = 1;
-      select.disabled = select.options.length <= 1;
+      select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
       byId("ppAnalyze").disabled = !select.value;
       const matchingWorkflow = selectSavedWorkflow(select.value, null, false);
       const restored = Boolean(matchingWorkflow);
@@ -2192,16 +2198,21 @@
     const id = document.createElement("small");
     id.className = "postprocessJobListId";
     id.textContent = `ID: ${job.id}`;
-    const source = document.createElement("small");
-    source.className = "postprocessJobListSource";
-    source.textContent = job.source?.result_id
-      ? `Source: ${job.source.result_id} · ${job.source.path || "GeoJSON not selected"}`
-      : "Source not configured";
+    const segmentationSource = document.createElement("small");
+    segmentationSource.className = "postprocessJobListSource";
+    segmentationSource.textContent = job.sources?.segmentation?.result_id
+      ? `Segmentation: ${job.sources.segmentation.result_id} · ${job.sources.segmentation.path}`
+      : "Segmentation source not configured";
+    const anomalySource = document.createElement("small");
+    anomalySource.className = "postprocessJobListSource";
+    anomalySource.textContent = job.sources?.anomaly?.result_id
+      ? `Anomalies: ${job.sources.anomaly.result_id} · ${job.sources.anomaly.path}`
+      : "Anomaly source not configured";
     const details = document.createElement("small");
     details.className = "postprocessJobListDates";
     const formatTime = value => value ? new Date(value).toLocaleString() : "Not recorded";
     details.textContent = `Created ${formatTime(job.created_at)} · Modified ${formatTime(job.updated_at)}`;
-    text.append(name, id, source, details);
+    text.append(name, id, segmentationSource, anomalySource, details);
     info.append(icon, text);
     info.addEventListener("click", () => openJob(job));
     const menu = document.createElement("button");
@@ -2257,7 +2268,13 @@
     const payload = await requestJson("/api/postprocess-jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: action.name, source_result_id: action.sourceResultId, source_path: action.sourcePath }),
+      body: JSON.stringify({
+        name: action.name,
+        segmentation_result_id: action.sourceResultId,
+        segmentation_path: action.sourcePath,
+        anomaly_result_id: action.anomalyResultId,
+        anomaly_path: action.anomalyPath,
+      }),
     });
     await openJob(payload.job);
   }
@@ -2296,17 +2313,31 @@
     try {
       const payload = await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}/config`, { cache: "no-store" });
       const action = await showConfigJobModal(payload.job);
-      if (!action?.sourceResultId || !action?.sourcePath) return;
-      if (action.sourceResultId === payload.job.source?.result_id && action.sourcePath === payload.job.source?.path) return;
-      const confirm = await showJobModal("reset", job);
+      if (!action?.segmentationResultId || !action?.segmentationPath || !action?.anomalyResultId || !action?.anomalyPath) return;
+      const currentSegmentation = payload.job.sources?.segmentation || {};
+      const currentAnomaly = payload.job.sources?.anomaly || {};
+      const segmentationChanged = action.segmentationResultId !== currentSegmentation.result_id
+        || action.segmentationPath !== currentSegmentation.path;
+      const anomalyChanged = action.anomalyResultId !== currentAnomaly.result_id
+        || action.anomalyPath !== currentAnomaly.path;
+      if (!segmentationChanged && !anomalyChanged) return;
+      const changedSources = [segmentationChanged ? "segmentation" : "", anomalyChanged ? "anomaly" : ""].filter(Boolean);
+      const confirm = await showJobModal("reset", { ...job, changedSources });
       if (confirm?.type !== "reset") return;
       const updated = await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_result_id: action.sourceResultId, source_path: action.sourcePath, confirm_reset: true }),
+        body: JSON.stringify({
+          segmentation_result_id: action.segmentationResultId,
+          segmentation_path: action.segmentationPath,
+          anomaly_result_id: action.anomalyResultId,
+          anomaly_path: action.anomalyPath,
+          confirm_reset: true,
+        }),
       });
       state.currentJob = updated.job;
-      setMessage("Job source updated. Its derived outputs were removed; original test results were not changed.", "ok");
+      const changedLabels = (updated.changed_sources || []).map(kind => kind === "anomaly" ? "anomaly" : kind).join(" and ");
+      setMessage(`${changedLabels || "Job"} source updated. Dependent derived outputs were removed; original test results were not changed.`, "ok");
       await loadResults(true);
     } catch (error) {
       setMessage(error.message, "err");
@@ -2315,46 +2346,91 @@
 
   async function showConfigJobModal(job) {
     const modal = byId("ppJobConfigModal");
-    const resultSelect = byId("ppConfigSourceResult");
-    const geojsonSelect = byId("ppConfigSourceGeojson");
-    const summary = byId("ppConfigSourceSummary");
+    const fields = {
+      segmentation: {
+        result: byId("ppConfigSourceResult"),
+        geojson: byId("ppConfigSourceGeojson"),
+        summary: byId("ppConfigSourceSummary"),
+        source: job.sources?.segmentation || {},
+      },
+      anomaly: {
+        result: byId("ppConfigAnomalyResult"),
+        geojson: byId("ppConfigAnomalyGeojson"),
+        summary: byId("ppConfigAnomalySummary"),
+        source: job.sources?.anomaly || {},
+      },
+    };
     const sessions = await requestJson("/api/sessions", { cache: "no-store" });
-    resultSelect.replaceChildren();
-    addOption(resultSelect, "", "Select a result…");
-    for (const item of sessions.sessions || []) addOption(resultSelect, item.id, item.display_name || item.name || item.id);
-    resultSelect.value = job.source?.result_id || "";
-    const loadFiles = async selectedPath => {
-      geojsonSelect.replaceChildren();
-      addOption(geojsonSelect, "", "Loading GeoJSON files…");
-      geojsonSelect.disabled = true;
-      if (!resultSelect.value) return;
-      const files = await requestJson(`/api/results/${encodeURIComponent(resultSelect.value)}/postprocess/geojsons`);
-      geojsonSelect.replaceChildren();
-      addOption(geojsonSelect, "", "Select a GeoJSON…");
-      for (const file of files.files || []) addOption(geojsonSelect, file.path, `${file.name} · ${file.stage}`);
-      geojsonSelect.disabled = false;
-      if (selectedPath && [...geojsonSelect.options].some(option => option.value === selectedPath)) geojsonSelect.value = selectedPath;
+    for (const field of Object.values(fields)) {
+      field.result.replaceChildren();
+      addOption(field.result, "", "Select a result…");
+      for (const item of sessions.sessions || []) addOption(field.result, item.id, item.display_name || item.name || item.id);
+      field.result.value = field.source.result_id || "";
+    }
+    const loadFiles = async (kind, selectedPath = "") => {
+      const field = fields[kind];
+      field.geojson.replaceChildren();
+      addOption(field.geojson, "", field.result.value ? "Loading GeoJSON files…" : "Select a GeoJSON…");
+      field.geojson.disabled = true;
+      if (!field.result.value) return;
+      const payload = await requestJson(`/api/results/${encodeURIComponent(field.result.value)}/postprocess/geojsons`);
+      const files = kind === "anomaly"
+        ? (payload.files || []).filter(file => /anomal|predict/i.test(file.name))
+        : (payload.files || []);
+      field.geojson.replaceChildren();
+      addOption(field.geojson, "", kind === "anomaly" ? "Select an anomalies GeoJSON…" : "Select a GeoJSON…");
+      for (const file of files) addOption(field.geojson, file.path, `${file.name} · ${file.stage}`);
+      field.geojson.disabled = false;
+      if (selectedPath && [...field.geojson.options].some(option => option.value === selectedPath)) field.geojson.value = selectedPath;
     };
-    await loadFiles(job.source?.path || "");
-    const sourceSummary = job.source?.summary || {};
-    summary.textContent = `${Number(sourceSummary.feature_count || 0).toLocaleString()} features · ${Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
-    resultSelect.onchange = () => void loadFiles("");
-    geojsonSelect.onchange = async () => {
-      if (!resultSelect.value || !geojsonSelect.value) return;
-      summary.textContent = "Scanning source GeoJSON…";
+    const showSummary = (kind, sourceSummary) => {
+      fields[kind].summary.textContent = kind === "anomaly"
+        ? `${Number(sourceSummary.feature_count || 0).toLocaleString()} anomaly features`
+        : `${Number(sourceSummary.feature_count || 0).toLocaleString()} features · ${Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
+    };
+    const scan = async kind => {
+      const field = fields[kind];
+      if (!field.result.value || !field.geojson.value) return;
+      field.summary.textContent = kind === "anomaly" ? "Scanning anomalies GeoJSON…" : "Scanning source GeoJSON…";
       try {
-        const scanned = await requestJson(`/api/results/${encodeURIComponent(resultSelect.value)}/postprocess/analyze`, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: geojsonSelect.value }),
+        const scanned = await requestJson(`/api/results/${encodeURIComponent(field.result.value)}/postprocess/analyze`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: field.geojson.value }),
         });
-        summary.textContent = `${Number(scanned.summary?.feature_count || 0).toLocaleString()} features · ${Number(scanned.summary?.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
-      } catch (error) { summary.textContent = error.message; }
+        showSummary(kind, scanned.summary || {});
+      } catch (error) { field.summary.textContent = error.message; }
     };
+    await Promise.all([
+      loadFiles("segmentation", fields.segmentation.source.path || ""),
+      loadFiles("anomaly", fields.anomaly.source.path || ""),
+    ]);
+    showSummary("segmentation", fields.segmentation.source.summary || {});
+    showSummary("anomaly", fields.anomaly.source.summary || {});
+    for (const kind of Object.keys(fields)) {
+      fields[kind].result.onchange = () => {
+        fields[kind].summary.textContent = "Select a GeoJSON to scan the source.";
+        void loadFiles(kind);
+      };
+      fields[kind].geojson.onchange = () => void scan(kind);
+    }
     modal.classList.remove("hidden");
     modal.classList.add("show");
     return new Promise(resolve => {
       const finish = value => { modal.classList.remove("show"); modal.classList.add("hidden"); resolve(value); };
-      byId("ppJobConfigSave").onclick = () => resultSelect.value && geojsonSelect.value
-        ? finish({ sourceResultId: resultSelect.value, sourcePath: geojsonSelect.value }) : null;
+      byId("ppJobConfigSave").onclick = () => {
+        const segmentationMissing = !fields.segmentation.result.value || !fields.segmentation.geojson.value;
+        const anomalyMissing = !fields.anomaly.result.value || !fields.anomaly.geojson.value;
+        if (segmentationMissing || anomalyMissing) {
+          if (segmentationMissing) fields.segmentation.summary.textContent = "Select the segmentation test result and GeoJSON.";
+          if (anomalyMissing) fields.anomaly.summary.textContent = "Select the anomaly test result and GeoJSON.";
+          return;
+        }
+        finish({
+          segmentationResultId: fields.segmentation.result.value,
+          segmentationPath: fields.segmentation.geojson.value,
+          anomalyResultId: fields.anomaly.result.value,
+          anomalyPath: fields.anomaly.geojson.value,
+        });
+      };
       byId("ppJobConfigCancel").onclick = () => finish(null);
       byId("ppJobConfigClose").onclick = () => finish(null);
     });
@@ -2369,6 +2445,8 @@
     const sourceFields = byId("ppJobSourceFields");
     const sourceResult = byId("ppJobSourceResult");
     const sourceGeojson = byId("ppJobSourceGeojson");
+    const anomalyResult = byId("ppJobAnomalyResult");
+    const anomalyGeojson = byId("ppJobAnomalyGeojson");
     if (!modal || !input || !save) return Promise.resolve(null);
     const config = mode === "config";
     const jobName = config ? value?.name : value;
@@ -2377,12 +2455,24 @@
         : mode === "delete" ? "Delete post-processing job"
           : mode === "reset" ? "Change job source"
             : "Rename post-processing job";
+    const resetScope = mode === "reset" ? value?.changedSources || [] : [];
+    const resetMessage = resetScope.length === 2
+      ? "Both sources will change. All segmentation and anomaly outputs in this job will be removed."
+      : resetScope[0] === "segmentation"
+        ? "The segmentation source will change. Segmentation outputs and anomaly-to-panel associations derived from it will be removed."
+        : "The anomaly source will change. Anomaly outputs derived from it will be removed.";
     byId("ppJobModalMessage").textContent = mode === "delete"
       ? `Delete “${value}”? This removes the job metadata and derived outputs.`
       : mode === "reset"
-        ? `Change the source for “${value?.name || value}”? All derived outputs in this job will be removed. Original test results are not changed.`
+        ? `Change the configuration for “${value?.name || value}”? ${resetMessage} Original test results are not changed.`
       : "Give this workspace a name. Test-run source files remain unchanged.";
-    input.value = mode === "rename" ? value || "" : "";
+    const automaticJobName = () => {
+      const now = new Date();
+      const date = now.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+      const time = now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return `Post-processing · ${date} ${time}`;
+    };
+    input.value = mode === "rename" ? value || "" : mode === "create" ? automaticJobName() : "";
     nameField.hidden = !["create", "rename"].includes(mode);
     sourceFields.hidden = !["create", "config"].includes(mode);
     save.textContent = mode === "create" ? "Create job" : mode === "delete" ? "Delete job" : mode === "reset" ? "Change source" : mode === "config" ? "Save configuration" : "Save name";
@@ -2396,10 +2486,14 @@
     modal.classList.add("show");
     if (mode === "create" || config) {
       void loadJobSourceResults(config ? value?.source?.result_id : "", config ? value?.source?.path : "");
+      if (mode === "create") void loadJobAnomalyResults();
       sourceResult.onchange = () => void loadJobSourceGeojsons();
       sourceGeojson.onchange = () => void scanJobSource();
+      anomalyResult.onchange = () => void loadJobAnomalyGeojsons();
+      anomalyGeojson.onchange = () => void scanJobAnomalySource();
     }
     input.focus();
+    if (mode === "create") input.select();
     return new Promise(resolve => {
       const finish = result => {
         modal.classList.remove("show");
@@ -2414,12 +2508,12 @@
         if (mode === "delete") return finish({ type: "delete" });
         if (mode === "reset") return finish({ type: "reset" });
         const name = input.value.trim();
-        if ((mode === "create" || config) && (!sourceResult.value || !sourceGeojson.value)) {
-          byId("ppJobSourceSummary").textContent = "Select both a test result and source GeoJSON.";
+        if ((mode === "create" || config) && (!sourceResult.value || !sourceGeojson.value || (mode === "create" && (!anomalyResult.value || !anomalyGeojson.value)))) {
+          byId("ppJobSourceSummary").textContent = "Select the required segmentation and anomaly sources.";
           return;
         }
         if (mode === "config") finish({ type: mode, sourceResultId: sourceResult.value, sourcePath: sourceGeojson.value });
-        else if (name) finish({ type: mode, name, sourceResultId: sourceResult.value, sourcePath: sourceGeojson.value });
+        else if (name) finish({ type: mode, name, sourceResultId: sourceResult.value, sourcePath: sourceGeojson.value, anomalyResultId: anomalyResult.value, anomalyPath: anomalyGeojson.value });
       };
       deleteButton.onclick = () => finish({ type: "delete" });
       byId("ppJobModalCancel").onclick = () => finish(null);
@@ -2488,6 +2582,45 @@
     }
   }
 
+  async function loadJobAnomalyResults() {
+    const select = byId("ppJobAnomalyResult");
+    select.replaceChildren(); addOption(select, "", "Loading results…"); select.disabled = true;
+    try {
+      const payload = await requestJson("/api/sessions", { cache: "no-store" });
+      select.replaceChildren(); addOption(select, "", "Select a result…");
+      for (const item of payload.sessions || []) addOption(select, item.id, item.display_name || item.name || item.id);
+      select.disabled = false;
+    } catch (error) { byId("ppJobAnomalySummary").textContent = error.message; }
+  }
+
+  async function loadJobAnomalyGeojsons() {
+    const resultId = byId("ppJobAnomalyResult").value;
+    const select = byId("ppJobAnomalyGeojson");
+    select.replaceChildren(); addOption(select, "", "Loading GeoJSON files…"); select.disabled = true;
+    if (!resultId) return;
+    try {
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
+      const files = (payload.files || []).filter(file => /anomal|predict/i.test(file.name));
+      select.replaceChildren(); addOption(select, "", "Select an anomalies GeoJSON…");
+      for (const file of files) addOption(select, file.path, `${file.name} · ${file.stage}`);
+      select.disabled = false;
+    } catch (error) { byId("ppJobAnomalySummary").textContent = error.message; }
+  }
+
+  async function scanJobAnomalySource() {
+    const resultId = byId("ppJobAnomalyResult").value;
+    const inputPath = byId("ppJobAnomalyGeojson").value;
+    if (!resultId || !inputPath) return;
+    const summary = byId("ppJobAnomalySummary");
+    summary.textContent = "Scanning anomalies GeoJSON…";
+    try {
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: inputPath }),
+      });
+      summary.textContent = `${Number(payload.summary?.feature_count || 0).toLocaleString()} anomaly features`;
+    } catch (error) { summary.textContent = error.message; }
+  }
+
   async function openJob(job) {
     state.currentJobId = job.id;
     state.currentJob = job;
@@ -2503,7 +2636,7 @@
     byId("ppRefresh").hidden = false;
     byId("ppEditJobConfig").hidden = false;
     window.requestAnimationFrame(() => state.map?.invalidateSize());
-    await loadResults(false);
+    await loadResults(true);
   }
 
   function showJobLanding() {
@@ -2514,6 +2647,7 @@
     return {
       resultId: byId("ppResult")?.value || "",
       sourcePath: byId("ppGeojson")?.value || "",
+      configuredSourcePath: state.currentJob?.sources?.[state.mode]?.path || "",
       workflowId: state.workflowId,
       workflows: state.workflows.slice(),
       geojsonFiles: state.geojsonFiles.slice(),
@@ -2525,6 +2659,14 @@
     state.mode = mode === "anomaly" ? "anomaly" : "segmentation";
     if (state.editing) stopEditing(true);
     clearPreviewLayers();
+    const configuredResultId = state.currentJob?.sources?.[state.mode]?.result_id || "";
+    const resultSelect = byId("ppResult");
+    if (configuredResultId && resultSelect?.value !== configuredResultId
+      && [...resultSelect.options].some(option => option.value === configuredResultId)) {
+      resultSelect.value = configuredResultId;
+      void loadGeojsons();
+      return;
+    }
     const workflow = selectSavedWorkflow("", null, true);
     state.workflowId = workflow?.id || null;
     if (workflow) applyWorkflow(workflow);

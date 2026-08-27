@@ -4333,15 +4333,18 @@ async def api_postprocess_jobs():
 async def api_create_postprocess_job(request: Request):
     payload = await request.json()
     name = str(payload.get("name") or "Post-processing job").strip()[:128] or "Post-processing job"
-    result_id = str(payload.get("source_result_id") or "").strip()
-    source_path = str(payload.get("source_path") or "").strip()
-    if not result_id or not source_path:
-        raise HTTPException(status_code=400, detail="Select a test result and source GeoJSON before creating a job.")
-    result_dir, source, fingerprint = _resolve_postprocess_job_source(result_id, source_path)
-    try:
-        summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    configured_sources: dict[str, Any] = {}
+    for kind in ("segmentation", "anomaly"):
+        result_id = str(payload.get(f"{kind}_result_id") or "").strip()
+        source_path = str(payload.get(f"{kind}_path") or "").strip()
+        if not result_id or not source_path:
+            raise HTTPException(status_code=400, detail=f"Select the {kind} test result and GeoJSON before creating a job.")
+        result_dir, source, fingerprint = _resolve_postprocess_job_source(result_id, source_path)
+        try:
+            summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        configured_sources[kind] = {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary}
     existing_names: set[str] = set()
     for directory in _postprocess_jobs_dir().iterdir():
         try:
@@ -4367,7 +4370,7 @@ async def api_create_postprocess_job(request: Request):
         "name": name,
         "created_at": now,
         "updated_at": now,
-        "source": {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary},
+        "sources": configured_sources,
     }
     _atomic_json(directory / "job.json", metadata)
     return {"ok": True, "job": metadata}
@@ -4402,22 +4405,38 @@ async def api_postprocess_job_config(job_id: str):
 async def api_update_postprocess_job_config(job_id: str, request: Request):
     directory, metadata = _read_postprocess_job(job_id)
     payload = await request.json()
-    result_id = str(payload.get("source_result_id") or "").strip()
-    source_path = str(payload.get("source_path") or "").strip()
     if not payload.get("confirm_reset"):
         raise HTTPException(status_code=400, detail="Confirm reset before changing a job source.")
-    result_dir, source, fingerprint = _resolve_postprocess_job_source(result_id, source_path)
-    try:
-        summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    next_sources: dict[str, Any] = {}
+    changed: set[str] = set()
+    previous_sources = metadata.get("sources") or {}
+    for kind in ("segmentation", "anomaly"):
+        result_id = str(payload.get(f"{kind}_result_id") or "").strip()
+        source_path = str(payload.get(f"{kind}_path") or "").strip()
+        if not result_id or not source_path:
+            raise HTTPException(status_code=400, detail=f"Select the {kind} test result and GeoJSON before saving the configuration.")
+        result_dir, source, fingerprint = _resolve_postprocess_job_source(result_id, source_path)
+        try:
+            summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        next_sources[kind] = {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary}
+        previous = previous_sources.get(kind) or {}
+        if previous.get("result_id") != result_id or previous.get("path") != source_path:
+            changed.add(kind)
     workflows_dir = directory / "workflows"
-    if workflows_dir.is_dir():
-        shutil.rmtree(workflows_dir)
-    metadata["source"] = {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary}
+    for kind in changed:
+        target = workflows_dir / kind
+        if target.is_dir():
+            shutil.rmtree(target)
+    if "segmentation" in changed:
+        associated = workflows_dir / "anomaly" / "associated.geojson"
+        if associated.is_file():
+            associated.unlink()
+    metadata["sources"] = next_sources
     metadata["updated_at"] = datetime.now().isoformat()
     _atomic_json(directory / "job.json", metadata)
-    return {"ok": True, "job": {**metadata, "id": directory.name}}
+    return {"ok": True, "job": {**metadata, "id": directory.name}, "changed_sources": sorted(changed)}
 
 
 @app.delete("/api/postprocess-jobs/{job_id}")

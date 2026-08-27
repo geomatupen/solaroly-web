@@ -60,7 +60,10 @@
     anomalySelect.replaceChildren();
     addOption(anomalySelect, "", context.resultId ? "Select an anomalies GeoJSON…" : "Select a test result first…");
     for (const file of candidates) addOption(anomalySelect, file.path, `${file.name} · ${file.stage}`);
-    if (candidates.some(file => file.path === previousAnomaly)) anomalySelect.value = previousAnomaly;
+    if (context.configuredSourcePath && candidates.some(file => file.path === context.configuredSourcePath)) {
+      anomalySelect.value = context.configuredSourcePath;
+    }
+    else if (candidates.some(file => file.path === previousAnomaly)) anomalySelect.value = previousAnomaly;
     else if (workflow?.input_path && candidates.some(file => file.path === workflow.input_path)) anomalySelect.value = workflow.input_path;
     else {
       const likely = candidates.find(file => file.name.toLowerCase() === "anomalies.geojson")
@@ -68,7 +71,7 @@
         || candidates[0];
       if (likely) anomalySelect.value = likely.path;
     }
-    anomalySelect.disabled = !context.resultId || candidates.length === 0;
+    anomalySelect.disabled = Boolean(context.configuredSourcePath) || !context.resultId || candidates.length === 0;
     byId("ppScanAnomalies").disabled = !anomalySelect.value;
     const scanned = Boolean((anomalySelect.value && anomalySelect.value === scannedPath) || hasDeduplicated);
     byId("ppDeduplicateStep").hidden = !scanned;
