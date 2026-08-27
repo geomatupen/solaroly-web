@@ -114,6 +114,41 @@
   margin: 0 0 16px;
 }
 
+.postprocessJobCreationProgress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 8px;
+  padding: 16px;
+  border: 1px solid rgba(43, 135, 255, .28);
+  border-radius: 9px;
+  background: rgba(43, 135, 255, .07);
+}
+
+.postprocessJobCreationStatus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.postprocessJobCreationDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 26px;
+  overflow-wrap: anywhere;
+}
+
+.postprocessJobCreationDetails span:last-child {
+  margin-top: 3px;
+  color: #96a8b8;
+}
+
+.postprocessJobCreationError {
+  margin: 4px 0 8px;
+  padding: 12px;
+}
+
 #ppJobNameField label {
   display: block;
   margin-bottom: 6px;

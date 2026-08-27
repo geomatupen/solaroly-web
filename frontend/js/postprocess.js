@@ -2349,10 +2349,67 @@
     container.appendChild(item);
   }
 
+  function closeJobModal() {
+    const modal = byId("ppJobModal");
+    modal.classList.remove("show");
+    modal.classList.add("hidden");
+  }
+
+  function showJobCreationProgress(action) {
+    const modal = byId("ppJobModal");
+    const message = byId("ppJobModalMessage");
+    byId("ppJobModalTitle").textContent = "Creating post-processing job";
+    message.replaceChildren();
+    message.className = "postprocessJobCreationProgress";
+    const heading = document.createElement("div");
+    heading.className = "postprocessJobCreationStatus";
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const status = document.createElement("strong");
+    status.textContent = `Creating ${action.name}…`;
+    heading.append(spinner, status);
+    const details = document.createElement("div");
+    details.className = "postprocessJobCreationDetails muted tiny";
+    const segmentation = document.createElement("span");
+    segmentation.textContent = `Segmentation · ${action.sourceResultId} · ${action.sourcePath}`;
+    const anomaly = document.createElement("span");
+    anomaly.textContent = `Anomalies · ${action.anomalyResultId} · ${action.anomalyPath}`;
+    const note = document.createElement("span");
+    note.textContent = "Validating GeoJSON files and saving an isolated job configuration. Original test results remain unchanged.";
+    details.append(segmentation, anomaly, note);
+    message.append(heading, details);
+    byId("ppJobNameField").hidden = true;
+    byId("ppJobSourceFields").hidden = true;
+    byId("ppJobModalCancel").disabled = true;
+    byId("ppJobModalSave").disabled = true;
+    byId("ppJobModalSave").textContent = "Creating job…";
+    byId("ppJobModalClose").disabled = true;
+    modal.classList.remove("hidden");
+    modal.classList.add("show");
+  }
+
+  function showJobCreationFailure(error) {
+    const message = byId("ppJobModalMessage");
+    byId("ppJobModalTitle").textContent = "Could not create job";
+    message.replaceChildren();
+    message.className = "statusLine err postprocessJobCreationError";
+    message.textContent = error.message || String(error);
+    const cancel = byId("ppJobModalCancel");
+    const save = byId("ppJobModalSave");
+    const close = byId("ppJobModalClose");
+    cancel.hidden = true;
+    save.disabled = false;
+    save.textContent = "Close";
+    save.onclick = closeJobModal;
+    close.disabled = false;
+    close.onclick = closeJobModal;
+  }
+
   async function createJob() {
     const action = await showJobModal("create", "Post-processing job");
     if (!action?.name) return;
-    showListLoading("ppJobList", "Creating job and saving its source configuration…");
+    showJobCreationProgress(action);
     const matchesCreatedJob = job => (job.name === action.name || job.name?.startsWith(`${action.name} (`))
       && job.sources?.segmentation?.result_id === action.sourceResultId
       && job.sources?.segmentation?.path === action.sourcePath
@@ -2373,6 +2430,7 @@
       if (!payload.job?.id) throw new Error("The job was saved without a valid job response.");
       state.jobs = [payload.job, ...state.jobs.filter(job => job.id !== payload.job.id)];
       renderJobList();
+      closeJobModal();
       await openJob(payload.job);
     } catch (error) {
       // A response can be interrupted after the backend has already persisted
@@ -2383,6 +2441,7 @@
         const recovered = state.jobs.find(matchesCreatedJob);
         if (recovered) {
           renderJobList();
+          closeJobModal();
           await openJob(recovered);
           setMessage("Job created. The saved job was recovered after the creation response was interrupted.", "warn");
           return;
@@ -2391,11 +2450,7 @@
         // Preserve and display the original creation error below.
       }
       renderJobList();
-      const list = byId("ppJobList");
-      const failure = document.createElement("div");
-      failure.className = "statusLine err";
-      failure.textContent = `Could not create job: ${error.message}`;
-      list.prepend(failure);
+      showJobCreationFailure(error);
     }
   }
 
@@ -2585,6 +2640,11 @@
     const anomalyResult = byId("ppJobAnomalyResult");
     const anomalyGeojson = byId("ppJobAnomalyGeojson");
     if (!modal || !input || !save) return Promise.resolve(null);
+    byId("ppJobModalMessage").className = "muted tiny";
+    byId("ppJobModalCancel").hidden = false;
+    byId("ppJobModalCancel").disabled = false;
+    byId("ppJobModalClose").disabled = false;
+    save.disabled = false;
     const config = mode === "config";
     const jobName = config ? value?.name : value;
     byId("ppJobModalTitle").textContent = mode === "create" ? "Create post-processing job"
@@ -2646,8 +2706,8 @@
     if (mode === "create") input.select();
     return new Promise(resolve => {
       const finish = result => {
-        modal.classList.remove("show");
-        modal.classList.add("hidden");
+        const creationSubmitted = mode === "create" && result?.type === "create";
+        if (!creationSubmitted) closeJobModal();
         save.onclick = null;
         deleteButton.onclick = null;
         byId("ppJobModalCancel").onclick = null;
