@@ -28,8 +28,10 @@ def _anomaly_id(properties: dict[str, Any], source_index: int) -> str:
     for key in ("anomaly_id", "detection_id", "prediction_id"):
         value = str(properties.get(key) or "").strip()
         if value:
+            if value.upper().startswith("ANOM-") and value[5:].isdigit():
+                return str(int(value[5:]))
             return value
-    return f"ANOM-{source_index + 1:06d}"
+    return str(source_index + 1)
 
 
 def deduplicate_anomalies(

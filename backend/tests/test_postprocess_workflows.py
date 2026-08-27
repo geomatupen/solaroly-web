@@ -143,7 +143,7 @@ class PostprocessWorkflowTests(unittest.TestCase):
             output = json.loads(associated.read_text(encoding="utf-8"))["features"]
             assigned = next(item for item in output if item["properties"]["panel_id"])
             self.assertEqual(assigned["properties"]["row_id"], "ROW-0001")
-            self.assertTrue(assigned["properties"]["anomaly_id"].startswith("ANOM-"))
+            self.assertTrue(assigned["properties"]["anomaly_id"].isdigit())
             updated_panel = json.loads(panel_source.read_text(encoding="utf-8"))["features"][0]
             self.assertEqual(updated_panel["properties"]["anomaly_count"], 1)
             self.assertEqual(
