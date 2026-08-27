@@ -6,9 +6,48 @@ from pathlib import Path
 
 from pvrt.web.postprocess import create_postprocess_router
 from pvrt.web.postprocess import EditLayerRequest
+from pvrt.web.postprocess import EditSourceRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_source_edits_create_working_copy_and_preserve_original(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            result_dir = sessions / "test-result"
+            result_dir.mkdir(parents=True)
+            overlays.mkdir()
+            source = result_dir / "predictions.geojson"
+            original = {"type": "FeatureCollection", "features": []}
+            source.write_text(json.dumps(original), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/source-edits"
+                and "POST" in item.methods
+            )
+            edited = {
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
+                    "properties": {},
+                }],
+            }
+            payload = asyncio.run(route.endpoint(
+                "test-result",
+                EditSourceRequest(input_path="predictions.geojson", geojson=edited),
+            ))
+            copied = result_dir / payload["outputs"]["source"]["path"]
+            self.assertTrue(copied.is_file())
+            self.assertEqual(json.loads(source.read_text(encoding="utf-8")), original)
+            self.assertTrue(json.loads(copied.read_text(encoding="utf-8"))["features"][0]["properties"]["manually_edited"])
+
     def test_layer_edits_update_selected_geojson_without_creating_a_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

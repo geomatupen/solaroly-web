@@ -667,6 +667,52 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessMap .leaflet-interactive { cursor: pointer; }
 
+.postprocessStepsLoading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 54px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--muted);
+  background: #0e161e;
+}
+
+.postprocessStepsLoading[hidden] { display: none; }
+
+.postprocessLayerLabelControl {
+  grid-column: 1 / -1;
+  margin: -5px 0 4px 28px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.postprocessLayerLabelControl label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.postprocessLayerLabelControl select { min-width: 180px; margin-left: auto; }
+
+.leaflet-tooltip.postprocessFeatureLabel {
+  pointer-events: none;
+  border: 0;
+  background: rgba(8, 15, 22, .88);
+  color: #fff;
+  box-shadow: none;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.postprocessMap.mergeMode .leaflet-interactive { cursor: cell; }
+
 .solarPanelIdTooltip,
 .leaflet-tooltip.solarRowIdTooltip {
   pointer-events: none;
@@ -994,6 +1040,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessStepCollapse { min-width: 34px; padding: 4px 8px; }
 .postprocessStep.collapsed .postprocessStepBody > :not(.postprocessStepTitleRow) { display: none; }
 .postprocessStep.collapsed { padding-bottom: 10px; }
+.postprocessStep.locked { opacity: .64; }
+.postprocessStep.locked .postprocessStepNumber { background: #475569; }
 
 .postprocessReplacementModalContent { max-width: 520px; }
 .postprocessReplacementModalContent .modalBody p { line-height: 1.5; }

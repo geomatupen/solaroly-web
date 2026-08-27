@@ -315,11 +315,16 @@ function openLayerMenu(btn){
   const isTifRaster = rec.type === 'tif_overlay' || rec.type === 'raster';
   const showStyle = !isTifRaster;
   const styleItem = showStyle ? '<li data-action="style">Style…</li>' : '';
+  const showLabels = Boolean(rec.data?.features?.length) && !isTifRaster;
+  const labelsItem = showLabels
+    ? '<li data-action="labels">Labels…</li><li class="layerLabelField" hidden><label>Label field<select><option value="">Off</option></select></label></li>'
+    : '';
   
   menu.innerHTML = `
     <ul>
       <li data-action="zoom">Zoom to layer</li>
       ${styleItem}
+      ${labelsItem}
       <li data-action="download">Download</li>
       <li data-action="delete">Delete</li>
       <li style="border-top: 1px solid #ddd; padding-top: 8px; margin-top: 8px; padding-left: 12px; padding-right: 12px;">
@@ -333,6 +338,41 @@ function openLayerMenu(btn){
   `;
 
   document.body.appendChild(menu);
+
+  if (showLabels) {
+    const fields = new Set();
+    for (const feature of rec.data.features) {
+      for (const [field, value] of Object.entries(feature?.properties || {})) {
+        if (value != null && typeof value !== 'object') fields.add(field);
+      }
+      if (fields.size >= 40) break;
+    }
+    const select = menu.querySelector('.layerLabelField select');
+    Array.from(fields).sort().forEach(field => {
+      const option = document.createElement('option');
+      option.value = field;
+      option.textContent = field;
+      select.appendChild(option);
+    });
+    select.value = rec.labelField || '';
+    select.addEventListener('change', event => {
+      event.stopPropagation();
+      rec.labelField = select.value;
+      rec.layer.eachLayer?.(layer => {
+        try { layer.unbindTooltip?.(); } catch (_) {}
+        const value = select.value ? layer.feature?.properties?.[select.value] : null;
+        if (value == null || value === '') return;
+        try {
+          layer.bindTooltip(String(value), {
+            className: 'mapFeatureLabel',
+            direction: 'center',
+            permanent: true,
+            opacity: 0.94,
+          });
+        } catch (_) {}
+      });
+    });
+  }
 
   // --- position: prefer opening to the LEFT of the button ---
   const r  = btn.getBoundingClientRect();
@@ -380,6 +420,12 @@ document.addEventListener('click', (e)=>{
   if (!rec || !rec.layer) { closeLayerMenu(); return; }
 
   const action = li.dataset.action;
+
+  if (action === 'labels') {
+    const control = menu.querySelector('.layerLabelField');
+    if (control) control.hidden = !control.hidden;
+    return;
+  }
 
   if (action === 'zoom') {
     let bounds = null;

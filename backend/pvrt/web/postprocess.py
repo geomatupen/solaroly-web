@@ -88,6 +88,12 @@ class EditLayerRequest(BaseModel):
     name: str | None = Field(default=None, max_length=80)
 
 
+class EditSourceRequest(BaseModel):
+    input_path: str
+    output_name: str = Field(default="edited_source", max_length=80)
+    geojson: dict[str, Any]
+
+
 def _safe_name(value: str, fallback: str) -> str:
     safe = _SAFE_NAME_RE.sub("_", str(value or "").strip()).strip("._-")
     return (safe or fallback)[:80]
@@ -369,6 +375,64 @@ def create_postprocess_router(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "input_path": request.input_path, "summary": summary}
+
+    @router.post("/{result_id}/postprocess/source-edits")
+    async def save_source_working_copy(result_id: str, request: EditSourceRequest) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        original = resolve_input(result_dir, request.input_path)
+        geojson = request.geojson
+        features = geojson.get("features") if isinstance(geojson, dict) else None
+        if geojson.get("type") != "FeatureCollection" or not isinstance(features, list):
+            raise HTTPException(status_code=400, detail="Edited data must be a GeoJSON FeatureCollection.")
+        if len(features) > 500_000:
+            raise HTTPException(status_code=400, detail="Edited GeoJSON contains too many features.")
+        cleaned_features = []
+        for index, item in enumerate(features):
+            if not isinstance(item, dict) or item.get("type") != "Feature":
+                raise HTTPException(status_code=400, detail=f"Feature {index} is invalid.")
+            geometry = item.get("geometry") or {}
+            if geometry.get("type") not in {"Polygon", "MultiPolygon"} or not geometry.get("coordinates"):
+                raise HTTPException(status_code=400, detail=f"Feature {index} is not a polygon.")
+            cleaned = dict(item)
+            properties = dict(cleaned.get("properties") or {})
+            properties["manually_edited"] = True
+            cleaned["properties"] = properties
+            cleaned_features.append(cleaned)
+        prefix = _safe_name(request.output_name, "edited_source")
+        workflow_id = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        workflow_dir = result_dir / "postprocess" / workflow_id
+        workflow_dir.mkdir(parents=True, exist_ok=False)
+        output_path = workflow_dir / "source.geojson"
+        saved_payload = {
+            key: value for key, value in geojson.items()
+            if key not in {"type", "features"}
+        }
+        saved_payload.update({"type": "FeatureCollection", "features": cleaned_features})
+        _atomic_json(output_path, saved_payload)
+        relative = output_path.relative_to(result_dir).as_posix()
+        original_relative = original.relative_to(result_dir).as_posix()
+        now = datetime.now().isoformat()
+        status = {
+            "ok": True,
+            "id": workflow_id,
+            "display_name": request.output_name.strip() or prefix,
+            "result_id": result_dir.name,
+            "status": "complete",
+            "stage": "manual_source_edit",
+            "progress": 100,
+            "message": "Editable source working copy saved.",
+            "created_at": now,
+            "updated_at": now,
+            "input_path": relative,
+            "original_input_path": original_relative,
+            "source_fingerprint": source_fingerprint(output_path),
+            "original_source_fingerprint": source_fingerprint(original),
+            "outputs": {"source": {"path": relative}},
+            "manual_edits": {"source": {"feature_count": len(cleaned_features), "updated_at": now}},
+        }
+        _atomic_json(workflow_dir / "status.json", status)
+        _atomic_json(workflow_dir / "postprocess_meta.json", status)
+        return read_status(workflow_dir)
 
     @router.post("/{result_id}/postprocess/combine")
     async def combine(result_id: str, request: CombineRequest) -> dict[str, Any]:

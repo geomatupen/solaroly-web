@@ -6,26 +6,10 @@
 let mapOverlayLayers = {};
 
 function bindSolarFeatureIdentifier(feature, layer) {
-  const properties = feature?.properties || {};
-  const panelId = String(properties.panel_id || "").trim();
-  const rowId = String(properties.row_id || "").trim();
-  try {
-    if (panelId) {
-      layer.bindTooltip(panelId, {
-        className: "solarPanelIdTooltip",
-        direction: "top",
-        sticky: true,
-        opacity: 0.96,
-      });
-    } else if (rowId && properties.postprocess_stage === "panel_rows") {
-      layer.bindTooltip(`Row ${rowId}`, {
-        className: "solarRowIdTooltip",
-        direction: "center",
-        permanent: true,
-        opacity: 0.94,
-      });
-    }
-  } catch (_) { /* geometry type does not support a tooltip */ }
+  // Labels are opt-in from the layer menu. Keep this hook for older callers,
+  // but do not attach automatic row or panel labels.
+  void feature;
+  void layer;
 }
 
 window.bindSolarFeatureIdentifier = bindSolarFeatureIdentifier;

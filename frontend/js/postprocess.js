@@ -24,7 +24,10 @@
     currentJobId: null,
     currentJob: null,
     jobs: [],
+    jobsLoaded: false,
+    jobsLoadingPromise: null,
     modeCache: new Map(),
+    stepsLoading: false,
   };
 
   const GENERATED_STAGES = new Set([
@@ -63,8 +66,24 @@
   resultSpinner.id = "ppResultSpinner";
   resultSpinner.hidden = true;
   internalControls.set(resultSpinner.id, resultSpinner);
+  const workflowList = document.createElement("div");
+  workflowList.id = "ppWorkflowList";
+  internalControls.set(workflowList.id, workflowList);
+  const refreshOutputs = document.createElement("button");
+  refreshOutputs.id = "ppRefreshOutputs";
+  refreshOutputs.type = "button";
+  internalControls.set(refreshOutputs.id, refreshOutputs);
 
   const byId = id => document.getElementById(id) || internalControls.get(id) || null;
+
+  function setStepsLoading(loading, message = "Loading configured GeoJSON data…") {
+    state.stepsLoading = Boolean(loading);
+    const indicator = byId("ppStepsLoading");
+    if (!indicator) return;
+    indicator.hidden = !loading;
+    const text = indicator.querySelector("span:last-child");
+    if (text) text.textContent = message;
+  }
   let replacementResolver = null;
 
   function finishReplacementConfirmation(confirmed) {
@@ -361,6 +380,11 @@
     if (!canShow) return;
     const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep")];
     steps.forEach(step => { step.hidden = false; });
+    const available = [state.scanComplete || hasCombined, hasCombined, hasRegularized];
+    steps.forEach((step, index) => {
+      step.classList.toggle("locked", !available[index]);
+      step.setAttribute("aria-disabled", String(!available[index]));
+    });
     const phase = hasHierarchy ? 0 : hasRegularized ? 3 : hasCombined ? 2 : 1;
     if (phase === state.segmentationStepPhase) return;
     state.segmentationStepPhase = phase;
@@ -508,7 +532,29 @@
     progress.hidden = true;
   }
 
-  function resetAnalysis() {
+  function showConfiguredInitialStep() {
+    if (!state.currentJob?.sources?.[state.mode]?.path) return;
+    if (state.mode === "anomaly") {
+      const steps = [byId("ppDeduplicateStep"), byId("ppAdjustAnomaliesStep"), byId("ppAssociateStep")];
+      steps.forEach((step, index) => {
+        step.hidden = false;
+        step.classList.add("locked");
+        step.setAttribute("aria-disabled", "true");
+        setStepCollapsed(step, index !== 0);
+      });
+      byId("ppDeduplicate").disabled = true;
+      return;
+    }
+    const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep")];
+    steps.forEach((step, index) => {
+      step.hidden = false;
+      step.classList.add("locked");
+      step.setAttribute("aria-disabled", "true");
+      setStepCollapsed(step, index !== 0);
+    });
+  }
+
+  function resetAnalysis({ showConfiguredStep = false } = {}) {
     state.analysis = null;
     state.scanComplete = false;
     state.workflowId = null;
@@ -521,10 +567,16 @@
     byId("ppCombineStep").hidden = true;
     byId("ppRegularizeStep").hidden = true;
     byId("ppHierarchyStep").hidden = true;
+    byId("ppDeduplicateStep").hidden = true;
+    byId("ppAdjustAnomaliesStep").hidden = true;
+    byId("ppAssociateStep").hidden = true;
+    byId("ppDeduplicate").disabled = true;
+    byId("ppAssociate").disabled = true;
     byId("ppProgressWrap").hidden = true;
     byId("ppLogWrap").hidden = true;
     byId("ppLog").textContent = "";
     clearPreviewLayers();
+    if (showConfiguredStep) showConfiguredInitialStep();
   }
 
   function ensurePreviewMap() {
@@ -736,6 +788,17 @@
         const bounds = item.bounds || item.layer?.getBounds?.();
         if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
       }, { disabled: !item.loaded }));
+      const labelFields = item.geojson ? layerLabelFields(item) : [];
+      if (labelFields.length) {
+        layerMenu.menu.appendChild(layerMenuButton(
+          item.labelControlOpen ? "Hide label options" : "Labels…",
+          layerMenu.menu,
+          () => {
+            item.labelControlOpen = !item.labelControlOpen;
+            renderReferenceLayers();
+          },
+        ));
+      }
       if (item.temporary) {
         layerMenu.menu.appendChild(layerMenuButton("Remove", layerMenu.menu, () => {
           if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
@@ -747,6 +810,20 @@
       actions.appendChild(layerMenu.wrapper);
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
+      if (item.labelControlOpen && labelFields.length) {
+        const control = document.createElement("div");
+        control.className = "postprocessLayerLabelControl";
+        const label = document.createElement("label");
+        label.textContent = "Label field";
+        const select = document.createElement("select");
+        addOption(select, "", "Off");
+        for (const field of labelFields) addOption(select, field, field);
+        select.value = item.labelField || "";
+        select.addEventListener("change", () => applyLayerLabels(item, select.value));
+        label.appendChild(select);
+        control.appendChild(label);
+        container.appendChild(control);
+      }
     }
     updateFitButton();
   }
@@ -918,6 +995,7 @@
       loaded: true,
       temporary: true,
       opacity: 0.8,
+      geojson: payload,
     });
     layer.addTo(state.map);
     renderReferenceLayers();
@@ -957,7 +1035,6 @@
       onEachFeature: (feature, polygonLayer) => {
         const polygonBaseStyle = featureStyle(feature);
         polygonLayer.options.pmIgnore = !editableStage;
-        window.bindSolarFeatureIdentifier?.(feature, polygonLayer);
         let hovered = false;
         const resetHover = () => {
           if (!hovered) return;
@@ -1174,9 +1251,12 @@
     byId("ppMap").classList.remove("vertexMode");
     byId("ppMap").classList.remove("moveMode");
     byId("ppMap").classList.remove("rotateMode");
+    byId("ppMap").classList.remove("mergeMode");
     byId("ppEditVertices").classList.remove("active");
     byId("ppMovePolygons").classList.remove("active");
     byId("ppRotatePolygons").classList.remove("active");
+    byId("ppMergePolygons").classList.remove("active");
+    byId("ppMergePolygons").textContent = "Merge polygons";
     byId("ppDeletePolygons").classList.remove("active");
     applyEditingEmphasis();
   }
@@ -1194,7 +1274,7 @@
   }
 
   function beginEditing(stage) {
-    if (!GENERATED_STAGES.has(stage)) return;
+    if (stage !== "source" && !GENERATED_STAGES.has(stage)) return;
     const item = state.previewLayers.get(stage);
     if (!item || !state.workflowId) return;
     if (state.editing?.dirty && !window.confirm("Discard the unsaved edits on the current layer?")) return;
@@ -1222,8 +1302,7 @@
     };
     lockProcessingControls(true);
     byId("ppEditPanel").hidden = false;
-    const workflow = state.workflows.find(candidate => candidate.id === state.workflowId);
-    byId("ppEditLayerName").textContent = `${workflow ? workflowDisplayName(workflow) : state.workflowId} · ${item.label}`;
+    byId("ppEditLayerName").textContent = item.label;
     byId("ppEditLayerIdentity").textContent = `Workflow ID: ${state.workflowId} · Stage: ${stage}`;
     byId("ppEditStatus").textContent = "Only this highlighted layer is editable. Other layers are temporarily hidden and locked.";
     byId("ppUndoEdits").disabled = true;
@@ -1364,6 +1443,59 @@
       : "Polygon rotation support did not load; refresh the page and try again.";
   }
 
+  function enablePolygonMerging() {
+    if (!state.editing) return;
+    const existingSelection = state.editing.mode === "merge"
+      ? [...(state.editing.mergeSelection || [])]
+      : [];
+    if (existingSelection.length >= 2) {
+      const editing = state.editing;
+      const polygons = [];
+      const firstFeature = JSON.parse(JSON.stringify(existingSelection[0].toGeoJSON()));
+      for (const layer of existingSelection) {
+        const geometry = layer.toGeoJSON()?.geometry;
+        if (geometry?.type === "Polygon") polygons.push(geometry.coordinates);
+        else if (geometry?.type === "MultiPolygon") polygons.push(...geometry.coordinates);
+        editing.item.layer.removeLayer(layer);
+      }
+      firstFeature.geometry = { type: "MultiPolygon", coordinates: polygons };
+      firstFeature.properties = { ...(firstFeature.properties || {}), manually_merged: true };
+      const merged = window.L.geoJSON(firstFeature, {
+        pmIgnore: false,
+        style: editing.item.baseStyle,
+      });
+      merged.eachLayer(layer => editing.item.layer.addLayer(layer));
+      editing.item.count = editing.item.layer.getLayers().length;
+      recordEditState(`${existingSelection.length} polygons merged. You can undo or redo this change.`);
+    }
+    disableEditingTools();
+    state.editing.mode = "merge";
+    state.editing.mergeSelection = new Set();
+    state.editing.item.layer.eachLayer(layer => {
+      const handler = event => {
+        if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+        const selected = state.editing.mergeSelection;
+        if (selected.has(layer)) {
+          selected.delete(layer);
+          layer.setStyle?.(state.editing.item.baseStyle);
+        } else {
+          selected.add(layer);
+          layer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.48 });
+        }
+        byId("ppMergePolygons").textContent = selected.size >= 2 ? `Merge selected (${selected.size})` : "Merge polygons";
+        byId("ppEditStatus").textContent = selected.size >= 2
+          ? "Click Merge selected to combine the highlighted polygons into one feature."
+          : `Merge mode: select at least two polygons (${selected.size} selected).`;
+      };
+      layer.on("click", handler);
+      state.editing.deleteHandlers.push({ layer, handler });
+    });
+    byId("ppMap").classList.add("mergeMode");
+    byId("ppMergePolygons").classList.add("active");
+    byId("ppMergePolygons").textContent = "Merge polygons";
+    byId("ppEditStatus").textContent = "Merge mode: select at least two polygons, then click Merge polygons again.";
+  }
+
   function restoreEditHistory(targetIndex) {
     if (!state.editing) return;
     const editing = state.editing;
@@ -1384,6 +1516,7 @@
     applyEditingEmphasis();
     renderPreviewLayers();
     if (mode === "delete") enablePolygonDeletion();
+    else if (mode === "merge") enablePolygonMerging();
     else if (mode === "move") enablePolygonMovement();
     else if (mode === "rotate") enablePolygonRotation();
     else enableVertexEditing();
@@ -1430,6 +1563,34 @@
       byId("ppEditStatus").textContent = `Validating and updating ${editing.item.label}…`;
     try {
       const resultId = byId("ppResult").value;
+      if (editing.stage === "source") {
+        const payload = await requestJson(
+          `/api/results/${encodeURIComponent(resultId)}/postprocess/source-edits`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              input_path: byId("ppGeojson").value,
+              output_name: `${byId("ppOutputName").value.trim() || "combined_solar_panels"}_source`,
+              geojson: editing.item.layer.toGeoJSON(),
+            }),
+          },
+        );
+        stopEditing(false);
+        state.workflowId = payload.id;
+        if (!state.workflows.some(item => item.id === payload.id)) state.workflows.unshift(payload);
+        const sourcePath = payload.outputs?.source?.path || payload.input_path;
+        if (sourcePath && ![...byId("ppGeojson").options].some(option => option.value === sourcePath)) {
+          addOption(byId("ppGeojson"), sourcePath, "Edited source working copy · source");
+        }
+        byId("ppGeojson").value = sourcePath;
+        if (payload.outputs?.source?.url) {
+          await loadPreviewLayer("source", payload.outputs.source.url, editing.item.count, "Edited source");
+        }
+        renderWorkflowList();
+        setMessage("Source working copy saved. The configured test-run GeoJSON remains unchanged.", "ok");
+        return;
+      }
       const payload = await requestJson(
         `/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(state.workflowId)}/${encodeURIComponent(editing.stage)}/edits`,
         {
@@ -1449,6 +1610,35 @@
       button.textContent = "Save edits";
       if (state.editing) button.disabled = !state.editing.dirty;
     }
+  }
+
+  function layerLabelFields(item) {
+    const fields = new Set();
+    for (const feature of item.geojson?.features || []) {
+      for (const [key, value] of Object.entries(feature?.properties || {})) {
+        if (value != null && typeof value !== "object") fields.add(key);
+      }
+      if (fields.size >= 40) break;
+    }
+    return [...fields].sort((first, second) => first.localeCompare(second));
+  }
+
+  function applyLayerLabels(item, field = "") {
+    item.labelField = field;
+    item.layer.eachLayer(layer => {
+      try { layer.unbindTooltip?.(); } catch (_) {}
+      if (!field) return;
+      const value = layer.feature?.properties?.[field];
+      if (value == null || value === "") return;
+      try {
+        layer.bindTooltip(String(value), {
+          className: "postprocessFeatureLabel",
+          direction: "center",
+          permanent: true,
+          opacity: 0.94,
+        });
+      } catch (_) {}
+    });
   }
 
   function renderPreviewLayers() {
@@ -1476,7 +1666,7 @@
       const name = document.createElement("strong");
       name.textContent = item.label;
       const detail = document.createElement("small");
-      detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Read-only" : ""}`;
+      detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Original preserved" : ""}`;
       text.append(name, detail);
       const layerMenu = createLayerMenu(item.label, Boolean(state.editing), "processing");
       layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
@@ -1490,6 +1680,17 @@
           () => showGenerationDetails(key, item.label),
         ));
       }
+      const labelFields = layerLabelFields(item);
+      if (labelFields.length) {
+        layerMenu.menu.appendChild(layerMenuButton(
+          item.labelControlOpen ? "Hide label options" : "Labels…",
+          layerMenu.menu,
+          () => {
+            item.labelControlOpen = !item.labelControlOpen;
+            renderPreviewLayers();
+          },
+        ));
+      }
       const download = document.createElement("a");
       download.href = item.url;
       download.download = "";
@@ -1498,13 +1699,15 @@
       download.addEventListener("click", () => { layerMenu.menu.hidden = true; });
       const actions = document.createElement("div");
       actions.className = "postprocessLayerActions";
-      if (GENERATED_STAGES.has(key)) {
+      if (key === "source" || GENERATED_STAGES.has(key)) {
         layerMenu.menu.appendChild(layerMenuButton(
-          isEditing ? "Editing" : "Edit this layer",
+          isEditing ? "Editing" : key === "source" ? "Edit a working copy" : "Edit this layer",
           layerMenu.menu,
           () => beginEditing(key),
           { disabled: Boolean(state.editing) },
         ));
+      }
+      if (GENERATED_STAGES.has(key)) {
         const send = layerMenuButton("Link to Map", layerMenu.menu, () => sendLayerToMap(key, send), {
           disabled: Boolean(state.editing),
         });
@@ -1514,6 +1717,23 @@
       actions.appendChild(layerMenu.wrapper);
       row.append(checkbox, swatch, text, actions);
       container.appendChild(row);
+      if (item.labelControlOpen && labelFields.length) {
+        const control = document.createElement("div");
+        control.className = "postprocessLayerLabelControl";
+        const label = document.createElement("label");
+        label.textContent = "Label field";
+        const select = document.createElement("select");
+        const off = document.createElement("option");
+        off.value = "";
+        off.textContent = "Off";
+        select.appendChild(off);
+        for (const field of labelFields) addOption(select, field, field);
+        select.value = item.labelField || "";
+        select.addEventListener("change", () => applyLayerLabels(item, select.value));
+        label.appendChild(select);
+        control.appendChild(label);
+        container.appendChild(control);
+      }
     }
     for (const stage of state.previewLoading) {
       if (state.previewLayers.has(stage)) continue;
@@ -1886,7 +2106,7 @@
       state.mode === "anomaly" ? item.workflow_kind === "anomaly" : item.workflow_kind !== "anomaly"
     );
     return visible.find(item => item.id === preferredId)
-      || visible.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && (item.outputs?.combined || item.outputs?.deduplicated))
+      || visible.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && (item.outputs?.source || item.outputs?.combined || item.outputs?.deduplicated))
       || (allowLatest ? visible.find(item => Object.keys(item.outputs || {}).length) : null);
   }
 
@@ -1918,7 +2138,8 @@
   }
 
   async function loadGeojsons() {
-    resetAnalysis();
+    if (state.currentJob) setStepsLoading(true);
+    resetAnalysis({ showConfiguredStep: true });
     clearReferenceLayers();
     state.workflows = [];
     const resultId = byId("ppResult").value;
@@ -1933,10 +2154,12 @@
       return;
     }
     setMessage("");
-    const earlyWorkflow = await loadSavedOutputsFirst(resultId);
     void loadReferenceSources(resultId);
     try {
-      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
+      const [earlyWorkflow, payload] = await Promise.all([
+        loadSavedOutputsFirst(resultId),
+        requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`),
+      ]);
       state.geojsonFiles = payload.files || [];
       select.replaceChildren();
       addOption(select, "", "Select a GeoJSON…");
@@ -1950,9 +2173,14 @@
       const configuredSource = configuredSegmentationPath
         ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(configuredSegmentationPath))
         : null;
+      const configuredWorkingCopy = earlyWorkflow?.outputs?.source
+        && sourceIdentity(earlyWorkflow.original_input_path) === sourceIdentity(configuredSegmentationPath)
+        ? previousSource
+        : null;
       const predictions = [...select.options].find(option => option.value.toLowerCase() === "predictions.geojson")
         || [...select.options].find(option => option.value.toLowerCase() === "anomalies.geojson");
-      if (configuredSource) select.value = configuredSource.value;
+      if (configuredWorkingCopy) select.value = configuredWorkingCopy.value;
+      else if (configuredSource) select.value = configuredSource.value;
       else if (previousSource) select.value = previousSource.value;
       else if (predictions) select.value = predictions.value;
       else if (select.options.length > 1) select.selectedIndex = 1;
@@ -1979,6 +2207,7 @@
       setMessage(error.message, "err");
     } finally {
       stopIndeterminate();
+      setStepsLoading(false);
     }
   }
 
@@ -2165,7 +2394,7 @@
         body: JSON.stringify({
           input_path: inputPath,
           workflow_id: existingWorkflow?.id || null,
-          output_name: byId("ppOutputName").value.trim() || "solar_panels",
+          output_name: byId("ppOutputName").value.trim() || "combined_solar_panels",
           edge_tolerance_px: numberValue("ppEdgeTolerance"),
           gap_tolerance_px: numberValue("ppGapTolerance"),
           min_boundary_overlap: numberValue("ppBoundaryOverlap"),
@@ -2280,6 +2509,7 @@
     byId("ppEditVertices").addEventListener("click", enableVertexEditing);
     byId("ppMovePolygons").addEventListener("click", enablePolygonMovement);
     byId("ppRotatePolygons").addEventListener("click", enablePolygonRotation);
+    byId("ppMergePolygons").addEventListener("click", enablePolygonMerging);
     byId("ppDeletePolygons").addEventListener("click", enablePolygonDeletion);
     byId("ppUndoEdits").addEventListener("click", undoEdits);
     byId("ppRedoEdits").addEventListener("click", redoEdits);
@@ -2342,10 +2572,11 @@
     init();
     ensurePreviewMap();
     setTimeout(() => state.map?.invalidateSize(), 30);
-    await loadJobs();
+    if (state.currentJobId && state.currentJob) return;
+    await loadJobs(false);
   }
 
-  async function loadJobs() {
+  async function loadJobs(force = false) {
     const landing = byId("ppJobLanding");
     const workspace = document.querySelector(".postprocessWorkspace");
     const list = byId("ppJobList");
@@ -2360,20 +2591,32 @@
     byId("ppHeaderDescription").hidden = false;
     byId("ppRefresh").hidden = true;
     byId("ppEditJobConfig").hidden = true;
+    if (state.jobsLoaded && !force) {
+      renderJobList();
+      return;
+    }
+    if (state.jobsLoadingPromise) return state.jobsLoadingPromise;
     list.replaceChildren();
     const loading = document.createElement("div");
     loading.className = "mapListLoading";
     loading.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Loading jobs…</span>';
     list.appendChild(loading);
-    try {
-      const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
-      state.jobs = payload.jobs || [];
-      renderJobList();
-    } catch (error) {
-      state.jobs = [];
-      list.replaceChildren();
-      list.textContent = error.message;
-    }
+    state.jobsLoadingPromise = (async () => {
+      try {
+        const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
+        state.jobs = payload.jobs || [];
+        state.jobsLoaded = true;
+        renderJobList();
+      } catch (error) {
+        state.jobs = [];
+        state.jobsLoaded = false;
+        list.replaceChildren();
+        list.textContent = error.message;
+      } finally {
+        state.jobsLoadingPromise = null;
+      }
+    })();
+    return state.jobsLoadingPromise;
   }
 
   function renderJobList() {
@@ -2442,8 +2685,10 @@
         actions.hidden = true;
         const renamed = await showRenameJobModal(job.name || job.id);
         if (!renamed) return;
-        await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: renamed }) });
-        await loadJobs();
+        const payload = await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: renamed }) });
+        state.jobs = state.jobs.map(item => item.id === job.id ? payload.job : item);
+        state.jobsLoaded = true;
+        renderJobList();
     });
     const config = document.createElement("button");
     config.type = "button";
@@ -2460,7 +2705,9 @@
         actions.hidden = true;
         if (!await showDeleteJobModal(job.name || job.id)) return;
         await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
-        await loadJobs();
+        state.jobs = state.jobs.filter(item => item.id !== job.id);
+        state.jobsLoaded = true;
+        renderJobList();
     });
     actions.append(rename, config, remove);
     menu.addEventListener("click", event => {
@@ -2567,6 +2814,7 @@
       });
       if (!payload.job?.id) throw new Error("The job was saved without a valid job response.");
       state.jobs = [payload.job, ...state.jobs.filter(job => job.id !== payload.job.id)];
+      state.jobsLoaded = true;
       renderJobList();
       closeJobModal();
       await openJob(payload.job);
@@ -2576,6 +2824,7 @@
       try {
         const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
         state.jobs = payload.jobs || [];
+        state.jobsLoaded = true;
         const recovered = state.jobs.find(matchesCreatedJob);
         if (recovered) {
           renderJobList();
@@ -2649,6 +2898,8 @@
         }),
       });
       state.currentJob = updated.job;
+      state.jobs = state.jobs.map(item => item.id === updated.job.id ? updated.job : item);
+      state.jobsLoaded = true;
       resetModeCache();
       const changedLabels = (updated.changed_sources || []).map(kind => kind === "anomaly" ? "anomaly" : kind).join(" and ");
       setMessage(`${changedLabels || "Job"} source updated. Dependent derived outputs were removed; original test results were not changed.`, "ok");
@@ -3072,6 +3323,8 @@
     byId("ppHeaderDescription").hidden = true;
     byId("ppRefresh").hidden = false;
     byId("ppEditJobConfig").hidden = false;
+    resetAnalysis({ showConfiguredStep: true });
+    setStepsLoading(true);
     window.requestAnimationFrame(() => state.map?.invalidateSize());
     await loadResults(true);
   }
@@ -3108,11 +3361,12 @@
     cacheCurrentModeState();
     state.mode = nextMode;
     if (restoreModeState(nextMode)) return;
+    setStepsLoading(true, `Loading configured ${nextMode === "anomaly" ? "anomaly" : "segmentation"} GeoJSON data…`);
     state.previewLayers = new Map();
     state.referenceLayers = new Map();
     state.geojsonFiles = [];
     state.workflows = [];
-    resetAnalysis();
+    resetAnalysis({ showConfiguredStep: true });
     clearReferenceLayers();
     const configuredResultId = state.currentJob?.sources?.[state.mode]?.result_id || "";
     const resultSelect = byId("ppResult");
@@ -3126,6 +3380,7 @@
     state.workflowId = workflow?.id || null;
     if (workflow) applyWorkflow(workflow);
     renderWorkflowList();
+    setStepsLoading(false);
     document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
   }
 
@@ -3153,6 +3408,7 @@
     selectWorkflow,
     setMessage,
     setMode,
+    setStepsLoading,
     confirmReplacement,
     getInternalControl: id => internalControls.get(id) || null,
   };

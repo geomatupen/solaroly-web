@@ -5,8 +5,8 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827zb" />
+  <link rel="stylesheet" href="css/styles.css?v=20260827o" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260827ze" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -516,6 +516,10 @@
           <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
         </div>
         <div id="ppMessage" class="statusLine" aria-live="polite" hidden></div>
+        <div id="ppStepsLoading" class="postprocessStepsLoading" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Loading configured GeoJSON data…</span>
+        </div>
         <div id="ppProgressWrap" class="progressWrap" hidden>
           <div class="progressBar"><span id="ppProgressBar" style="width:0%"></span></div>
           <div id="ppProgressText" class="progressText">Waiting…</div>
@@ -532,7 +536,7 @@
               <div class="postprocessFields">
                 <div>
                   <label for="ppOutputName">Output name</label>
-                  <input id="ppOutputName" type="text" value="solar_panels" maxlength="80" />
+                  <input id="ppOutputName" type="text" value="combined_solar_panels" maxlength="80" />
                 </div>
                 <div>
                   <label for="ppEdgeTolerance">Edge tolerance (pixels)</label>
@@ -540,7 +544,7 @@
                 </div>
                 <div>
                   <label for="ppGapTolerance">Join gap (pixels)</label>
-                  <input id="ppGapTolerance" type="number" value="10" min="0" max="100" step="0.5" />
+                  <input id="ppGapTolerance" type="number" value="15" min="0" max="100" step="0.5" />
                 </div>
                 <div>
                   <label for="ppBoundaryOverlap">Minimum edge overlap</label>
@@ -717,6 +721,7 @@
                   <button id="ppEditVertices" class="tiny" type="button">Edit vertices</button>
                   <button id="ppMovePolygons" class="secondary tiny" type="button">Move polygons</button>
                   <button id="ppRotatePolygons" class="secondary tiny" type="button">Rotate polygons</button>
+                  <button id="ppMergePolygons" class="secondary tiny" type="button">Merge polygons</button>
                   <button id="ppDeletePolygons" class="secondary tiny" type="button">Delete polygons</button>
                   <button id="ppUndoEdits" class="secondary tiny" type="button" disabled>Undo</button>
                   <button id="ppRedoEdits" class="secondary tiny" type="button" disabled>Redo</button>
@@ -728,13 +733,6 @@
               <h3 class="postprocessLayerSectionTitle">Processing layers</h3>
               <div id="ppLayerList" class="postprocessLayerList">
                 <div class="muted tiny">No preview layers loaded.</div>
-              </div>
-              <div class="postprocessSavedHeader">
-                <h3>Saved outputs</h3>
-                <button id="ppRefreshOutputs" class="secondary tiny" type="button">Refresh</button>
-              </div>
-              <div id="ppWorkflowList" class="postprocessWorkflowList">
-                <div class="muted tiny">No saved outputs.</div>
               </div>
             </div>
           </div>
@@ -1489,13 +1487,13 @@
   </div>
 
   <script src="js/utils.js?v=20260825m"></script>
-  <script src="js/map.js?v=20260826g"></script>
+  <script src="js/map.js?v=20260827h"></script>
   <script src="js/colmap.js?v=20260825o"></script>
-  <script src="js/map-overlay.js?v=20260827a"></script>
+  <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827zzg"></script>
-  <script src="js/postprocess_segmentation.js?v=20260826l"></script>
-  <script src="js/postprocess_anomaly.js?v=20260827j"></script>
+  <script src="js/postprocess.js?v=20260827zzl"></script>
+  <script src="js/postprocess_segmentation.js?v=20260827m"></script>
+  <script src="js/postprocess_anomaly.js?v=20260827l"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

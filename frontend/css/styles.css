@@ -638,6 +638,19 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .layerMenu ul{ list-style: none; margin: 0; padding: 6px; }
 .layerMenu li{ padding: 8px 12px; cursor: pointer; white-space: nowrap; }
 .layerMenu li:hover{ background: rgba(148,163,184,.15); }
+.layerMenu li.layerLabelField { cursor: default; }
+.layerMenu li.layerLabelField:hover { background: transparent; }
+.layerMenu .layerLabelField label { display: grid; gap: 6px; color: var(--muted); }
+.layerMenu .layerLabelField select { width: 100%; }
+.leaflet-tooltip.mapFeatureLabel {
+  pointer-events: none;
+  border: 0;
+  background: rgba(8, 15, 22, .88);
+  color: #fff;
+  box-shadow: none;
+  font-size: 11px;
+  padding: 2px 4px;
+}
 
 .imageMenu{
   position: fixed;

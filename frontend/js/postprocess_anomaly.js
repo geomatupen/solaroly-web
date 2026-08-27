@@ -60,6 +60,8 @@
     const candidates = context.geojsonFiles.filter(file =>
       /(?:^|[_-])(anomal(?:y|ies)|predictions?)(?:[_-]|\.|$)/i.test(file.name)
     );
+    const configuredFile = context.geojsonFiles.find(file => file.path === context.configuredSourcePath);
+    if (configuredFile && !candidates.some(file => file.path === configuredFile.path)) candidates.unshift(configuredFile);
     anomalySelect.replaceChildren();
     addOption(anomalySelect, "", context.resultId ? "Select an anomalies GeoJSON…" : "Select a test result first…");
     for (const file of candidates) addOption(anomalySelect, file.path, `${file.name} · ${file.stage}`);
@@ -88,7 +90,9 @@
       api()?.setMessage("");
     }
     const scanned = Boolean(configuredReady || (selectedKey && selectedKey === scannedPath) || hasDeduplicated);
-    byId("ppDeduplicateStep").hidden = !scanned;
+    byId("ppDeduplicateStep").hidden = false;
+    byId("ppDeduplicateStep").classList.toggle("locked", !scanned);
+    byId("ppDeduplicateStep").setAttribute("aria-disabled", String(!scanned));
     byId("ppDeduplicate").disabled = !scanned;
 
     const panelSelect = byId("ppPanelReference");
@@ -105,9 +109,16 @@
     else if (panelLayers.length) panelSelect.selectedIndex = 1;
     panelSelect.disabled = panelLayers.length === 0;
 
-    byId("ppAdjustAnomaliesStep").hidden = !hasDeduplicated;
-    byId("ppAssociateStep").hidden = !hasDeduplicated;
+    byId("ppAdjustAnomaliesStep").hidden = false;
+    byId("ppAssociateStep").hidden = false;
+    byId("ppAdjustAnomaliesStep").classList.toggle("locked", !hasDeduplicated);
+    byId("ppAssociateStep").classList.toggle("locked", !hasDeduplicated);
+    byId("ppAdjustAnomaliesStep").setAttribute("aria-disabled", String(!hasDeduplicated));
+    byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
+    if (context.mode === "anomaly" && context.resultId && context.geojsonFiles.length) {
+      api()?.setStepsLoading(false);
+    }
   }
 
   async function scanPredictions() {
@@ -124,6 +135,8 @@
       await workspace.loadPreviewLayer("source", file.url, null, "Anomaly predictions");
       scannedPath = sourceKey;
       byId("ppDeduplicateStep").hidden = false;
+      byId("ppDeduplicateStep").classList.remove("locked");
+      byId("ppDeduplicateStep").setAttribute("aria-disabled", "false");
       byId("ppDeduplicate").disabled = false;
       workspace.setMessage("Anomalies GeoJSON is ready. Review it, then deduplicate overlapping-image detections.", "ok");
     } catch (error) {
@@ -197,9 +210,11 @@
     byId("ppAnomalyGeojson")?.addEventListener("change", event => {
       scannedPath = "";
       byId("ppScanAnomalies").disabled = !event.target.value;
-      byId("ppDeduplicateStep").hidden = true;
-      byId("ppAdjustAnomaliesStep").hidden = true;
-      byId("ppAssociateStep").hidden = true;
+      for (const id of ["ppDeduplicateStep", "ppAdjustAnomaliesStep", "ppAssociateStep"]) {
+        byId(id).hidden = false;
+        byId(id).classList.add("locked");
+        byId(id).setAttribute("aria-disabled", "true");
+      }
     });
     byId("ppPanelReference")?.addEventListener("change", event => {
       const context = api()?.getContext();
