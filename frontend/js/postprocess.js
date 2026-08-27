@@ -2355,6 +2355,13 @@
     modal.classList.add("hidden");
   }
 
+  function lockJobCreationFields(locked) {
+    byId("ppJobName").disabled = locked;
+    byId("ppJobSourceFields")?.querySelectorAll("select, button").forEach(control => {
+      control.disabled = locked;
+    });
+  }
+
   function showJobCreationProgress(action) {
     const modal = byId("ppJobModal");
     const message = byId("ppJobModalMessage");
@@ -2379,14 +2386,20 @@
     note.textContent = "Validating GeoJSON files and saving an isolated job configuration. Original test results remain unchanged.";
     details.append(segmentation, anomaly, note);
     message.append(heading, details);
-    byId("ppJobNameField").hidden = true;
-    byId("ppJobSourceFields").hidden = true;
+    byId("ppJobSourceFields").after(message);
+    byId("ppJobNameField").hidden = false;
+    byId("ppJobSourceFields").hidden = false;
+    lockJobCreationFields(true);
     byId("ppJobModalCancel").disabled = true;
     byId("ppJobModalSave").disabled = true;
     byId("ppJobModalSave").textContent = "Creating job…";
     byId("ppJobModalClose").disabled = true;
     modal.classList.remove("hidden");
     modal.classList.add("show");
+    window.requestAnimationFrame(() => {
+      const body = modal.querySelector(".modalBody");
+      body?.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+    });
   }
 
   function showJobCreationFailure(error) {
@@ -2640,6 +2653,9 @@
     const anomalyResult = byId("ppJobAnomalyResult");
     const anomalyGeojson = byId("ppJobAnomalyGeojson");
     if (!modal || !input || !save) return Promise.resolve(null);
+    const modalBody = modal.querySelector(".modalBody");
+    modalBody.insertBefore(byId("ppJobModalMessage"), nameField);
+    lockJobCreationFields(false);
     byId("ppJobModalMessage").className = "muted tiny";
     byId("ppJobModalCancel").hidden = false;
     byId("ppJobModalCancel").disabled = false;
