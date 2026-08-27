@@ -236,6 +236,73 @@
     });
   }
 
+  function setSourceStepExpanded(step, expanded) {
+    if (!step) return;
+    const body = step.querySelector(":scope > .postprocessSourceStepBody");
+    const toggle = step.querySelector(":scope > .postprocessSourceStepHeader .postprocessSourceStepToggle");
+    step.classList.toggle("collapsed", !expanded);
+    if (body) body.hidden = !expanded;
+    if (toggle) {
+      toggle.textContent = expanded ? "−" : "+";
+      toggle.title = expanded ? "Minimize step" : "Expand step";
+      toggle.setAttribute("aria-expanded", String(expanded));
+    }
+  }
+
+  function resetSourceSteps(modal) {
+    modal?.querySelectorAll(".postprocessSourceStep").forEach((step, index) => {
+      setSourceStepExpanded(step, index === 0);
+    });
+  }
+
+  function revealSourceField(field) {
+    setSourceStepExpanded(field?.closest(".postprocessSourceStep"), true);
+  }
+
+  function resetSourceStepCompletion(field) {
+    const step = field?.closest(".postprocessSourceStep");
+    step?.classList.remove("complete");
+    step?.querySelector(":scope > .postprocessSourceStepSummary")?.classList.remove("complete");
+  }
+
+  function completeSourceStep(summary, advance = false) {
+    const step = summary?.closest(".postprocessSourceStep");
+    if (!step) return;
+    step.classList.add("complete");
+    summary.classList.add("complete");
+    if (!advance) return;
+    const nextStep = step.nextElementSibling?.classList.contains("postprocessSourceStep")
+      ? step.nextElementSibling
+      : null;
+    setSourceStepExpanded(step, false);
+    setSourceStepExpanded(nextStep, true);
+    nextStep?.querySelector("select")?.focus();
+  }
+
+  function setSourceStepMessage(summary, message, loading = false) {
+    if (!summary) return;
+    summary.replaceChildren();
+    summary.classList.toggle("loading", loading);
+    if (loading) {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      summary.appendChild(spinner);
+    }
+    const text = document.createElement("span");
+    text.textContent = message;
+    summary.appendChild(text);
+  }
+
+  function initSourceStepToggles() {
+    document.querySelectorAll(".postprocessSourceStepToggle").forEach(toggle => {
+      toggle.addEventListener("click", () => {
+        const step = toggle.closest(".postprocessSourceStep");
+        setSourceStepExpanded(step, step?.classList.contains("collapsed"));
+      });
+    });
+  }
+
   function setStepCollapsed(step, collapsed) {
     if (!step) return;
     step.classList.toggle("collapsed", collapsed);
@@ -2020,6 +2087,7 @@
     state.initialized = true;
     try { window.L?.PM?.setOptIn(true); } catch (_) {}
     initCollapsibleSteps();
+    initSourceStepToggles();
     byId("ppReplacementConfirm")?.addEventListener("click", () => finishReplacementConfirmation(true));
     byId("ppReplacementCancel")?.addEventListener("click", () => finishReplacementConfirmation(false));
     byId("ppReplacementClose")?.addEventListener("click", () => finishReplacementConfirmation(false));
@@ -2369,10 +2437,14 @@
     }
     const loadFiles = async (kind, selectedPath = "") => {
       const field = fields[kind];
+      setSourceStepMessage(field.summary, kind === "anomaly" ? "Loading anomaly GeoJSON files…" : "Loading segmentation GeoJSON files…", true);
       field.geojson.replaceChildren();
       addOption(field.geojson, "", field.result.value ? "Loading GeoJSON files…" : "Select a GeoJSON…");
       field.geojson.disabled = true;
-      if (!field.result.value) return;
+      if (!field.result.value) {
+        setSourceStepMessage(field.summary, "Select a test result first.");
+        return;
+      }
       const payload = await requestJson(`/api/results/${encodeURIComponent(field.result.value)}/postprocess/geojsons`);
       const files = kind === "anomaly"
         ? (payload.files || []).filter(file => /anomal|predict/i.test(file.name))
@@ -2382,22 +2454,25 @@
       for (const file of files) addOption(field.geojson, file.path, `${file.name} · ${file.stage}`);
       field.geojson.disabled = false;
       if (selectedPath && [...field.geojson.options].some(option => option.value === selectedPath)) field.geojson.value = selectedPath;
+      if (!selectedPath) setSourceStepMessage(field.summary, "Select a GeoJSON to scan the source.");
     };
     const showSummary = (kind, sourceSummary) => {
-      fields[kind].summary.textContent = kind === "anomaly"
+      setSourceStepMessage(fields[kind].summary, kind === "anomaly"
         ? `${Number(sourceSummary.feature_count || 0).toLocaleString()} anomaly features`
-        : `${Number(sourceSummary.feature_count || 0).toLocaleString()} features · ${Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
+        : `${Number(sourceSummary.feature_count || 0).toLocaleString()} features · ${Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()} on tile edges`);
     };
     const scan = async kind => {
       const field = fields[kind];
       if (!field.result.value || !field.geojson.value) return;
-      field.summary.textContent = kind === "anomaly" ? "Scanning anomalies GeoJSON…" : "Scanning source GeoJSON…";
+      resetSourceStepCompletion(field.geojson);
+      setSourceStepMessage(field.summary, kind === "anomaly" ? "Scanning anomalies GeoJSON…" : "Scanning source GeoJSON…", true);
       try {
         const scanned = await requestJson(`/api/results/${encodeURIComponent(field.result.value)}/postprocess/analyze`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: field.geojson.value }),
         });
         showSummary(kind, scanned.summary || {});
-      } catch (error) { field.summary.textContent = error.message; }
+        completeSourceStep(field.summary, kind === "segmentation");
+      } catch (error) { setSourceStepMessage(field.summary, error.message); }
     };
     await Promise.all([
       loadFiles("segmentation", fields.segmentation.source.path || ""),
@@ -2405,13 +2480,17 @@
     ]);
     showSummary("segmentation", fields.segmentation.source.summary || {});
     showSummary("anomaly", fields.anomaly.source.summary || {});
+    completeSourceStep(fields.segmentation.summary);
+    completeSourceStep(fields.anomaly.summary);
     for (const kind of Object.keys(fields)) {
       fields[kind].result.onchange = () => {
-        fields[kind].summary.textContent = "Select a GeoJSON to scan the source.";
+        resetSourceStepCompletion(fields[kind].result);
+        setSourceStepMessage(fields[kind].summary, "Select a GeoJSON to scan the source.");
         void loadFiles(kind);
       };
       fields[kind].geojson.onchange = () => void scan(kind);
     }
+    resetSourceSteps(modal);
     modal.classList.remove("hidden");
     modal.classList.add("show");
     return new Promise(resolve => {
@@ -2420,8 +2499,14 @@
         const segmentationMissing = !fields.segmentation.result.value || !fields.segmentation.geojson.value;
         const anomalyMissing = !fields.anomaly.result.value || !fields.anomaly.geojson.value;
         if (segmentationMissing || anomalyMissing) {
-          if (segmentationMissing) fields.segmentation.summary.textContent = "Select the segmentation test result and GeoJSON.";
-          if (anomalyMissing) fields.anomaly.summary.textContent = "Select the anomaly test result and GeoJSON.";
+          if (segmentationMissing) {
+            setSourceStepMessage(fields.segmentation.summary, "Select the segmentation test result and GeoJSON.");
+            revealSourceField(fields.segmentation.result);
+          }
+          if (anomalyMissing) {
+            setSourceStepMessage(fields.anomaly.summary, "Select the anomaly test result and GeoJSON.");
+            revealSourceField(fields.anomaly.result);
+          }
           return;
         }
         finish({
@@ -2468,9 +2553,8 @@
       : "Give this workspace a name. Test-run source files remain unchanged.";
     const automaticJobName = () => {
       const now = new Date();
-      const date = now.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-      const time = now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-      return `Post-processing · ${date} ${time}`;
+      const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][now.getMonth()];
+      return `Post_Process_${month}_${now.getDate()}`;
     };
     input.value = mode === "rename" ? value || "" : mode === "create" ? automaticJobName() : "";
     nameField.hidden = !["create", "rename"].includes(mode);
@@ -2482,14 +2566,27 @@
       byId("ppJobModalMessage").textContent = "Choose an operation for this job.";
       save.textContent = "Rename";
     }
+    if (mode === "create") resetSourceSteps(modal);
     modal.classList.remove("hidden");
     modal.classList.add("show");
     if (mode === "create" || config) {
+      if (mode === "create") {
+        resetSourceStepCompletion(sourceResult);
+        resetSourceStepCompletion(anomalyResult);
+        setSourceStepMessage(byId("ppJobSourceSummary"), "Loading test results…", true);
+        setSourceStepMessage(byId("ppJobAnomalySummary"), "Loading test results…", true);
+      }
       void loadJobSourceResults(config ? value?.source?.result_id : "", config ? value?.source?.path : "");
       if (mode === "create") void loadJobAnomalyResults();
-      sourceResult.onchange = () => void loadJobSourceGeojsons();
+      sourceResult.onchange = () => {
+        resetSourceStepCompletion(sourceResult);
+        void loadJobSourceGeojsons();
+      };
       sourceGeojson.onchange = () => void scanJobSource();
-      anomalyResult.onchange = () => void loadJobAnomalyGeojsons();
+      anomalyResult.onchange = () => {
+        resetSourceStepCompletion(anomalyResult);
+        void loadJobAnomalyGeojsons();
+      };
       anomalyGeojson.onchange = () => void scanJobAnomalySource();
     }
     input.focus();
@@ -2509,7 +2606,9 @@
         if (mode === "reset") return finish({ type: "reset" });
         const name = input.value.trim();
         if ((mode === "create" || config) && (!sourceResult.value || !sourceGeojson.value || (mode === "create" && (!anomalyResult.value || !anomalyGeojson.value)))) {
-          byId("ppJobSourceSummary").textContent = "Select the required segmentation and anomaly sources.";
+          setSourceStepMessage(byId("ppJobSourceSummary"), "Select the required segmentation and anomaly sources.");
+          if (!sourceResult.value || !sourceGeojson.value) revealSourceField(sourceResult);
+          if (!anomalyResult.value || !anomalyGeojson.value) revealSourceField(anomalyResult);
           return;
         }
         if (mode === "config") finish({ type: mode, sourceResultId: sourceResult.value, sourcePath: sourceGeojson.value });
@@ -2524,6 +2623,7 @@
 
   async function loadJobSourceResults(selectedResultId = "", selectedPath = "") {
     const result = byId("ppJobSourceResult");
+    setSourceStepMessage(byId("ppJobSourceSummary"), "Loading test results…", true);
     result.replaceChildren();
     addOption(result, "", "Loading results…");
     result.disabled = true;
@@ -2533,6 +2633,7 @@
       addOption(result, "", "Select a result…");
       for (const item of payload.sessions || []) addOption(result, item.id, item.display_name || item.name || item.id);
       result.disabled = false;
+      setSourceStepMessage(byId("ppJobSourceSummary"), "Select a result and GeoJSON to scan the source.");
       if (selectedResultId && [...result.options].some(option => option.value === selectedResultId)) {
         result.value = selectedResultId;
         await loadJobSourceGeojsons(selectedPath);
@@ -2540,29 +2641,34 @@
     } catch (error) {
       result.replaceChildren();
       addOption(result, "", "Could not load results");
-      byId("ppJobSourceSummary").textContent = error.message;
+      setSourceStepMessage(byId("ppJobSourceSummary"), error.message);
     }
   }
 
   async function loadJobSourceGeojsons(selectedPath = "") {
     const resultId = byId("ppJobSourceResult").value;
     const geojson = byId("ppJobSourceGeojson");
+    setSourceStepMessage(byId("ppJobSourceSummary"), "Loading segmentation GeoJSON files…", true);
     geojson.replaceChildren();
     addOption(geojson, "", resultId ? "Loading GeoJSON files…" : "Select a GeoJSON…");
     geojson.disabled = true;
-    if (!resultId) return;
+    if (!resultId) {
+      setSourceStepMessage(byId("ppJobSourceSummary"), "Select a test result first.");
+      return;
+    }
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
       geojson.replaceChildren();
       addOption(geojson, "", "Select a GeoJSON…");
       for (const file of payload.files || []) addOption(geojson, file.path, `${file.name} · ${file.stage}`);
       geojson.disabled = false;
+      setSourceStepMessage(byId("ppJobSourceSummary"), "Select a GeoJSON to scan the source.");
       if (selectedPath && [...geojson.options].some(option => option.value === selectedPath)) {
         geojson.value = selectedPath;
         await scanJobSource();
       }
     } catch (error) {
-      byId("ppJobSourceSummary").textContent = error.message;
+      setSourceStepMessage(byId("ppJobSourceSummary"), error.message);
     }
   }
 
@@ -2571,40 +2677,49 @@
     const inputPath = byId("ppJobSourceGeojson").value;
     if (!resultId || !inputPath) return;
     const summary = byId("ppJobSourceSummary");
-    summary.textContent = "Scanning source GeoJSON…";
+    resetSourceStepCompletion(byId("ppJobSourceGeojson"));
+    setSourceStepMessage(summary, "Scanning source GeoJSON…", true);
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/analyze`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: inputPath }),
       });
-      summary.textContent = `${Number(payload.summary?.feature_count || 0).toLocaleString()} features · ${Number(payload.summary?.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
+      setSourceStepMessage(summary, `${Number(payload.summary?.feature_count || 0).toLocaleString()} features · ${Number(payload.summary?.features_on_tile_edges || 0).toLocaleString()} on tile edges`);
+      completeSourceStep(summary, true);
     } catch (error) {
-      summary.textContent = error.message;
+      setSourceStepMessage(summary, error.message);
     }
   }
 
   async function loadJobAnomalyResults() {
     const select = byId("ppJobAnomalyResult");
+    setSourceStepMessage(byId("ppJobAnomalySummary"), "Loading test results…", true);
     select.replaceChildren(); addOption(select, "", "Loading results…"); select.disabled = true;
     try {
       const payload = await requestJson("/api/sessions", { cache: "no-store" });
       select.replaceChildren(); addOption(select, "", "Select a result…");
       for (const item of payload.sessions || []) addOption(select, item.id, item.display_name || item.name || item.id);
       select.disabled = false;
-    } catch (error) { byId("ppJobAnomalySummary").textContent = error.message; }
+      setSourceStepMessage(byId("ppJobAnomalySummary"), "Select a result and anomalies GeoJSON to scan the source.");
+    } catch (error) { setSourceStepMessage(byId("ppJobAnomalySummary"), error.message); }
   }
 
   async function loadJobAnomalyGeojsons() {
     const resultId = byId("ppJobAnomalyResult").value;
     const select = byId("ppJobAnomalyGeojson");
+    setSourceStepMessage(byId("ppJobAnomalySummary"), "Loading anomaly GeoJSON files…", true);
     select.replaceChildren(); addOption(select, "", "Loading GeoJSON files…"); select.disabled = true;
-    if (!resultId) return;
+    if (!resultId) {
+      setSourceStepMessage(byId("ppJobAnomalySummary"), "Select a test result first.");
+      return;
+    }
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
       const files = (payload.files || []).filter(file => /anomal|predict/i.test(file.name));
       select.replaceChildren(); addOption(select, "", "Select an anomalies GeoJSON…");
       for (const file of files) addOption(select, file.path, `${file.name} · ${file.stage}`);
       select.disabled = false;
-    } catch (error) { byId("ppJobAnomalySummary").textContent = error.message; }
+      setSourceStepMessage(byId("ppJobAnomalySummary"), "Select an anomalies GeoJSON to scan the source.");
+    } catch (error) { setSourceStepMessage(byId("ppJobAnomalySummary"), error.message); }
   }
 
   async function scanJobAnomalySource() {
@@ -2612,13 +2727,15 @@
     const inputPath = byId("ppJobAnomalyGeojson").value;
     if (!resultId || !inputPath) return;
     const summary = byId("ppJobAnomalySummary");
-    summary.textContent = "Scanning anomalies GeoJSON…";
+    resetSourceStepCompletion(byId("ppJobAnomalyGeojson"));
+    setSourceStepMessage(summary, "Scanning anomalies GeoJSON…", true);
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/analyze`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: inputPath }),
       });
-      summary.textContent = `${Number(payload.summary?.feature_count || 0).toLocaleString()} anomaly features`;
-    } catch (error) { summary.textContent = error.message; }
+      setSourceStepMessage(summary, `${Number(payload.summary?.feature_count || 0).toLocaleString()} anomaly features`);
+      completeSourceStep(summary);
+    } catch (error) { setSourceStepMessage(summary, error.message); }
   }
 
   async function openJob(job) {
