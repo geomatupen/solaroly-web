@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827b" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260827c" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -482,9 +482,13 @@
     <section id="tab-postprocess" class="tabPanel">
       <div class="card">
         <div class="row between postprocessHeader">
-          <div>
-            <h2>Post-processing</h2>
-            <p class="muted">Refine segmentation polygons or prepare anomaly predictions for panel-level reporting.</p>
+          <div class="postprocessJobTitleRow">
+            <button id="ppBackToJobs" class="iconBtn" type="button" hidden aria-label="Back to post-processing jobs" title="Back to jobs">←</button>
+            <div>
+              <h2 id="ppHeaderTitle">Post-processing</h2>
+              <small id="ppHeaderJobId" class="muted postprocessJobId" hidden></small>
+              <p id="ppHeaderDescription" class="muted">Refine segmentation polygons or prepare anomaly predictions for panel-level reporting.</p>
+            </div>
           </div>
           <button id="ppRefresh" class="secondary" type="button"><span aria-hidden="true">↻</span> Refresh results</button>
         </div>
@@ -501,7 +505,6 @@
         </div>
 
         <div class="postprocessWorkspace" hidden style="display: none;">
-        <button id="ppBackToJobs" class="secondary tiny" type="button" hidden>← Back to jobs</button>
         <div class="postprocessControls">
         <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
           <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
@@ -1419,7 +1422,7 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827a"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827n"></script>
+  <script src="js/postprocess.js?v=20260827o"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
   <script src="js/postprocess_anomaly.js?v=20260827a"></script>
   <script>

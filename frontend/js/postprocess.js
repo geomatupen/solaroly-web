@@ -2126,6 +2126,9 @@
     workspace.hidden = true;
     workspace.style.display = "none";
     byId("ppBackToJobs").hidden = true;
+    byId("ppHeaderTitle").textContent = "Post-processing";
+    byId("ppHeaderJobId").hidden = true;
+    byId("ppHeaderDescription").hidden = false;
     list.replaceChildren();
     try {
       const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
@@ -2235,6 +2238,10 @@
     document.querySelector(".postprocessWorkspace").hidden = false;
     document.querySelector(".postprocessWorkspace").style.display = "grid";
     byId("ppBackToJobs").hidden = false;
+    byId("ppHeaderTitle").textContent = job.name || job.id;
+    byId("ppHeaderJobId").textContent = `ID: ${job.id}`;
+    byId("ppHeaderJobId").hidden = false;
+    byId("ppHeaderDescription").hidden = true;
     await loadResults(false);
   }
 
