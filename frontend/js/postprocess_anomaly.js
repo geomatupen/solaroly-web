@@ -29,7 +29,7 @@
     refresh(api()?.getContext());
     if (anomaly) void loadPanelLayers();
     api()?.setMessage(anomaly
-      ? "Select a prediction GeoJSON, then deduplicate detections from overlapping images."
+      ? "Select a test result, then choose its anomalies GeoJSON to deduplicate overlapping-image detections."
       : "Select a segmentation GeoJSON and scan it to begin.");
   }
 
@@ -55,15 +55,17 @@
     const anomalySelect = byId("ppAnomalyGeojson");
     const previousAnomaly = anomalySelect.value;
     const candidates = context.geojsonFiles.filter(file =>
-      !["panel_hierarchy", "solar_panels", "solar_rows", "panel_rows", "identified_panels", "combined", "regularized"].includes(file.stage)
+      /(?:^|[_-])(anomal(?:y|ies)|predictions?)(?:[_-]|\.|$)/i.test(file.name)
     );
     anomalySelect.replaceChildren();
-    addOption(anomalySelect, "", context.resultId ? "Select anomaly predictions…" : "Select a test result first…");
+    addOption(anomalySelect, "", context.resultId ? "Select an anomalies GeoJSON…" : "Select a test result first…");
     for (const file of candidates) addOption(anomalySelect, file.path, `${file.name} · ${file.stage}`);
     if (candidates.some(file => file.path === previousAnomaly)) anomalySelect.value = previousAnomaly;
     else if (workflow?.input_path && candidates.some(file => file.path === workflow.input_path)) anomalySelect.value = workflow.input_path;
     else {
-      const likely = candidates.find(file => /anomal|predict|detect/i.test(file.name));
+      const likely = candidates.find(file => file.name.toLowerCase() === "anomalies.geojson")
+        || candidates.find(file => file.name.toLowerCase() === "predictions.geojson")
+        || candidates[0];
       if (likely) anomalySelect.value = likely.path;
     }
     anomalySelect.disabled = !context.resultId || candidates.length === 0;
@@ -104,7 +106,7 @@
       scannedPath = path;
       byId("ppDeduplicateStep").hidden = false;
       byId("ppDeduplicate").disabled = false;
-      workspace.setMessage("Prediction GeoJSON is ready. Review it, then deduplicate overlapping-image detections.", "ok");
+      workspace.setMessage("Anomalies GeoJSON is ready. Review it, then deduplicate overlapping-image detections.", "ok");
     } catch (error) {
       workspace.setMessage(error.message, "err");
     } finally {

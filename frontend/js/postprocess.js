@@ -21,6 +21,7 @@
     previewHoverReset: null,
     mode: "segmentation",
     segmentationStepPhase: null,
+    currentJobId: null,
   };
 
   const GENERATED_STAGES = new Set([
@@ -2021,6 +2022,8 @@
     // the shared tab controller is still present in the browser.
     byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
     byId("ppRefresh").addEventListener("click", () => loadResults(true));
+    byId("ppCreateJob")?.addEventListener("click", createJob);
+    byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
     byId("ppResult").addEventListener("change", loadGeojsons);
     byId("ppGeojson").addEventListener("change", async () => {
       resetAnalysis();
@@ -2111,7 +2114,86 @@
     init();
     ensurePreviewMap();
     setTimeout(() => state.map?.invalidateSize(), 30);
+    await loadJobs();
+  }
+
+  async function loadJobs() {
+    const landing = byId("ppJobLanding");
+    const workspace = document.querySelector(".postprocessWorkspace");
+    const list = byId("ppJobList");
+    if (!landing || !workspace || !list) return loadResults(false);
+    landing.hidden = false;
+    landing.style.display = "block";
+    workspace.hidden = true;
+    workspace.style.display = "none";
+    byId("ppBackToJobs").hidden = true;
+    list.replaceChildren();
+    try {
+      const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
+      const jobs = payload.jobs || [];
+      if (!jobs.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted tiny";
+        empty.textContent = "No post-processing jobs yet. Create one to begin.";
+        list.appendChild(empty);
+      }
+      for (const job of jobs) renderJobItem(list, job);
+    } catch (error) {
+      list.textContent = error.message;
+    }
+  }
+
+  function renderJobItem(container, job) {
+    const item = document.createElement("div");
+    item.className = "postprocessWorkflowItem";
+    const info = document.createElement("div");
+    info.className = "postprocessWorkflowInfo";
+    const name = document.createElement("strong");
+    name.textContent = job.name || job.id;
+    const id = document.createElement("small");
+    id.textContent = `ID: ${job.id}`;
+    info.append(name, id);
+    info.addEventListener("click", () => openJob(job));
+    const menu = document.createElement("button");
+    menu.type = "button";
+    menu.className = "iconDots";
+    menu.textContent = "⋮";
+    menu.title = "Job options";
+    menu.addEventListener("click", async event => {
+      event.stopPropagation();
+      const action = window.prompt("Type rename or delete", "rename");
+      if (action === "rename") {
+        const next = window.prompt("Job name", job.name || job.id);
+        if (next?.trim()) await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: next.trim() }) });
+        await loadJobs();
+      } else if (action === "delete" && window.confirm(`Delete “${job.name || job.id}”?`)) {
+        await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+        await loadJobs();
+      }
+    });
+    item.append(info, menu);
+    container.appendChild(item);
+  }
+
+  async function createJob() {
+    const name = window.prompt("Job name", "Post-processing job");
+    if (!name?.trim()) return;
+    const payload = await requestJson("/api/postprocess-jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+    await openJob(payload.job);
+  }
+
+  async function openJob(job) {
+    state.currentJobId = job.id;
+    byId("ppJobLanding").hidden = true;
+    byId("ppJobLanding").style.display = "none";
+    document.querySelector(".postprocessWorkspace").hidden = false;
+    document.querySelector(".postprocessWorkspace").style.display = "grid";
+    byId("ppBackToJobs").hidden = false;
     await loadResults(false);
+  }
+
+  function showJobLanding() {
+    void loadJobs();
   }
 
   function getContext() {

@@ -2411,6 +2411,13 @@ def _project_child(root: Path, child_id: str, label: str) -> Path:
         raise HTTPException(status_code=404, detail=f"{label} not found.")
     return child
 
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
 def _list_datasets() -> list[dict]:
     """
     Return detailed dataset info from data/test/.
@@ -2445,6 +2452,8 @@ def _list_sessions() -> list[dict]:
     items = []
     for p in sorted([x for x in base.iterdir() if x.is_dir()],
                     key=lambda x: x.stat().st_mtime, reverse=True):
+        if p.name.startswith("."):
+            continue
         run_status = _result_run_status(p)
         complete = run_status in {"complete", "completed"}
         items.append({
@@ -4096,7 +4105,6 @@ async def api_test_run(
 
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
     session_dir = get_project_sessions_dir() / session
-    final_anom_gj = None  # Will be set by filtering step below
     
     if input_type == "tif":
         anom_gj, imgs_gj = _build_anomalies_geojson_from_tiles(
@@ -4169,16 +4177,9 @@ async def api_test_run(
             exif_index=exif_from_manifest,
             camera_meta=camera_meta,
         )
-        # Filter overlapping anomalies: keep highest-confidence when overlap >20%
-        final_anom_gj = _filter_predictions_geojson(anom_gj, overlap_threshold=0.20)
-        
         # For images branch, overlays/thumbs are in session dir
         ov_dir = out_root / "overlays"
         th_dir = out_root / "thumbs"
-
-    # Filter anomalies for TIF branch as well (if not already done)
-    if final_anom_gj is None and anom_gj:
-        final_anom_gj = _filter_predictions_geojson(anom_gj, overlap_threshold=0.20)
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):
@@ -4241,8 +4242,6 @@ async def api_test_run(
         "geojson": str(anom_gj),  # backward-compat
         "predictions_geojson": _media_url(anom_gj),
         "anomalies_geojson": _media_url(anom_gj),
-        "filtered_predictions_geojson": _media_url(final_anom_gj) if final_anom_gj else None,
-        "final_anomalies_geojson": _media_url(final_anom_gj) if final_anom_gj else None,
         "images_geojson":    _media_url(imgs_gj),
         "results_dir": str(preds_dir),
         "overlays": _media_url(ov_dir),
@@ -4282,6 +4281,71 @@ async def api_sessions():
     details = _list_sessions()                 # [{"name","mtime"}, ...] where name == session id
     ids = [d["name"] for d in details]
     return {"ok": True, "sessions": details, "session_ids": ids}
+
+
+def _postprocess_jobs_dir() -> Path:
+    root = get_project_sessions_dir() / ".postprocess_jobs"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+@app.get("/api/postprocess-jobs")
+async def api_postprocess_jobs():
+    jobs = []
+    root = _postprocess_jobs_dir()
+    for directory in root.iterdir():
+        if not directory.is_dir():
+            continue
+        metadata_path = directory / "job.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        metadata["id"] = directory.name
+        jobs.append(metadata)
+    jobs.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return {"ok": True, "jobs": jobs}
+
+
+@app.post("/api/postprocess-jobs")
+async def api_create_postprocess_job(request: Request):
+    payload = await request.json()
+    name = str(payload.get("name") or "Post-processing job").strip()[:128] or "Post-processing job"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")[:60] or "postprocess"
+    job_id = f"{safe_name}_{uuid.uuid4().hex[:8]}"
+    now = datetime.now().isoformat()
+    directory = _postprocess_jobs_dir() / job_id
+    directory.mkdir(parents=True, exist_ok=False)
+    metadata = {"id": job_id, "name": name, "created_at": now, "updated_at": now, "sources": {}, "workflows": {}}
+    _atomic_json(directory / "job.json", metadata)
+    return {"ok": True, "job": metadata}
+
+
+@app.patch("/api/postprocess-jobs/{job_id}")
+async def api_rename_postprocess_job(job_id: str, request: Request):
+    directory = _project_child(_postprocess_jobs_dir(), job_id, "Post-processing job")
+    metadata_path = directory / "job.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=404, detail="Post-processing job not found.") from exc
+    payload = await request.json()
+    name = str(payload.get("name") or "").strip()[:128]
+    if not name:
+        raise HTTPException(status_code=400, detail="Job name cannot be empty.")
+    metadata["name"] = name
+    metadata["updated_at"] = datetime.now().isoformat()
+    _atomic_json(metadata_path, metadata)
+    return {"ok": True, "job": {**metadata, "id": directory.name}}
+
+
+@app.delete("/api/postprocess-jobs/{job_id}")
+async def api_delete_postprocess_job(job_id: str):
+    directory = _project_child(_postprocess_jobs_dir(), job_id, "Post-processing job")
+    if not directory.is_dir():
+        raise HTTPException(status_code=404, detail="Post-processing job not found.")
+    shutil.rmtree(directory)
+    return {"ok": True, "id": directory.name}
 
 
 @app.post("/api/results/{session_id}/rename")
@@ -4372,10 +4436,6 @@ async def api_session_summary(session: str):
 
     rotated_images_available = bool(assets.get("rotated_images")) or (camera_meta is not None and bool(camera_meta))
 
-    final_gj = ses / "filtered_predictions.geojson"
-    if not final_gj.exists():
-        final_gj = ses / "final_anomalies.geojson"  # legacy session compatibility
-
     return {
         "ok": True,
         "session": session,
@@ -4383,8 +4443,6 @@ async def api_session_summary(session: str):
         "geojson_url": _media_url(gj) if gj.exists() else None,
         "predictions_geojson": _media_url(gj) if gj.exists() else None,
         "anomalies_geojson": _media_url(gj) if gj.exists() else None,
-        "filtered_predictions_geojson": _media_url(final_gj) if final_gj.exists() else None,
-        "final_anomalies_geojson": _media_url(final_gj) if final_gj.exists() else None,
         # NEW: where image footprints live (if you created them)
         "images_geojson_url": _media_url(imgs_gj) if imgs_gj.exists() else None,
         "assets": assets,

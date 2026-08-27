@@ -489,8 +489,24 @@
           <button id="ppRefresh" class="secondary" type="button"><span aria-hidden="true">↻</span> Refresh results</button>
         </div>
 
-        <div class="postprocessWorkspace">
+        <div id="ppJobLanding" class="postprocessJobLanding">
+          <div class="row between">
+            <div>
+              <h3>Post-processing jobs</h3>
+              <p class="muted tiny">Create a workspace for derived segmentation and anomaly outputs. Original test results remain unchanged.</p>
+            </div>
+            <button id="ppCreateJob" type="button">Create job</button>
+          </div>
+          <div id="ppJobList" class="postprocessWorkflowList"><div class="muted tiny">Loading jobs…</div></div>
+        </div>
+
+        <div class="postprocessWorkspace" hidden style="display: none;">
+        <button id="ppBackToJobs" class="secondary tiny" type="button" hidden>← Back to jobs</button>
         <div class="postprocessControls">
+        <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
+          <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
+          <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
+        </div>
         <div class="postprocessSelection">
           <div>
             <label for="ppResult">Test result</label>
@@ -499,10 +515,6 @@
               <span id="ppResultSpinner" class="spinner postprocessSelectSpinner" aria-hidden="true"></span>
             </div>
           </div>
-        </div>
-        <div class="postprocessModeTabs" role="tablist" aria-label="Post-processing workflow">
-          <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
-          <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
         </div>
         <div id="ppSegmentationControls">
         <div class="postprocessSelection postprocessSourceSelection">
@@ -613,10 +625,10 @@
         <div id="ppAnomalyControls" hidden>
           <div class="postprocessSelection postprocessSourceSelection">
             <div>
-              <label for="ppAnomalyGeojson">Prediction GeoJSON</label>
-              <select id="ppAnomalyGeojson" disabled><option value="">Select anomaly predictions…</option></select>
+              <label for="ppAnomalyGeojson">Anomalies GeoJSON</label>
+              <select id="ppAnomalyGeojson" disabled><option value="">Select an anomalies GeoJSON…</option></select>
             </div>
-            <button id="ppScanAnomalies" type="button" disabled>Scan predictions</button>
+            <button id="ppScanAnomalies" type="button" disabled>Scan anomalies</button>
           </div>
           <div class="postprocessSteps">
             <article id="ppDeduplicateStep" class="postprocessStep" hidden>
@@ -794,10 +806,6 @@
               <span id="imagesOpacityValue" style="min-width: 30px;">100%</span>
             </div>
             <div id="mapDetectionsFilter" style="padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 14px;">
-              <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
-                <input type="checkbox" id="chkMapFilterAnomalies" />
-                <span>Filter predictions</span>
-              </label>
               <label style="display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 4px; font-size: 12px;">
                 <input type="checkbox" id="chkMapShowOnlyDetections" />
                 <span>Show only detected</span>
@@ -1390,9 +1398,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260826g"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260826p"></script>
+  <script src="js/postprocess.js?v=20260827c"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
-  <script src="js/postprocess_anomaly.js?v=20260826f"></script>
+  <script src="js/postprocess_anomaly.js?v=20260827a"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

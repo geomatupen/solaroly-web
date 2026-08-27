@@ -10,7 +10,6 @@ let currentSession = null;
 let styleTarget = null;
 let layerMenuState = { name: null, info: null };
 let mapDetectionFilterActive = false;
-let anomaliesFilterActive = false;
 let prevMapDetectionStates = null;
 let activeGeoJsonHoverReset = null;
 
@@ -133,9 +132,6 @@ function toggleImageOverlay(id, on){
     rec.on = false;
   }
 
-  if (anomaliesFilterActive){
-    applyAnomaliesFilter();
-  }
 }
 
 // turn ALL images on/off (used by Show all / Hide all buttons)
@@ -145,9 +141,6 @@ function setAllImageOverlays(on){
     const sel = `.imgToggle[data-id="${CSS.escape(rec.id)}"]`;
     const cb = document.querySelector(sel);
     if (cb) cb.checked = on;
-  }
-  if (anomaliesFilterActive){
-    applyAnomaliesFilter();
   }
 }
 
@@ -209,86 +202,6 @@ function applyMapDetectionFilter(){
   }
 
   renderImagesList();
-}
-
-function applyAnomaliesFilter(){
-  const chk = document.getElementById('chkMapFilterAnomalies');
-  const on = chk?.checked || false;
-  anomaliesFilterActive = on;
-
-  const layerDefs = [
-    {
-      key: "Predictions",
-      fallback: { color: "#ff5722", weight: 1, opacity: 1, fillColor: "#ff5722", fillOpacity: 0.25 },
-      pointRadius: 4,
-      pointFill: 0.8,
-    },
-    {
-      key: "Filtered predictions",
-      fallback: { color: "#00cc00", weight: 1.5, opacity: 0.8, fillColor: "#00cc00", fillOpacity: 0.15 },
-      pointRadius: 5,
-      pointFill: 0.6,
-    },
-  ];
-
-  const activeStems = new Set(
-    imageCatalog
-      .filter(r => r.on)
-      .map(r => String(r.id).replace(/\.[^.]+$/, ''))
-  );
-
-  let legendNeedsRefresh = false;
-  for (const def of layerDefs) {
-    const refreshed = filterAnomalyLayer(def, activeStems, on);
-    legendNeedsRefresh = legendNeedsRefresh || refreshed;
-  }
-
-  if (legendNeedsRefresh) {
-    renderLegend();
-  }
-}
-
-function filterAnomalyLayer(def, activeStems, filterActive){
-  const rec = overlayRegistry[def.key];
-  if (!rec || !rec.data) return false;
-
-  const base = rec.style || def.fallback;
-  const wasVisible = rec.layer ? MAP.hasLayer(rec.layer) : false;
-
-  const full = rec.data;
-  const filtered = filterActive ? {
-    ...full,
-    features: (full.features || []).filter(f => {
-      const img = f?.properties?.image || f?.properties?.file || f?.properties?.name;
-      if (!img) return false;
-      const stem = String(img).replace(/\.[^.]+$/, '');
-      return activeStems.has(stem);
-    })
-  } : full;
-
-  try { if (rec.layer) { MAP.removeLayer(rec.layer); } } catch(_){ }
-
-  const layer = L.geoJSON(filtered, {
-    style: (f)=> styleForAnomalyFeature(f, base),
-    pointToLayer: (f, latlng) => L.circleMarker(latlng, {
-      radius: def.pointRadius,
-      color: base.color,
-      fillColor: base.fillColor,
-      fillOpacity: def.pointFill,
-    }),
-    onEachFeature: (feature, layer) => {
-      addGeoJsonHoverHighlight(feature, layer);
-      window.bindSolarFeatureIdentifier?.(feature, layer);
-      try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
-    }
-  });
-
-  if (wasVisible) {
-    layer.addTo(MAP);
-  }
-
-  overlayRegistry[def.key] = { ...rec, layer };
-  return wasVisible;
 }
 
 function updateMapDetectionFilterVisibility(hasTifTiles){

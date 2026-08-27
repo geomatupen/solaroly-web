@@ -2379,44 +2379,6 @@ async function loadGeoJSON(url){
   // Don't auto-fit bounds here - let applySessionToMap handle it after all layers loaded
 }
 
-async function loadFinalAnomalies(url){
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.debug('filtered_predictions.geojson not found (optional)');
-      return;
-    }
-    const gj = await res.json();
-
-    const base = overlayRegistry["Filtered predictions"]?.style || {
-      color: "#00cc00", weight: 1.5, opacity: 0.8,
-      fillColor: "#00cc00", fillOpacity: 0.15
-    };
-
-    // remove previous layer (if any)
-    try{
-      const prev = overlayRegistry["Filtered predictions"];
-      if (prev && prev.layer){ try { MAP.removeLayer(prev.layer); } catch(_){} }
-    }catch(_){ }
-
-    const layer = L.geoJSON(gj, {
-      style: (f)=> styleForAnomalyFeature(f, base),
-      pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: base.color, fillColor: base.fillColor, fillOpacity: 0.6 }),
-      onEachFeature: (feature, layer) => {
-        window.addGeoJsonHoverHighlight?.(feature, layer);
-        try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
-      }
-    }).addTo(MAP);
-
-    overlayRegistry["Filtered predictions"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Filtered predictions"]?.categorical || null };
-    refreshLayersPanel();
-    renderLegend();
-  } catch(e) {
-    console.debug('loadFinalAnomalies error:', e);
-  }
-}
-
-
 function styleForCategoricalFeature(f, fallback, categorical){
   const cat = categorical;
   if (!cat) return fallback || { color:"#ff5722", weight:1, opacity:1, fillColor:"#ff5722", fillOpacity:0.25 };
@@ -2747,7 +2709,6 @@ async function applySessionToMap(sessionName){
 
   const sessRoot = _sessionRootFromSummary();
   const anomaliesUrl = sum.predictions_geojson || sum.anomalies_geojson || sum.geojson_url || sum.geojson || (sessRoot ? (sessRoot + 'predictions.geojson') : null);
-  const finalAnomaliesUrl = sum.filtered_predictions_geojson || sum.final_anomalies_geojson || (sessRoot ? (sessRoot + 'filtered_predictions.geojson') : null);
   const imagesUrl = sum.images_geojson_url || sum.images_geojson || sum.images || sum.images_gj || (sessRoot ? (sessRoot + 'images.geojson') : null);
 
   // 2) anomalies polygons (load regardless)
@@ -2755,12 +2716,6 @@ async function applySessionToMap(sessionName){
     setMapSectionLoading(true, "Loading detection polygons…");
     try { await loadGeoJSON(anomaliesUrl); }
     catch(e){ console.warn('anomalies fetch failed:', e); }
-  }
-
-  // 2b) final anomalies polygons (high-confidence filtered)
-  if (finalAnomaliesUrl){
-    try { await loadFinalAnomalies(finalAnomaliesUrl); }
-    catch(e){ console.debug('final_anomalies fetch failed:', e); }
   }
 
   // 3) Try ORIGINAL GeoTIFF tiles
@@ -2777,9 +2732,6 @@ async function applySessionToMap(sessionName){
     setMapSectionLoading(true, "Loading orthophoto tiles…");
     updateMapDetectionFilterVisibility(true);
     updateImageListButtonsVisibility(true);
-    const chkMapFilterAnomalies = document.getElementById('chkMapFilterAnomalies');
-    if (chkMapFilterAnomalies) chkMapFilterAnomalies.checked = false;
-    anomaliesFilterActive = false;
     const b = createTifTileGroup(tiles.layers);
     TIF_TILE_GROUP  = b.group;
     TIF_TILE_LAYERS = b.layers;
@@ -2801,9 +2753,6 @@ async function applySessionToMap(sessionName){
     updateImageListButtonsVisibility(false);
     // Fallback: point markers loaded from images.geojson
     await loadImagesCatalog(sessionName, imagesUrl);
-    // Apply anomalies filter if enabled
-    applyAnomaliesFilter();
-    
     // Fit to camera locations (image markers) after all layers loaded
     const bounds = L.latLngBounds([]);
     
@@ -3713,8 +3662,6 @@ function setupUI(){
   if(chkShowOnlyDetections){ chkShowOnlyDetections.addEventListener('change', _applyDetectionFilter); }
   const chkMapShowOnlyDetections = document.getElementById('chkMapShowOnlyDetections');
   if(chkMapShowOnlyDetections){ chkMapShowOnlyDetections.addEventListener('change', applyMapDetectionFilter); }
-  const chkMapFilterAnomalies = document.getElementById('chkMapFilterAnomalies');
-  if(chkMapFilterAnomalies){ chkMapFilterAnomalies.addEventListener('change', applyAnomaliesFilter); }
   
   const lnkLogsTest = $("#lnkToLogsFromTest");
   if(lnkLogsTest) lnkLogsTest.addEventListener("click", (e)=>{ e.preventDefault(); switchToTab("tab-logs"); });
