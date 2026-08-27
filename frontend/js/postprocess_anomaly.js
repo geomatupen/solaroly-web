@@ -4,6 +4,7 @@
   const byId = id => document.getElementById(id);
   const api = () => window.PostprocessWorkspace;
   let scannedPath = "";
+  let scanningPath = "";
   let panelLayers = [];
 
   function addOption(select, value, label, data = {}) {
@@ -16,7 +17,7 @@
 
   function switchMode(mode) {
     const anomaly = mode === "anomaly";
-    byId("ppSegmentationControls").hidden = anomaly;
+    byId("ppSegmentationControls").hidden = true;
     byId("ppSegmentationWorkflow").hidden = anomaly;
     byId("ppAnomalyControls").hidden = !anomaly;
     byId("ppSegmentationTab").classList.toggle("active", !anomaly);
@@ -73,7 +74,8 @@
     }
     anomalySelect.disabled = Boolean(context.configuredSourcePath) || !context.resultId || candidates.length === 0;
     byId("ppScanAnomalies").disabled = !anomalySelect.value;
-    const scanned = Boolean((anomalySelect.value && anomalySelect.value === scannedPath) || hasDeduplicated);
+    const selectedKey = anomalySelect.value ? `${context.resultId}::${anomalySelect.value}` : "";
+    const scanned = Boolean((selectedKey && selectedKey === scannedPath) || hasDeduplicated);
     byId("ppDeduplicateStep").hidden = !scanned;
     byId("ppDeduplicate").disabled = !scanned;
 
@@ -94,6 +96,12 @@
     byId("ppAdjustAnomaliesStep").hidden = !hasDeduplicated;
     byId("ppAssociateStep").hidden = !hasDeduplicated;
     byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
+    if (context.mode === "anomaly" && context.resultId === context.configuredResultId
+      && context.configuredSourcePath && selectedKey
+      && selectedKey !== scannedPath && selectedKey !== scanningPath) {
+      scanningPath = selectedKey;
+      queueMicrotask(() => void scanPredictions());
+    }
   }
 
   async function scanPredictions() {
@@ -102,17 +110,20 @@
     const path = byId("ppAnomalyGeojson").value;
     const file = context.geojsonFiles.find(item => item.path === path);
     if (!path || !file?.url) return;
+    const sourceKey = `${context.resultId}::${path}`;
+    scanningPath = sourceKey;
     byId("ppScanAnomalies").disabled = true;
     workspace.setMessage("Loading prediction polygons into the map…");
     try {
       await workspace.loadPreviewLayer("source", file.url, null, "Anomaly predictions");
-      scannedPath = path;
+      scannedPath = sourceKey;
       byId("ppDeduplicateStep").hidden = false;
       byId("ppDeduplicate").disabled = false;
       workspace.setMessage("Anomalies GeoJSON is ready. Review it, then deduplicate overlapping-image detections.", "ok");
     } catch (error) {
       workspace.setMessage(error.message, "err");
     } finally {
+      scanningPath = "";
       byId("ppScanAnomalies").disabled = !byId("ppAnomalyGeojson").value;
     }
   }

@@ -1861,6 +1861,7 @@
         setMessage(select.value ? "Click Scan GeoJSON to inspect tile edges. Nothing runs until you start it." : "This result has no GeoJSON files.", select.value ? "" : "warn");
       }
       document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
+      if (state.currentJob && state.mode === "segmentation" && select.value) await analyze();
     } catch (error) {
       setMessage(error.message, "err");
     } finally {
@@ -2904,6 +2905,7 @@
     return {
       resultId: byId("ppResult")?.value || "",
       sourcePath: byId("ppGeojson")?.value || "",
+      configuredResultId: state.currentJob?.sources?.[state.mode]?.result_id || "",
       configuredSourcePath: state.currentJob?.sources?.[state.mode]?.path || "",
       workflowId: state.workflowId,
       workflows: state.workflows.slice(),
