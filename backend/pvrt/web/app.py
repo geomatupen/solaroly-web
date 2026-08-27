@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
 from fastapi.responses import JSONResponse, Response as FastAPIResponse
+from ..postprocess import analyze_geojson
 
 from PIL import Image, ExifTags
 from PIL.ExifTags import TAGS, GPSTAGS
@@ -4289,6 +4290,27 @@ def _postprocess_jobs_dir() -> Path:
     return root
 
 
+def _resolve_postprocess_job_source(result_id: str, relative_path: str) -> tuple[Path, Path, dict[str, int]]:
+    result_dir = _project_child(get_project_sessions_dir(), result_id, "Test result")
+    source = (result_dir / str(relative_path or "").strip().replace("\\", "/")).resolve()
+    try:
+        source.relative_to(result_dir.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Source GeoJSON must belong to the selected test result.") from exc
+    if source.suffix.lower() != ".geojson" or not source.is_file():
+        raise HTTPException(status_code=404, detail="Selected source GeoJSON was not found.")
+    stat = source.stat()
+    return result_dir, source, {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _read_postprocess_job(job_id: str) -> tuple[Path, dict[str, Any]]:
+    directory = _project_child(_postprocess_jobs_dir(), job_id, "Post-processing job")
+    try:
+        return directory, json.loads((directory / "job.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=404, detail="Post-processing job not found.") from exc
+
+
 @app.get("/api/postprocess-jobs")
 async def api_postprocess_jobs():
     jobs = []
@@ -4311,6 +4333,15 @@ async def api_postprocess_jobs():
 async def api_create_postprocess_job(request: Request):
     payload = await request.json()
     name = str(payload.get("name") or "Post-processing job").strip()[:128] or "Post-processing job"
+    result_id = str(payload.get("source_result_id") or "").strip()
+    source_path = str(payload.get("source_path") or "").strip()
+    if not result_id or not source_path:
+        raise HTTPException(status_code=400, detail="Select a test result and source GeoJSON before creating a job.")
+    result_dir, source, fingerprint = _resolve_postprocess_job_source(result_id, source_path)
+    try:
+        summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     existing_names: set[str] = set()
     for directory in _postprocess_jobs_dir().iterdir():
         try:
@@ -4331,7 +4362,13 @@ async def api_create_postprocess_job(request: Request):
     now = datetime.now().isoformat()
     directory = _postprocess_jobs_dir() / job_id
     directory.mkdir(parents=True, exist_ok=False)
-    metadata = {"id": job_id, "name": name, "created_at": now, "updated_at": now, "sources": {}, "workflows": {}}
+    metadata = {
+        "id": job_id,
+        "name": name,
+        "created_at": now,
+        "updated_at": now,
+        "source": {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary},
+    }
     _atomic_json(directory / "job.json", metadata)
     return {"ok": True, "job": metadata}
 
@@ -4351,6 +4388,35 @@ async def api_rename_postprocess_job(job_id: str, request: Request):
     metadata["name"] = name
     metadata["updated_at"] = datetime.now().isoformat()
     _atomic_json(metadata_path, metadata)
+    return {"ok": True, "job": {**metadata, "id": directory.name}}
+
+
+@app.get("/api/postprocess-jobs/{job_id}/config")
+async def api_postprocess_job_config(job_id: str):
+    directory, metadata = _read_postprocess_job(job_id)
+    metadata["id"] = directory.name
+    return {"ok": True, "job": metadata}
+
+
+@app.put("/api/postprocess-jobs/{job_id}/config")
+async def api_update_postprocess_job_config(job_id: str, request: Request):
+    directory, metadata = _read_postprocess_job(job_id)
+    payload = await request.json()
+    result_id = str(payload.get("source_result_id") or "").strip()
+    source_path = str(payload.get("source_path") or "").strip()
+    if not payload.get("confirm_reset"):
+        raise HTTPException(status_code=400, detail="Confirm reset before changing a job source.")
+    result_dir, source, fingerprint = _resolve_postprocess_job_source(result_id, source_path)
+    try:
+        summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    workflows_dir = directory / "workflows"
+    if workflows_dir.is_dir():
+        shutil.rmtree(workflows_dir)
+    metadata["source"] = {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary}
+    metadata["updated_at"] = datetime.now().isoformat()
+    _atomic_json(directory / "job.json", metadata)
     return {"ok": True, "job": {**metadata, "id": directory.name}}
 
 

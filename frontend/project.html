@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827m" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260827q" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -490,7 +490,10 @@
               <p id="ppHeaderDescription" class="muted">Refine segmentation polygons or prepare anomaly predictions for panel-level reporting.</p>
             </div>
           </div>
-          <button id="ppRefresh" class="secondary" type="button" title="Reload available source results without changing any data"><span aria-hidden="true">↻</span> Refresh available results</button>
+          <div class="row">
+            <button id="ppEditJobConfig" class="secondary" type="button" hidden>Configure job</button>
+            <button id="ppRefresh" class="secondary" type="button" title="Reload available source results without changing any data"><span aria-hidden="true">↻</span> Refresh available results</button>
+          </div>
         </div>
 
         <div id="ppJobLanding" class="postprocessJobLanding">
@@ -869,12 +872,49 @@
           <label id="ppJobNameLabel" for="ppJobName">Job name</label>
           <input id="ppJobName" type="text" maxlength="128" autocomplete="off" placeholder="e.g., East field anomaly review" />
         </div>
+        <div id="ppJobSourceFields" class="modalContentField">
+          <label for="ppJobSourceResult">Test result</label>
+          <select id="ppJobSourceResult"><option value="">Select a result…</option></select>
+          <label for="ppJobSourceGeojson">Source GeoJSON</label>
+          <select id="ppJobSourceGeojson" disabled><option value="">Select a GeoJSON…</option></select>
+          <div id="ppJobSourceSummary" class="muted tiny">Select a result and GeoJSON to scan the source.</div>
+        </div>
       </div>
       <div class="modalFooter">
         <button id="ppJobModalCancel" class="secondary" type="button">Cancel</button>
         <button id="ppJobModalDelete" class="secondary danger" type="button" hidden>Delete job</button>
         <button id="ppJobModalSave" type="button">Save</button>
       </div>
+    </div>
+  </div>
+
+  <div id="ppJobRenameModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppJobRenameTitle">
+    <div class="modalContent">
+      <div class="modalHeader"><h3 id="ppJobRenameTitle">Rename job</h3><button id="ppJobRenameClose" class="iconBtn" type="button" aria-label="Close">&times;</button></div>
+      <div class="modalBody"><div class="modalContentField"><label for="ppJobRenameName">Job name</label><input id="ppJobRenameName" type="text" maxlength="128" autocomplete="off" /></div></div>
+      <div class="modalFooter"><button id="ppJobRenameCancel" class="secondary" type="button">Cancel</button><button id="ppJobRenameSave" type="button">Save name</button></div>
+    </div>
+  </div>
+
+  <div id="ppJobConfigModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppJobConfigTitle">
+    <div class="modalContent">
+      <div class="modalHeader"><h3 id="ppJobConfigTitle">Edit job configuration</h3><button id="ppJobConfigClose" class="iconBtn" type="button" aria-label="Close">&times;</button></div>
+      <div class="modalBody">
+        <div class="modalContentField">
+          <label for="ppConfigSourceResult">Test result</label><select id="ppConfigSourceResult"></select>
+          <label for="ppConfigSourceGeojson">Source GeoJSON</label><select id="ppConfigSourceGeojson"></select>
+          <div id="ppConfigSourceSummary" class="muted tiny"></div>
+        </div>
+      </div>
+      <div class="modalFooter"><button id="ppJobConfigCancel" class="secondary" type="button">Cancel</button><button id="ppJobConfigSave" type="button">Save configuration</button></div>
+    </div>
+  </div>
+
+  <div id="ppJobDeleteModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppJobDeleteTitle">
+    <div class="modalContent">
+      <div class="modalHeader"><h3 id="ppJobDeleteTitle">Delete post-processing job</h3><button id="ppJobDeleteClose" class="iconBtn" type="button" aria-label="Close">&times;</button></div>
+      <div class="modalBody"><p id="ppJobDeleteMessage"></p></div>
+      <div class="modalFooter"><button id="ppJobDeleteCancel" class="secondary" type="button">Cancel</button><button id="ppJobDeleteConfirm" class="danger" type="button">Delete job</button></div>
     </div>
   </div>
 
@@ -1424,7 +1464,7 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827a"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827u"></script>
+  <script src="js/postprocess.js?v=20260827zb"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
   <script src="js/postprocess_anomaly.js?v=20260827a"></script>
   <script>

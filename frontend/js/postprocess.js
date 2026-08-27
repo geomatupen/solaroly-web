@@ -22,6 +22,7 @@
     mode: "segmentation",
     segmentationStepPhase: null,
     currentJobId: null,
+    currentJob: null,
     jobs: [],
   };
 
@@ -2029,6 +2030,9 @@
     byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
     byId("ppRefresh").addEventListener("click", () => loadResults(true));
     byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
+    byId("ppEditJobConfig")?.addEventListener("click", () => {
+      if (state.currentJob) void openJobConfiguration(state.currentJob);
+    });
     byId("ppJobSearch")?.addEventListener("input", renderJobList);
     byId("ppResult").addEventListener("change", loadGeojsons);
     byId("ppGeojson").addEventListener("change", async () => {
@@ -2137,6 +2141,7 @@
     byId("ppHeaderJobId").hidden = true;
     byId("ppHeaderDescription").hidden = false;
     byId("ppRefresh").hidden = true;
+    byId("ppEditJobConfig").hidden = true;
     list.replaceChildren();
     const loading = document.createElement("div");
     loading.className = "mapListLoading";
@@ -2176,39 +2181,183 @@
     item.className = "postprocessWorkflowItem";
     const info = document.createElement("div");
     info.className = "postprocessWorkflowInfo";
+    const icon = document.createElement("span");
+    icon.className = "postprocessJobListIcon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "📁";
+    const text = document.createElement("div");
+    text.className = "postprocessJobListText";
     const name = document.createElement("strong");
     name.textContent = job.name || job.id;
     const id = document.createElement("small");
+    id.className = "postprocessJobListId";
     id.textContent = `ID: ${job.id}`;
-    info.append(name, id);
+    const source = document.createElement("small");
+    source.className = "postprocessJobListSource";
+    source.textContent = job.source?.result_id
+      ? `Source: ${job.source.result_id} · ${job.source.path || "GeoJSON not selected"}`
+      : "Source not configured";
+    const details = document.createElement("small");
+    details.className = "postprocessJobListDates";
+    const formatTime = value => value ? new Date(value).toLocaleString() : "Not recorded";
+    details.textContent = `Created ${formatTime(job.created_at)} · Modified ${formatTime(job.updated_at)}`;
+    text.append(name, id, source, details);
+    info.append(icon, text);
     info.addEventListener("click", () => openJob(job));
     const menu = document.createElement("button");
     menu.type = "button";
     menu.className = "iconDots";
     menu.textContent = "⋮";
     menu.title = "Job options";
-    menu.addEventListener("click", async event => {
-      event.stopPropagation();
-      const action = await showJobModal("menu", job.name || job.id);
-      if (action?.type === "rename") {
-        const renamed = await showJobModal("rename", job.name || job.id);
-        if (!renamed?.name) return;
-        await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: renamed.name }) });
+    const actions = document.createElement("div");
+    actions.className = "postprocessWorkflowMenu";
+    actions.hidden = true;
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.textContent = "Rename";
+    rename.addEventListener("click", async () => {
+        actions.hidden = true;
+        const renamed = await showRenameJobModal(job.name || job.id);
+        if (!renamed) return;
+        await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: renamed }) });
         await loadJobs();
-      } else if (action?.type === "delete") {
+    });
+    const config = document.createElement("button");
+    config.type = "button";
+    config.textContent = "Edit configuration";
+    config.addEventListener("click", () => {
+      actions.hidden = true;
+      void openJobConfiguration(job);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", async () => {
+        actions.hidden = true;
+        if (!await showDeleteJobModal(job.name || job.id)) return;
         await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
         await loadJobs();
-      }
     });
-    item.append(info, menu);
+    actions.append(rename, config, remove);
+    menu.addEventListener("click", event => {
+      event.stopPropagation();
+      document.querySelectorAll("#ppJobList .postprocessWorkflowMenu").forEach(other => {
+        if (other !== actions) other.hidden = true;
+      });
+      actions.hidden = !actions.hidden;
+    });
+    item.append(info, menu, actions);
     container.appendChild(item);
   }
 
   async function createJob() {
     const action = await showJobModal("create", "Post-processing job");
     if (!action?.name) return;
-    const payload = await requestJson("/api/postprocess-jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: action.name }) });
+    const payload = await requestJson("/api/postprocess-jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: action.name, source_result_id: action.sourceResultId, source_path: action.sourcePath }),
+    });
     await openJob(payload.job);
+  }
+
+  function showRenameJobModal(name) {
+    const modal = byId("ppJobRenameModal");
+    const input = byId("ppJobRenameName");
+    input.value = name;
+    modal.classList.remove("hidden");
+    modal.classList.add("show");
+    input.focus();
+    input.select();
+    return new Promise(resolve => {
+      const finish = value => { modal.classList.remove("show"); modal.classList.add("hidden"); resolve(value); };
+      byId("ppJobRenameSave").onclick = () => input.value.trim() && finish(input.value.trim());
+      byId("ppJobRenameCancel").onclick = () => finish(null);
+      byId("ppJobRenameClose").onclick = () => finish(null);
+      input.onkeydown = event => { if (event.key === "Enter") byId("ppJobRenameSave").click(); if (event.key === "Escape") finish(null); };
+    });
+  }
+
+  function showDeleteJobModal(name) {
+    const modal = byId("ppJobDeleteModal");
+    byId("ppJobDeleteMessage").textContent = `Are you sure you want to delete “${name}”? All derived outputs in this job will be removed. Original test results will remain unchanged.`;
+    modal.classList.remove("hidden");
+    modal.classList.add("show");
+    return new Promise(resolve => {
+      const finish = value => { modal.classList.remove("show"); modal.classList.add("hidden"); resolve(value); };
+      byId("ppJobDeleteConfirm").onclick = () => finish(true);
+      byId("ppJobDeleteCancel").onclick = () => finish(false);
+      byId("ppJobDeleteClose").onclick = () => finish(false);
+    });
+  }
+
+  async function openJobConfiguration(job) {
+    try {
+      const payload = await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}/config`, { cache: "no-store" });
+      const action = await showConfigJobModal(payload.job);
+      if (!action?.sourceResultId || !action?.sourcePath) return;
+      if (action.sourceResultId === payload.job.source?.result_id && action.sourcePath === payload.job.source?.path) return;
+      const confirm = await showJobModal("reset", job);
+      if (confirm?.type !== "reset") return;
+      const updated = await requestJson(`/api/postprocess-jobs/${encodeURIComponent(job.id)}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_result_id: action.sourceResultId, source_path: action.sourcePath, confirm_reset: true }),
+      });
+      state.currentJob = updated.job;
+      setMessage("Job source updated. Its derived outputs were removed; original test results were not changed.", "ok");
+      await loadResults(true);
+    } catch (error) {
+      setMessage(error.message, "err");
+    }
+  }
+
+  async function showConfigJobModal(job) {
+    const modal = byId("ppJobConfigModal");
+    const resultSelect = byId("ppConfigSourceResult");
+    const geojsonSelect = byId("ppConfigSourceGeojson");
+    const summary = byId("ppConfigSourceSummary");
+    const sessions = await requestJson("/api/sessions", { cache: "no-store" });
+    resultSelect.replaceChildren();
+    addOption(resultSelect, "", "Select a result…");
+    for (const item of sessions.sessions || []) addOption(resultSelect, item.id, item.display_name || item.name || item.id);
+    resultSelect.value = job.source?.result_id || "";
+    const loadFiles = async selectedPath => {
+      geojsonSelect.replaceChildren();
+      addOption(geojsonSelect, "", "Loading GeoJSON files…");
+      geojsonSelect.disabled = true;
+      if (!resultSelect.value) return;
+      const files = await requestJson(`/api/results/${encodeURIComponent(resultSelect.value)}/postprocess/geojsons`);
+      geojsonSelect.replaceChildren();
+      addOption(geojsonSelect, "", "Select a GeoJSON…");
+      for (const file of files.files || []) addOption(geojsonSelect, file.path, `${file.name} · ${file.stage}`);
+      geojsonSelect.disabled = false;
+      if (selectedPath && [...geojsonSelect.options].some(option => option.value === selectedPath)) geojsonSelect.value = selectedPath;
+    };
+    await loadFiles(job.source?.path || "");
+    const sourceSummary = job.source?.summary || {};
+    summary.textContent = `${Number(sourceSummary.feature_count || 0).toLocaleString()} features · ${Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
+    resultSelect.onchange = () => void loadFiles("");
+    geojsonSelect.onchange = async () => {
+      if (!resultSelect.value || !geojsonSelect.value) return;
+      summary.textContent = "Scanning source GeoJSON…";
+      try {
+        const scanned = await requestJson(`/api/results/${encodeURIComponent(resultSelect.value)}/postprocess/analyze`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: geojsonSelect.value }),
+        });
+        summary.textContent = `${Number(scanned.summary?.feature_count || 0).toLocaleString()} features · ${Number(scanned.summary?.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
+      } catch (error) { summary.textContent = error.message; }
+    };
+    modal.classList.remove("hidden");
+    modal.classList.add("show");
+    return new Promise(resolve => {
+      const finish = value => { modal.classList.remove("show"); modal.classList.add("hidden"); resolve(value); };
+      byId("ppJobConfigSave").onclick = () => resultSelect.value && geojsonSelect.value
+        ? finish({ sourceResultId: resultSelect.value, sourcePath: geojsonSelect.value }) : null;
+      byId("ppJobConfigCancel").onclick = () => finish(null);
+      byId("ppJobConfigClose").onclick = () => finish(null);
+    });
   }
 
   function showJobModal(mode, value) {
@@ -2217,15 +2366,27 @@
     const nameField = byId("ppJobNameField");
     const save = byId("ppJobModalSave");
     const deleteButton = byId("ppJobModalDelete");
+    const sourceFields = byId("ppJobSourceFields");
+    const sourceResult = byId("ppJobSourceResult");
+    const sourceGeojson = byId("ppJobSourceGeojson");
     if (!modal || !input || !save) return Promise.resolve(null);
-    byId("ppJobModalTitle").textContent = mode === "create" ? "Create post-processing job" : "Rename post-processing job";
+    const config = mode === "config";
+    const jobName = config ? value?.name : value;
+    byId("ppJobModalTitle").textContent = mode === "create" ? "Create post-processing job"
+      : config ? "Edit job configuration"
+        : mode === "delete" ? "Delete post-processing job"
+          : mode === "reset" ? "Change job source"
+            : "Rename post-processing job";
     byId("ppJobModalMessage").textContent = mode === "delete"
       ? `Delete “${value}”? This removes the job metadata and derived outputs.`
+      : mode === "reset"
+        ? `Change the source for “${value?.name || value}”? All derived outputs in this job will be removed. Original test results are not changed.`
       : "Give this workspace a name. Test-run source files remain unchanged.";
-    input.value = value || "";
-    nameField.hidden = mode === "delete" || mode === "menu";
-    save.textContent = mode === "create" ? "Create job" : mode === "delete" ? "Delete job" : "Save name";
-    save.classList.toggle("danger", mode === "delete");
+    input.value = mode === "rename" ? value || "" : "";
+    nameField.hidden = !["create", "rename"].includes(mode);
+    sourceFields.hidden = !["create", "config"].includes(mode);
+    save.textContent = mode === "create" ? "Create job" : mode === "delete" ? "Delete job" : mode === "reset" ? "Change source" : mode === "config" ? "Save configuration" : "Save name";
+    save.classList.toggle("danger", ["delete", "reset"].includes(mode));
     deleteButton.hidden = mode !== "menu";
     if (mode === "menu") {
       byId("ppJobModalMessage").textContent = "Choose an operation for this job.";
@@ -2233,6 +2394,11 @@
     }
     modal.classList.remove("hidden");
     modal.classList.add("show");
+    if (mode === "create" || config) {
+      void loadJobSourceResults(config ? value?.source?.result_id : "", config ? value?.source?.path : "");
+      sourceResult.onchange = () => void loadJobSourceGeojsons();
+      sourceGeojson.onchange = () => void scanJobSource();
+    }
     input.focus();
     return new Promise(resolve => {
       const finish = result => {
@@ -2245,10 +2411,15 @@
         resolve(result);
       };
       save.onclick = () => {
-        if (mode === "menu") return finish({ type: "rename", name: value });
         if (mode === "delete") return finish({ type: "delete" });
+        if (mode === "reset") return finish({ type: "reset" });
         const name = input.value.trim();
-        if (name) finish({ type: mode, name });
+        if ((mode === "create" || config) && (!sourceResult.value || !sourceGeojson.value)) {
+          byId("ppJobSourceSummary").textContent = "Select both a test result and source GeoJSON.";
+          return;
+        }
+        if (mode === "config") finish({ type: mode, sourceResultId: sourceResult.value, sourcePath: sourceGeojson.value });
+        else if (name) finish({ type: mode, name, sourceResultId: sourceResult.value, sourcePath: sourceGeojson.value });
       };
       deleteButton.onclick = () => finish({ type: "delete" });
       byId("ppJobModalCancel").onclick = () => finish(null);
@@ -2257,8 +2428,69 @@
     });
   }
 
+  async function loadJobSourceResults(selectedResultId = "", selectedPath = "") {
+    const result = byId("ppJobSourceResult");
+    result.replaceChildren();
+    addOption(result, "", "Loading results…");
+    result.disabled = true;
+    try {
+      const payload = await requestJson("/api/sessions", { cache: "no-store" });
+      result.replaceChildren();
+      addOption(result, "", "Select a result…");
+      for (const item of payload.sessions || []) addOption(result, item.id, item.display_name || item.name || item.id);
+      result.disabled = false;
+      if (selectedResultId && [...result.options].some(option => option.value === selectedResultId)) {
+        result.value = selectedResultId;
+        await loadJobSourceGeojsons(selectedPath);
+      }
+    } catch (error) {
+      result.replaceChildren();
+      addOption(result, "", "Could not load results");
+      byId("ppJobSourceSummary").textContent = error.message;
+    }
+  }
+
+  async function loadJobSourceGeojsons(selectedPath = "") {
+    const resultId = byId("ppJobSourceResult").value;
+    const geojson = byId("ppJobSourceGeojson");
+    geojson.replaceChildren();
+    addOption(geojson, "", resultId ? "Loading GeoJSON files…" : "Select a GeoJSON…");
+    geojson.disabled = true;
+    if (!resultId) return;
+    try {
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
+      geojson.replaceChildren();
+      addOption(geojson, "", "Select a GeoJSON…");
+      for (const file of payload.files || []) addOption(geojson, file.path, `${file.name} · ${file.stage}`);
+      geojson.disabled = false;
+      if (selectedPath && [...geojson.options].some(option => option.value === selectedPath)) {
+        geojson.value = selectedPath;
+        await scanJobSource();
+      }
+    } catch (error) {
+      byId("ppJobSourceSummary").textContent = error.message;
+    }
+  }
+
+  async function scanJobSource() {
+    const resultId = byId("ppJobSourceResult").value;
+    const inputPath = byId("ppJobSourceGeojson").value;
+    if (!resultId || !inputPath) return;
+    const summary = byId("ppJobSourceSummary");
+    summary.textContent = "Scanning source GeoJSON…";
+    try {
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_path: inputPath }),
+      });
+      summary.textContent = `${Number(payload.summary?.feature_count || 0).toLocaleString()} features · ${Number(payload.summary?.features_on_tile_edges || 0).toLocaleString()} on tile edges`;
+    } catch (error) {
+      summary.textContent = error.message;
+    }
+  }
+
   async function openJob(job) {
     state.currentJobId = job.id;
+    state.currentJob = job;
     byId("ppJobLanding").hidden = true;
     byId("ppJobLanding").style.display = "none";
     document.querySelector(".postprocessWorkspace").hidden = false;
@@ -2269,6 +2501,7 @@
     byId("ppHeaderJobId").hidden = false;
     byId("ppHeaderDescription").hidden = true;
     byId("ppRefresh").hidden = false;
+    byId("ppEditJobConfig").hidden = false;
     window.requestAnimationFrame(() => state.map?.invalidateSize());
     await loadResults(false);
   }

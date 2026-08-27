@@ -22,13 +22,70 @@
 }
 
 .postprocessJobLanding .postprocessWorkflowItem {
-  min-height: 72px;
-  padding: 14px 16px;
+  min-height: 100px;
+  padding: 16px 18px;
   align-items: center;
+  background: linear-gradient(135deg, rgba(16, 24, 32, .98), rgba(13, 21, 29, .98));
+  transition: border-color .15s ease, transform .15s ease, background .15s ease;
+}
+
+.postprocessJobLanding .postprocessWorkflowItem:hover {
+  border-color: rgba(43, 135, 255, .55);
+  transform: translateY(-1px);
+  background: linear-gradient(135deg, rgba(19, 31, 43, .98), rgba(13, 23, 33, .98));
+}
+
+.postprocessJobLanding .postprocessWorkflowList {
+  max-height: none;
+  overflow: visible;
+}
+
+.postprocessJobLanding .postprocessWorkflowMenu {
+  z-index: 1200;
 }
 
 .postprocessJobLanding .postprocessWorkflowInfo {
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.postprocessJobListIcon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--accent);
+  background: rgba(43, 135, 255, .10);
+  font-size: 17px;
+}
+
+.postprocessJobListText {
+  min-width: 0;
+}
+
+.postprocessJobListText strong {
+  margin-bottom: 3px;
+  font-size: 15px;
+}
+
+.postprocessJobListId {
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.postprocessJobListSource {
+  margin-top: 5px;
+  color: #b6c2ce !important;
+}
+
+.postprocessJobListDates {
+  margin-top: 7px;
+  color: #7f8d9a !important;
+  font-size: 10px !important;
 }
 
 .postprocessJobSearchField {
@@ -43,7 +100,10 @@
   display: block;
 }
 
-#ppJobModal .modalBody {
+#ppJobModal .modalBody,
+#ppJobRenameModal .modalBody,
+#ppJobConfigModal .modalBody,
+#ppJobDeleteModal .modalBody {
   display: flex;
   flex-direction: column;
   align-items: stretch;
