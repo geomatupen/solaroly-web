@@ -306,6 +306,63 @@
   border-color: rgba(74, 222, 128, .28);
 }
 
+.postprocessSummaryLink {
+  display: inline;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: #75aefc;
+  background: transparent;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.postprocessSummaryLink:hover {
+  color: #a8caff;
+  background: transparent;
+}
+
+.postprocessConfigFullSummary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 12px 12px 46px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--border);
+}
+
+.postprocessConfigFullSummary[hidden],
+.postprocessSourceStep.collapsed .postprocessConfigFullSummary {
+  display: none;
+}
+
+.postprocessConfigFullSummary > div {
+  min-width: 0;
+  padding: 8px 9px;
+  background: #0d151d;
+}
+
+.postprocessConfigFullSummary span,
+.postprocessConfigFullSummary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.postprocessConfigFullSummary span {
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.postprocessConfigFullSummary strong {
+  color: #dbe5ee;
+  font-size: 11px;
+}
+
 .postprocessSourceStep.collapsed .postprocessSourceStepHeader {
   background: rgba(255, 255, 255, .015);
 }

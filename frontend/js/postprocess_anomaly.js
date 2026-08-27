@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const byId = id => document.getElementById(id);
+  const byId = id => document.getElementById(id) || window.PostprocessWorkspace?.getInternalControl?.(id) || null;
   const api = () => window.PostprocessWorkspace;
   let scannedPath = "";
   let scanningPath = "";
@@ -18,7 +18,6 @@
 
   function switchMode(mode) {
     const anomaly = mode === "anomaly";
-    byId("ppSegmentationControls").hidden = true;
     byId("ppSegmentationWorkflow").hidden = anomaly;
     byId("ppAnomalyControls").hidden = !anomaly;
     byId("ppSegmentationTab").classList.toggle("active", !anomaly);
@@ -86,7 +85,7 @@
     );
     if (configuredReady && selectedKey !== scannedPath) {
       scannedPath = selectedKey;
-      api()?.setMessage("Anomaly source is ready. Continue with prediction deduplication.", "ok");
+      api()?.setMessage("");
     }
     const scanned = Boolean(configuredReady || (selectedKey && selectedKey === scannedPath) || hasDeduplicated);
     byId("ppDeduplicateStep").hidden = !scanned;

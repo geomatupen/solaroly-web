@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827za" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260827zb" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -515,31 +515,13 @@
           <button id="ppSegmentationTab" class="active" type="button" role="tab" aria-selected="true">Segmentation</button>
           <button id="ppAnomalyTab" class="secondary" type="button" role="tab" aria-selected="false">Anomalies</button>
         </div>
-        <div id="ppConfiguredResultSelection" class="postprocessSelection" hidden>
-          <div>
-            <label for="ppResult">Test result</label>
-            <div class="postprocessResultSelectWrap">
-              <select id="ppResult" disabled aria-busy="true"><option value="">Loading test results…</option></select>
-              <span id="ppResultSpinner" class="spinner postprocessSelectSpinner" aria-hidden="true"></span>
-            </div>
-          </div>
-        </div>
-        <div id="ppSegmentationControls" hidden>
-        <div class="postprocessSelection postprocessSourceSelection">
-          <div>
-            <label for="ppGeojson">Source GeoJSON</label>
-            <select id="ppGeojson" disabled><option value="">Select a GeoJSON…</option></select>
-          </div>
-          <button id="ppAnalyze" type="button" disabled>Scan GeoJSON</button>
-        </div>
-        </div>
-        <div id="ppMessage" class="statusLine" aria-live="polite"></div>
+        <div id="ppMessage" class="statusLine" aria-live="polite" hidden></div>
         <div id="ppProgressWrap" class="progressWrap" hidden>
           <div class="progressBar"><span id="ppProgressBar" style="width:0%"></span></div>
           <div id="ppProgressText" class="progressText">Waiting…</div>
         </div>
         <div id="ppSegmentationWorkflow">
-        <div id="ppSummary" class="postprocessSummary" hidden></div>
+        <div id="ppSummary" hidden></div>
 
         <div class="postprocessSteps">
           <article id="ppCombineStep" class="postprocessStep" hidden>
@@ -631,13 +613,6 @@
         </div>
 
         <div id="ppAnomalyControls" hidden>
-          <div id="ppAnomalySourceSelection" class="postprocessSelection postprocessSourceSelection" hidden>
-            <div>
-              <label for="ppAnomalyGeojson">Anomalies GeoJSON</label>
-              <select id="ppAnomalyGeojson" disabled><option value="">Select an anomalies GeoJSON…</option></select>
-            </div>
-            <button id="ppScanAnomalies" type="button" disabled>Scan anomalies</button>
-          </div>
           <div class="postprocessSteps">
             <article id="ppDeduplicateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">1</div>
@@ -943,6 +918,7 @@
               <label for="ppConfigSourceGeojson">Source GeoJSON</label><select id="ppConfigSourceGeojson"></select>
             </div>
             <div id="ppConfigSourceSummary" class="muted tiny postprocessSourceStepSummary"></div>
+            <div id="ppConfigSourceFullSummary" class="postprocessConfigFullSummary" hidden></div>
           </section>
           <section class="postprocessSourceStep collapsed">
             <div class="postprocessSourceStepHeader">
@@ -955,6 +931,7 @@
               <label for="ppConfigAnomalyGeojson">Anomalies GeoJSON</label><select id="ppConfigAnomalyGeojson"></select>
             </div>
             <div id="ppConfigAnomalySummary" class="muted tiny postprocessSourceStepSummary"></div>
+            <div id="ppConfigAnomalyFullSummary" class="postprocessConfigFullSummary" hidden></div>
           </section>
         </div>
       </div>
@@ -1516,9 +1493,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827a"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827zza"></script>
+  <script src="js/postprocess.js?v=20260827zzg"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
-  <script src="js/postprocess_anomaly.js?v=20260827h"></script>
+  <script src="js/postprocess_anomaly.js?v=20260827j"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

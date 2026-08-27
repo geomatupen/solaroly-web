@@ -45,7 +45,26 @@
     associated: { label: "Associated anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
   };
 
-  const byId = id => document.getElementById(id);
+  const internalControls = new Map();
+  for (const id of ["ppResult", "ppGeojson", "ppAnomalyGeojson"]) {
+    const select = document.createElement("select");
+    select.id = id;
+    select.disabled = true;
+    internalControls.set(id, select);
+  }
+  for (const id of ["ppAnalyze", "ppScanAnomalies"]) {
+    const button = document.createElement("button");
+    button.id = id;
+    button.type = "button";
+    button.disabled = true;
+    internalControls.set(id, button);
+  }
+  const resultSpinner = document.createElement("span");
+  resultSpinner.id = "ppResultSpinner";
+  resultSpinner.hidden = true;
+  internalControls.set(resultSpinner.id, resultSpinner);
+
+  const byId = id => document.getElementById(id) || internalControls.get(id) || null;
   let replacementResolver = null;
 
   function finishReplacementConfirmation(confirmed) {
@@ -469,6 +488,7 @@
     const element = byId("ppMessage");
     element.textContent = message;
     element.className = `statusLine${type ? ` ${type}` : ""}`;
+    element.hidden = !message;
   }
 
   function numberValue(id) {
@@ -612,12 +632,16 @@
     for (const [key, item] of state.referenceLayers) {
       if (cached.referenceVisible.has(key) && item.layer && state.map && !state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
     }
-    if (mode === "segmentation" && state.analysis) renderAnalysis(state.analysis);
+    if (mode === "segmentation" && state.analysis) {
+      renderAnalysis(state.analysis);
+      syncSegmentationStepProgress();
+    }
     renderReferenceLayers();
     renderPreviewLayers();
     renderWorkflowList();
     byId("ppMessage").textContent = cached.message;
     byId("ppMessage").className = cached.messageClass;
+    byId("ppMessage").hidden = !cached.message;
     byId("ppMapStatus").textContent = cached.mapStatus;
     byId("ppReferenceStatus").textContent = cached.referenceStatus;
     document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
@@ -1799,7 +1823,7 @@
     addOption(select, "", "Loading test results…");
     select.disabled = true;
     setResultLoading(select, true);
-    setMessage("Loading test results…");
+    if (state.currentJob) setMessage("");
     state.loadingPromise = (async () => {
       try {
         const payload = await requestJson("/api/sessions", { cache: "no-store" });
@@ -1816,7 +1840,6 @@
         }
         select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
         state.loaded = true;
-        setMessage(select.options.length > 1 ? "Select a result and GeoJSON to begin." : "No test results are available.", select.options.length > 1 ? "" : "warn");
         if (select.value) await loadGeojsons();
       } catch (error) {
         setResultLoading(select, false);
@@ -1909,11 +1932,9 @@
       byId("ppReferenceStatus").textContent = "Select a test result to find linked imagery.";
       return;
     }
-    setMessage("Loading saved outputs first…");
+    setMessage("");
     const earlyWorkflow = await loadSavedOutputsFirst(resultId);
     void loadReferenceSources(resultId);
-    setMessage("Looking for GeoJSON files in the selected result…");
-    startIndeterminate("Loading the available GeoJSON file list…");
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`);
       state.geojsonFiles = payload.files || [];
@@ -1975,13 +1996,7 @@
   function renderAnalysis(summary) {
     const container = byId("ppSummary");
     container.replaceChildren();
-    metric(container, Number(summary.feature_count || 0).toLocaleString(), "GeoJSON features");
-    metric(container, Number(summary.features_on_tile_edges || 0).toLocaleString(), "On tile edges");
-    metric(container, Number(summary.tile_count || 0).toLocaleString(), "Referenced tiles found");
-    const gsd = summary.median_pixel_size_m == null ? "—" : `${Number(summary.median_pixel_size_m).toFixed(4)} m`;
-    metric(container, gsd, "Derived pixel size");
-    metric(container, Number(summary.invalid_feature_count || 0).toLocaleString(), "Invalid features");
-    container.hidden = false;
+    container.hidden = true;
   }
 
   function initializeConfiguredSegmentation() {
@@ -1997,12 +2012,7 @@
     if (source?.url) void loadPreviewLayer("source", source.url, summary.feature_count);
     const canCombine = Boolean(summary.tile_metadata_available && summary.features_on_tile_edges);
     byId("ppCombine").disabled = !canCombine;
-    setMessage(
-      canCombine
-        ? "Segmentation source is ready. Continue with fragment combining."
-        : "Segmentation source is ready. No tile-edge fragments require combining.",
-      canCombine ? "ok" : "warn",
-    );
+    setMessage("");
     return true;
   }
 
@@ -2655,12 +2665,14 @@
         result: byId("ppConfigSourceResult"),
         geojson: byId("ppConfigSourceGeojson"),
         summary: byId("ppConfigSourceSummary"),
+        fullSummary: byId("ppConfigSourceFullSummary"),
         source: job.sources?.segmentation || {},
       },
       anomaly: {
         result: byId("ppConfigAnomalyResult"),
         geojson: byId("ppConfigAnomalyGeojson"),
         summary: byId("ppConfigAnomalySummary"),
+        fullSummary: byId("ppConfigAnomalyFullSummary"),
         source: job.sources?.anomaly || {},
       },
     };
@@ -2673,6 +2685,8 @@
     }
     const loadFiles = async (kind, selectedPath = "") => {
       const field = fields[kind];
+      field.fullSummary.hidden = true;
+      field.fullSummary.replaceChildren();
       setSourceStepMessage(field.summary, kind === "anomaly" ? "Loading anomaly GeoJSON files…" : "Loading segmentation GeoJSON files…", true);
       field.geojson.replaceChildren();
       addOption(field.geojson, "", field.result.value ? "Loading GeoJSON files…" : "Select a GeoJSON…");
@@ -2692,14 +2706,59 @@
       if (selectedPath && [...field.geojson.options].some(option => option.value === selectedPath)) field.geojson.value = selectedPath;
       if (!selectedPath) setSourceStepMessage(field.summary, "Select a GeoJSON to scan the source.");
     };
+    const renderFullSummary = (container, sourceSummary) => {
+      container.replaceChildren();
+      const geometryTypes = Object.entries(sourceSummary.geometry_types || {})
+        .map(([type, count]) => `${type}: ${Number(count).toLocaleString()}`)
+        .join(", ") || "—";
+      const pixelSize = sourceSummary.median_pixel_size_m == null
+        ? "—"
+        : `${Number(sourceSummary.median_pixel_size_m).toFixed(4)} m`;
+      const rows = [
+        ["GeoJSON features", Number(sourceSummary.feature_count || 0).toLocaleString()],
+        ["Valid polygons", Number(sourceSummary.valid_polygon_count || 0).toLocaleString()],
+        ["On tile edges", Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()],
+        ["Away from tile edges", Number(sourceSummary.features_away_from_tile_edges || 0).toLocaleString()],
+        ["Referenced tiles", Number(sourceSummary.tile_count || 0).toLocaleString()],
+        ["Invalid features", Number(sourceSummary.invalid_feature_count || 0).toLocaleString()],
+        ["Geometry", geometryTypes],
+        ["Metric CRS", sourceSummary.metric_crs || "—"],
+        ["Median pixel size", pixelSize],
+      ];
+      for (const [label, value] of rows) {
+        const row = document.createElement("div");
+        const name = document.createElement("span");
+        name.textContent = label;
+        const detail = document.createElement("strong");
+        detail.textContent = value;
+        row.append(name, detail);
+        container.appendChild(row);
+      }
+    };
     const showSummary = (kind, sourceSummary) => {
-      setSourceStepMessage(fields[kind].summary, kind === "anomaly"
+      const field = fields[kind];
+      setSourceStepMessage(field.summary, kind === "anomaly"
         ? `${Number(sourceSummary.feature_count || 0).toLocaleString()} anomaly features`
         : `${Number(sourceSummary.feature_count || 0).toLocaleString()} features · ${Number(sourceSummary.features_on_tile_edges || 0).toLocaleString()} on tile edges`);
+      renderFullSummary(field.fullSummary, sourceSummary);
+      const separator = document.createElement("span");
+      separator.textContent = " · ";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "postprocessSummaryLink";
+      toggle.textContent = "View full summary";
+      toggle.addEventListener("click", () => {
+        const opening = field.fullSummary.hidden;
+        if (opening) revealSourceField(field.result);
+        field.fullSummary.hidden = !opening;
+        toggle.textContent = opening ? "Hide full summary" : "View full summary";
+      });
+      field.summary.append(separator, toggle);
     };
     const scan = async kind => {
       const field = fields[kind];
       if (!field.result.value || !field.geojson.value) return;
+      field.fullSummary.hidden = true;
       resetSourceStepCompletion(field.geojson);
       setSourceStepMessage(field.summary, kind === "anomaly" ? "Scanning anomalies GeoJSON…" : "Scanning source GeoJSON…", true);
       try {
@@ -3095,6 +3154,7 @@
     setMessage,
     setMode,
     confirmReplacement,
+    getInternalControl: id => internalControls.get(id) || null,
   };
   window.PostProcessTab = { init, activate, createJob };
   const bindJobCreateButton = () => {
