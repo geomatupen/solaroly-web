@@ -255,6 +255,15 @@
     });
   }
 
+  function resetSourceInfo(modal) {
+    modal?.querySelectorAll(".postprocessSourceInfoToggle").forEach(toggle => {
+      const info = byId(toggle.getAttribute("aria-controls"));
+      if (info) info.hidden = true;
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.classList.remove("active");
+    });
+  }
+
   function revealSourceField(field) {
     setSourceStepExpanded(field?.closest(".postprocessSourceStep"), true);
   }
@@ -299,6 +308,16 @@
       toggle.addEventListener("click", () => {
         const step = toggle.closest(".postprocessSourceStep");
         setSourceStepExpanded(step, step?.classList.contains("collapsed"));
+      });
+    });
+    document.querySelectorAll(".postprocessSourceInfoToggle").forEach(toggle => {
+      toggle.addEventListener("click", () => {
+        const info = byId(toggle.getAttribute("aria-controls"));
+        if (!info) return;
+        if (info.hidden) setSourceStepExpanded(toggle.closest(".postprocessSourceStep"), true);
+        info.hidden = !info.hidden;
+        toggle.setAttribute("aria-expanded", String(!info.hidden));
+        toggle.classList.toggle("active", !info.hidden);
       });
     });
   }
@@ -2333,18 +2352,51 @@
   async function createJob() {
     const action = await showJobModal("create", "Post-processing job");
     if (!action?.name) return;
-    const payload = await requestJson("/api/postprocess-jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: action.name,
-        segmentation_result_id: action.sourceResultId,
-        segmentation_path: action.sourcePath,
-        anomaly_result_id: action.anomalyResultId,
-        anomaly_path: action.anomalyPath,
-      }),
-    });
-    await openJob(payload.job);
+    showListLoading("ppJobList", "Creating job and saving its source configuration…");
+    const matchesCreatedJob = job => (job.name === action.name || job.name?.startsWith(`${action.name} (`))
+      && job.sources?.segmentation?.result_id === action.sourceResultId
+      && job.sources?.segmentation?.path === action.sourcePath
+      && job.sources?.anomaly?.result_id === action.anomalyResultId
+      && job.sources?.anomaly?.path === action.anomalyPath;
+    try {
+      const payload = await requestJson("/api/postprocess-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: action.name,
+          segmentation_result_id: action.sourceResultId,
+          segmentation_path: action.sourcePath,
+          anomaly_result_id: action.anomalyResultId,
+          anomaly_path: action.anomalyPath,
+        }),
+      });
+      if (!payload.job?.id) throw new Error("The job was saved without a valid job response.");
+      state.jobs = [payload.job, ...state.jobs.filter(job => job.id !== payload.job.id)];
+      renderJobList();
+      await openJob(payload.job);
+    } catch (error) {
+      // A response can be interrupted after the backend has already persisted
+      // the job. Reload once and recover that job before reporting a failure.
+      try {
+        const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
+        state.jobs = payload.jobs || [];
+        const recovered = state.jobs.find(matchesCreatedJob);
+        if (recovered) {
+          renderJobList();
+          await openJob(recovered);
+          setMessage("Job created. The saved job was recovered after the creation response was interrupted.", "warn");
+          return;
+        }
+      } catch (_) {
+        // Preserve and display the original creation error below.
+      }
+      renderJobList();
+      const list = byId("ppJobList");
+      const failure = document.createElement("div");
+      failure.className = "statusLine err";
+      failure.textContent = `Could not create job: ${error.message}`;
+      list.prepend(failure);
+    }
   }
 
   function showRenameJobModal(name) {
@@ -2567,6 +2619,7 @@
       save.textContent = "Rename";
     }
     if (mode === "create") resetSourceSteps(modal);
+    if (mode === "create") resetSourceInfo(modal);
     modal.classList.remove("hidden");
     modal.classList.add("show");
     if (mode === "create" || config) {
@@ -2666,6 +2719,12 @@
       if (selectedPath && [...geojson.options].some(option => option.value === selectedPath)) {
         geojson.value = selectedPath;
         await scanJobSource();
+      } else if (!selectedPath) {
+        const predictions = (payload.files || []).find(file => file.name.toLowerCase() === "predictions.geojson");
+        if (predictions) {
+          geojson.value = predictions.path;
+          await scanJobSource();
+        }
       }
     } catch (error) {
       setSourceStepMessage(byId("ppJobSourceSummary"), error.message);
@@ -2719,6 +2778,11 @@
       for (const file of files) addOption(select, file.path, `${file.name} · ${file.stage}`);
       select.disabled = false;
       setSourceStepMessage(byId("ppJobAnomalySummary"), "Select an anomalies GeoJSON to scan the source.");
+      const predictions = files.find(file => file.name.toLowerCase() === "predictions.geojson");
+      if (predictions) {
+        select.value = predictions.path;
+        await scanJobAnomalySource();
+      }
     } catch (error) { setSourceStepMessage(byId("ppJobAnomalySummary"), error.message); }
   }
 

@@ -190,6 +190,42 @@
   padding: 2px 7px;
 }
 
+.postprocessSourceInfoToggle {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  font-family: Georgia, serif;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.postprocessSourceInfoToggle.active {
+  border-color: var(--accent);
+  color: #fff;
+  background: rgba(43, 135, 255, .18);
+}
+
+.postprocessSourceInfo {
+  margin: 0 12px 10px 46px;
+  padding: 9px 10px;
+  border: 1px solid rgba(43, 135, 255, .22);
+  border-radius: 7px;
+  background: rgba(43, 135, 255, .07);
+  line-height: 1.45;
+}
+
+.postprocessSourceInfo code {
+  color: #dbeafe;
+}
+
+.postprocessSourceStep.collapsed .postprocessSourceInfo {
+  display: none;
+}
+
 .postprocessSourceStepBody {
   display: flex;
   flex-direction: column;
