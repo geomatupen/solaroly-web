@@ -6,6 +6,7 @@
   let scannedPath = "";
   let scanningPath = "";
   let panelLayers = [];
+  let panelLayersLoaded = false;
 
   function addOption(select, value, label, data = {}) {
     const option = document.createElement("option");
@@ -29,12 +30,13 @@
     api()?.setMode(mode);
     refresh(api()?.getContext());
     if (anomaly) void loadPanelLayers();
-    api()?.setMessage(anomaly
-      ? "Select a test result, then choose its anomalies GeoJSON to deduplicate overlapping-image detections."
-      : "Select a segmentation GeoJSON and scan it to begin.");
   }
 
   async function loadPanelLayers() {
+    if (panelLayersLoaded) {
+      refresh(api()?.getContext());
+      return;
+    }
     const select = byId("ppPanelReference");
     select.replaceChildren();
     addOption(select, "", "Loading identified panel layers…");
@@ -42,6 +44,7 @@
     try {
       const payload = await api().requestJson("/api/results/postprocess/panel-layers", { cache: "no-store" });
       panelLayers = payload.layers || [];
+      panelLayersLoaded = true;
     } catch (error) {
       panelLayers = [];
       api().setMessage(`Could not load panel references: ${error.message}`, "err");
@@ -75,7 +78,17 @@
     anomalySelect.disabled = Boolean(context.configuredSourcePath) || !context.resultId || candidates.length === 0;
     byId("ppScanAnomalies").disabled = !anomalySelect.value;
     const selectedKey = anomalySelect.value ? `${context.resultId}::${anomalySelect.value}` : "";
-    const scanned = Boolean((selectedKey && selectedKey === scannedPath) || hasDeduplicated);
+    const configuredReady = Boolean(
+      context.mode === "anomaly"
+      && context.resultId === context.configuredResultId
+      && context.configuredSourcePath
+      && anomalySelect.value === context.configuredSourcePath
+    );
+    if (configuredReady && selectedKey !== scannedPath) {
+      scannedPath = selectedKey;
+      api()?.setMessage("Anomaly source is ready. Continue with prediction deduplication.", "ok");
+    }
+    const scanned = Boolean(configuredReady || (selectedKey && selectedKey === scannedPath) || hasDeduplicated);
     byId("ppDeduplicateStep").hidden = !scanned;
     byId("ppDeduplicate").disabled = !scanned;
 
@@ -96,12 +109,6 @@
     byId("ppAdjustAnomaliesStep").hidden = !hasDeduplicated;
     byId("ppAssociateStep").hidden = !hasDeduplicated;
     byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
-    if (context.mode === "anomaly" && context.resultId === context.configuredResultId
-      && context.configuredSourcePath && selectedKey
-      && selectedKey !== scannedPath && selectedKey !== scanningPath) {
-      scanningPath = selectedKey;
-      queueMicrotask(() => void scanPredictions());
-    }
   }
 
   async function scanPredictions() {
@@ -207,6 +214,12 @@
     byId("ppAssociate")?.addEventListener("click", associate);
     document.addEventListener("postprocess:data", event => refresh(event.detail));
     document.addEventListener("postprocess:workflow", event => refresh(event.detail.context));
+    document.addEventListener("postprocess:cache-reset", () => {
+      scannedPath = "";
+      scanningPath = "";
+      panelLayers = [];
+      panelLayersLoaded = false;
+    });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

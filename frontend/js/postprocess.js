@@ -24,6 +24,7 @@
     currentJobId: null,
     currentJob: null,
     jobs: [],
+    modeCache: new Map(),
   };
 
   const GENERATED_STAGES = new Set([
@@ -531,7 +532,7 @@
     state.previewLoading.clear();
     updateFitButton();
     byId("ppLayerList").innerHTML = '<div class="muted tiny">No preview layers loaded.</div>';
-    byId("ppMapStatus").textContent = "Scan a GeoJSON to preview it.";
+    byId("ppMapStatus").textContent = "Configured layers will appear here.";
   }
 
   function clearReferenceLayers() {
@@ -544,6 +545,93 @@
     state.referenceLayers.clear();
     byId("ppReferenceLayers").innerHTML = '<div class="muted tiny">No reference layers loaded.</div>';
     updateFitButton();
+  }
+
+  function visibleLayerKeys(collection) {
+    const visible = new Set();
+    if (!state.map) return visible;
+    for (const [key, item] of collection) {
+      if (item.layer && state.map.hasLayer(item.layer)) visible.add(key);
+    }
+    return visible;
+  }
+
+  function detachLayerCollection(collection) {
+    if (!state.map) return;
+    for (const item of collection.values()) {
+      if (item.layer && state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
+    }
+  }
+
+  function cacheCurrentModeState() {
+    if (!state.currentJobId) return;
+    state.modeCache.set(state.mode, {
+      resultId: byId("ppResult").value,
+      sourcePath: byId("ppGeojson").value,
+      geojsonFiles: state.geojsonFiles.slice(),
+      workflows: state.workflows.slice(),
+      analysis: state.analysis,
+      scanComplete: state.scanComplete,
+      workflowId: state.workflowId,
+      segmentationStepPhase: state.segmentationStepPhase,
+      previewLayers: state.previewLayers,
+      previewVisible: visibleLayerKeys(state.previewLayers),
+      referenceLayers: state.referenceLayers,
+      referenceVisible: visibleLayerKeys(state.referenceLayers),
+      message: byId("ppMessage").textContent,
+      messageClass: byId("ppMessage").className,
+      mapStatus: byId("ppMapStatus").textContent,
+      referenceStatus: byId("ppReferenceStatus").textContent,
+    });
+    detachLayerCollection(state.previewLayers);
+    detachLayerCollection(state.referenceLayers);
+  }
+
+  function restoreModeState(mode) {
+    const cached = state.modeCache.get(mode);
+    if (!cached) return false;
+    state.geojsonFiles = cached.geojsonFiles.slice();
+    state.workflows = cached.workflows.slice();
+    state.analysis = cached.analysis;
+    state.scanComplete = cached.scanComplete;
+    state.workflowId = cached.workflowId;
+    state.segmentationStepPhase = cached.segmentationStepPhase;
+    state.previewLayers = cached.previewLayers;
+    state.referenceLayers = cached.referenceLayers;
+    const result = byId("ppResult");
+    if ([...result.options].some(option => option.value === cached.resultId)) result.value = cached.resultId;
+    const source = byId("ppGeojson");
+    source.replaceChildren();
+    addOption(source, "", "Select a GeoJSON…");
+    for (const file of state.geojsonFiles) addOption(source, file.path, `${file.name} · ${file.stage}`);
+    if ([...source.options].some(option => option.value === cached.sourcePath)) source.value = cached.sourcePath;
+    source.disabled = true;
+    for (const [key, item] of state.previewLayers) {
+      if (cached.previewVisible.has(key) && item.layer && state.map && !state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
+    }
+    for (const [key, item] of state.referenceLayers) {
+      if (cached.referenceVisible.has(key) && item.layer && state.map && !state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
+    }
+    if (mode === "segmentation" && state.analysis) renderAnalysis(state.analysis);
+    renderReferenceLayers();
+    renderPreviewLayers();
+    renderWorkflowList();
+    byId("ppMessage").textContent = cached.message;
+    byId("ppMessage").className = cached.messageClass;
+    byId("ppMapStatus").textContent = cached.mapStatus;
+    byId("ppReferenceStatus").textContent = cached.referenceStatus;
+    document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
+    window.requestAnimationFrame(() => state.map?.invalidateSize());
+    return true;
+  }
+
+  function resetModeCache() {
+    for (const cached of state.modeCache.values()) {
+      detachLayerCollection(cached.previewLayers);
+      detachLayerCollection(cached.referenceLayers);
+    }
+    state.modeCache.clear();
+    document.dispatchEvent(new CustomEvent("postprocess:cache-reset"));
   }
 
   function setReferenceOpacity(item, opacity) {
@@ -1858,10 +1946,14 @@
         renderWorkflowList();
       }
       if (!restored) {
-        setMessage(select.value ? "Click Scan GeoJSON to inspect tile edges. Nothing runs until you start it." : "This result has no GeoJSON files.", select.value ? "" : "warn");
+        if (!state.currentJob) {
+          setMessage(select.value ? "Select a source to continue." : "This result has no GeoJSON files.", select.value ? "" : "warn");
+        } else if (!select.value) {
+          setMessage("The configured segmentation GeoJSON is unavailable. Edit the job configuration.", "err");
+        }
       }
       document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
-      if (state.currentJob && state.mode === "segmentation" && select.value) await analyze();
+      if (state.currentJob && state.mode === "segmentation") initializeConfiguredSegmentation();
     } catch (error) {
       setMessage(error.message, "err");
     } finally {
@@ -1890,6 +1982,28 @@
     metric(container, gsd, "Derived pixel size");
     metric(container, Number(summary.invalid_feature_count || 0).toLocaleString(), "Invalid features");
     container.hidden = false;
+  }
+
+  function initializeConfiguredSegmentation() {
+    const configured = state.currentJob?.sources?.segmentation;
+    const summary = configured?.summary;
+    const sourcePath = byId("ppGeojson").value;
+    if (!configured || !summary || !sourcePath) return false;
+    state.analysis = summary;
+    state.scanComplete = true;
+    renderAnalysis(summary);
+    syncSegmentationStepProgress();
+    const source = state.geojsonFiles.find(file => file.path === sourcePath);
+    if (source?.url) void loadPreviewLayer("source", source.url, summary.feature_count);
+    const canCombine = Boolean(summary.tile_metadata_available && summary.features_on_tile_edges);
+    byId("ppCombine").disabled = !canCombine;
+    setMessage(
+      canCombine
+        ? "Segmentation source is ready. Continue with fragment combining."
+        : "Segmentation source is ready. No tile-edge fragments require combining.",
+      canCombine ? "ok" : "warn",
+    );
+    return true;
   }
 
   async function analyze() {
@@ -2132,7 +2246,7 @@
     byId("ppGeojson").addEventListener("change", async () => {
       resetAnalysis();
       byId("ppAnalyze").disabled = !byId("ppGeojson").value;
-      setMessage(byId("ppGeojson").value ? "Click Scan GeoJSON to inspect tile edges." : "Select a GeoJSON.");
+      setMessage(byId("ppGeojson").value ? "Configured segmentation source selected." : "No configured segmentation source is available.");
       await restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value);
     });
     byId("ppAnalyze").addEventListener("click", analyze);
@@ -2525,6 +2639,7 @@
         }),
       });
       state.currentJob = updated.job;
+      resetModeCache();
       const changedLabels = (updated.changed_sources || []).map(kind => kind === "anomaly" ? "anomaly" : kind).join(" and ");
       setMessage(`${changedLabels || "Job"} source updated. Dependent derived outputs were removed; original test results were not changed.`, "ok");
       await loadResults(true);
@@ -2880,6 +2995,11 @@
   }
 
   async function openJob(job) {
+    if (state.currentJobId !== job.id) {
+      resetModeCache();
+      clearPreviewLayers();
+      clearReferenceLayers();
+    }
     state.currentJobId = job.id;
     state.currentJob = job;
     byId("ppJobLanding").hidden = true;
@@ -2898,6 +3018,11 @@
   }
 
   function showJobLanding() {
+    resetModeCache();
+    clearPreviewLayers();
+    clearReferenceLayers();
+    state.currentJobId = null;
+    state.currentJob = null;
     void loadJobs();
   }
 
@@ -2915,12 +3040,24 @@
   }
 
   function setMode(mode) {
-    state.mode = mode === "anomaly" ? "anomaly" : "segmentation";
+    const nextMode = mode === "anomaly" ? "anomaly" : "segmentation";
+    if (nextMode === state.mode) {
+      document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
+      return;
+    }
     if (state.editing) stopEditing(true);
-    clearPreviewLayers();
+    cacheCurrentModeState();
+    state.mode = nextMode;
+    if (restoreModeState(nextMode)) return;
+    state.previewLayers = new Map();
+    state.referenceLayers = new Map();
+    state.geojsonFiles = [];
+    state.workflows = [];
+    resetAnalysis();
+    clearReferenceLayers();
     const configuredResultId = state.currentJob?.sources?.[state.mode]?.result_id || "";
     const resultSelect = byId("ppResult");
-    if (configuredResultId && resultSelect?.value !== configuredResultId
+    if (configuredResultId
       && [...resultSelect.options].some(option => option.value === configuredResultId)) {
       resultSelect.value = configuredResultId;
       void loadGeojsons();
