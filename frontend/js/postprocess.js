@@ -421,7 +421,7 @@
 
   function ensurePreviewMap() {
     if (state.map || !window.L || !byId("ppMap")) return state.map;
-    state.map = window.L.map("ppMap", { preferCanvas: true, zoomControl: true }).setView([0, 0], 2);
+    state.map = window.L.map("ppMap", { preferCanvas: true, zoomControl: true }).setView([48.8566, 2.3522], 5);
     const rasterPane = state.map.createPane("ppRasterPane");
     rasterPane.style.zIndex = "250";
     const referencePane = state.map.createPane("ppReferencePane");
@@ -1509,7 +1509,7 @@
     }
     for (const workflow of visibleWorkflows) {
       const item = document.createElement("div");
-      item.className = `postprocessWorkflowItem${workflow.id === state.workflowId ? " active" : ""}`;
+      item.className = `postprocessWorkflowItem${workflow.id === state.workflowId ? " active" : ""}${workflow.source_changed ? " sourceChanged" : ""}`;
       const info = document.createElement("div");
       info.className = "postprocessWorkflowInfo";
       const name = document.createElement("strong");
@@ -1522,7 +1522,9 @@
         .filter(stage => !["edited", "panel_hierarchy", "panel_rows", "identified_panels", "solar_panels"].includes(stage))
         .join(" + ") || workflow.stage || "No output";
       const status = document.createElement("small");
-      status.textContent = `${workflow.status || "unknown"} · ${stages}`;
+      status.textContent = workflow.source_changed
+        ? `Source changed · review required · ${stages}`
+        : `${workflow.status || "unknown"} · ${stages}`;
       info.append(name, id, status);
       info.tabIndex = 0;
       info.setAttribute("role", "button");
@@ -1671,6 +1673,9 @@
       applyWorkflow(workflow);
       populateRegularizeSources(workflow.id);
       renderWorkflowList();
+      if (workflow.source_changed) {
+        setMessage("The source GeoJSON changed after this output was created. Existing derived layers are preserved; review them before creating an updated version.", "warn");
+      }
       return true;
     } catch (_) {
       return false;
@@ -2264,6 +2269,7 @@
     byId("ppHeaderJobId").hidden = false;
     byId("ppHeaderDescription").hidden = true;
     byId("ppRefresh").hidden = false;
+    window.requestAnimationFrame(() => state.map?.invalidateSize());
     await loadResults(false);
   }
 

@@ -70,6 +70,7 @@
   grid-template-columns: minmax(360px, .85fr) minmax(680px, 1.65fr);
   gap: 18px;
   align-items: start;
+  margin-top: 16px;
 }
 
 .postprocessControls { min-width: 0; }
@@ -520,6 +521,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 
 .postprocessWorkflowItem.active { border-color: var(--accent); }
+.postprocessWorkflowItem.sourceChanged { border-color: #f59e0b; }
+.postprocessWorkflowItem.sourceChanged .postprocessWorkflowInfo small:last-child { color: #fbbf24; }
 .postprocessWorkflowInfo { min-width: 0; }
 .postprocessWorkflowInfo strong,
 .postprocessWorkflowInfo small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -577,6 +580,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessSelection > div { min-width: 0; }
 .postprocessSelection select { min-width: 0; max-width: 100%; box-sizing: border-box; }
+#ppResult { width: 100%; }
 .postprocessResultSelectWrap { position: relative; }
 .postprocessResultSelectWrap select { padding-right: 52px; }
 .postprocessSelectSpinner {
@@ -616,7 +620,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessSummary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 12px 0;
 }

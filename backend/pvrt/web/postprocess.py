@@ -128,6 +128,11 @@ def create_postprocess_router(
             raise HTTPException(status_code=404, detail="Selected GeoJSON was not found.")
         return candidate
 
+    def source_fingerprint(path: Path) -> dict[str, int]:
+        """Small, read-only source signature used to detect later replacement."""
+        stat = path.stat()
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
     def resolve_workflow(result_dir: Path, workflow_id: str) -> Path:
         safe_workflow = _safe_name(workflow_id, "")
         workflow_dir = (result_dir / "postprocess" / safe_workflow).resolve()
@@ -168,6 +173,18 @@ def create_postprocess_router(
         outputs.pop("edited", None)
         payload["outputs"] = outputs
         payload.pop("manual_revisions", None)
+        source_path = str(payload.get("input_path") or "")
+        expected_fingerprint = payload.get("source_fingerprint")
+        if source_path and isinstance(expected_fingerprint, dict):
+            candidate = (workflow_dir.parent.parent / source_path).resolve()
+            try:
+                candidate.relative_to(workflow_dir.parent.parent.resolve())
+                current_fingerprint = source_fingerprint(candidate)
+                payload["source_changed"] = current_fingerprint != expected_fingerprint
+                payload["source_current_fingerprint"] = current_fingerprint
+            except (OSError, ValueError):
+                payload["source_changed"] = True
+                payload["source_current_fingerprint"] = None
         for output in outputs.values():
             if isinstance(output, dict) and output.get("path"):
                 output_path = (workflow_dir.parent.parent / output["path"]).resolve()
@@ -390,6 +407,7 @@ def create_postprocess_router(
             "message": "Queued fragment combining.",
             "created_at": existing.get("created_at") or datetime.now().isoformat(),
             "input_path": input_relative,
+            "source_fingerprint": source_fingerprint(input_path),
             "parameters": request.model_dump() if hasattr(request, "model_dump") else request.dict(),
             "outputs": outputs,
         }
@@ -605,6 +623,7 @@ def create_postprocess_router(
             "message": "Queued anomaly deduplication.",
             "created_at": datetime.now().isoformat(),
             "input_path": input_path.relative_to(result_dir).as_posix(),
+            "source_fingerprint": source_fingerprint(input_path),
             "parameters": request.model_dump() if hasattr(request, "model_dump") else request.dict(),
             "outputs": {},
         }
