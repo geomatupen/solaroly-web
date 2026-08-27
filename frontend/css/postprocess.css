@@ -17,6 +17,28 @@
   font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.postprocessJobLanding > .row h3 {
+  margin: 0;
+}
+
+.postprocessJobLanding .postprocessWorkflowItem {
+  min-height: 72px;
+  padding: 14px 16px;
+  align-items: center;
+}
+
+.postprocessJobLanding .postprocessWorkflowInfo {
+  cursor: pointer;
+}
+
+.postprocessJobSearchField {
+  margin-top: 12px;
+  margin-bottom: 0;
+  width: 260px;
+  max-width: 100%;
+  margin-left: auto;
+}
+
 #ppJobNameField {
   display: block;
 }

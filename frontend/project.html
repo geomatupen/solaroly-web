@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260825n" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827c" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260827i" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -495,13 +495,15 @@
 
         <div id="ppJobLanding" class="postprocessJobLanding">
           <div class="row between">
-            <div>
-              <h3>Post-processing jobs</h3>
-              <p class="muted tiny">Create a workspace for derived segmentation and anomaly outputs. Original test results remain unchanged.</p>
-            </div>
+            <h3>Jobs</h3>
             <button id="ppCreateJob" type="button">Create job</button>
           </div>
-          <div id="ppJobList" class="postprocessWorkflowList"><div class="muted tiny">Loading jobs…</div></div>
+          <div class="modalContentField postprocessJobSearchField">
+            <input id="ppJobSearch" type="text" placeholder="Search jobs…" aria-label="Search post-processing jobs" autocomplete="off" />
+          </div>
+          <div id="ppJobList" class="postprocessWorkflowList" aria-live="polite">
+            <div class="mapListLoading"><span class="spinner" aria-hidden="true"></span><span>Loading jobs…</span></div>
+          </div>
         </div>
 
         <div class="postprocessWorkspace" hidden style="display: none;">
@@ -1422,7 +1424,7 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827a"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260827o"></script>
+  <script src="js/postprocess.js?v=20260827r"></script>
   <script src="js/postprocess_segmentation.js?v=20260826l"></script>
   <script src="js/postprocess_anomaly.js?v=20260827a"></script>
   <script>

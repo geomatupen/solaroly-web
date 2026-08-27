@@ -22,6 +22,7 @@
     mode: "segmentation",
     segmentationStepPhase: null,
     currentJobId: null,
+    jobs: [],
   };
 
   const GENERATED_STAGES = new Set([
@@ -2023,6 +2024,7 @@
     byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
     byId("ppRefresh").addEventListener("click", () => loadResults(true));
     byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
+    byId("ppJobSearch")?.addEventListener("input", renderJobList);
     byId("ppResult").addEventListener("change", loadGeojsons);
     byId("ppGeojson").addEventListener("change", async () => {
       resetAnalysis();
@@ -2129,20 +2131,39 @@
     byId("ppHeaderTitle").textContent = "Post-processing";
     byId("ppHeaderJobId").hidden = true;
     byId("ppHeaderDescription").hidden = false;
+    byId("ppRefresh").hidden = true;
     list.replaceChildren();
+    const loading = document.createElement("div");
+    loading.className = "mapListLoading";
+    loading.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Loading jobs…</span>';
+    list.appendChild(loading);
     try {
       const payload = await requestJson("/api/postprocess-jobs", { cache: "no-store" });
-      const jobs = payload.jobs || [];
-      if (!jobs.length) {
-        const empty = document.createElement("div");
-        empty.className = "muted tiny";
-        empty.textContent = "No post-processing jobs yet. Create one to begin.";
-        list.appendChild(empty);
-      }
-      for (const job of jobs) renderJobItem(list, job);
+      state.jobs = payload.jobs || [];
+      renderJobList();
     } catch (error) {
+      state.jobs = [];
+      list.replaceChildren();
       list.textContent = error.message;
     }
+  }
+
+  function renderJobList() {
+    const list = byId("ppJobList");
+    if (!list) return;
+    const search = byId("ppJobSearch")?.value.trim().toLocaleLowerCase() || "";
+    const jobs = state.jobs.filter(job => {
+      if (!search) return true;
+      return `${job.name || ""} ${job.id || ""}`.toLocaleLowerCase().includes(search);
+    });
+    list.replaceChildren();
+    if (!jobs.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted tiny";
+        empty.textContent = state.jobs.length ? "No jobs match your search." : "No post-processing jobs yet. Create one to begin.";
+        list.appendChild(empty);
+    }
+    for (const job of jobs) renderJobItem(list, job);
   }
 
   function renderJobItem(container, job) {
@@ -2242,6 +2263,7 @@
     byId("ppHeaderJobId").textContent = `ID: ${job.id}`;
     byId("ppHeaderJobId").hidden = false;
     byId("ppHeaderDescription").hidden = true;
+    byId("ppRefresh").hidden = false;
     await loadResults(false);
   }
 
