@@ -132,7 +132,9 @@
     byId("ppScanAnomalies").disabled = true;
     workspace.setMessage("Loading prediction polygons into the map…");
     try {
-      await workspace.loadPreviewLayer("source", file.url, null, "Anomaly predictions");
+      await workspace.loadPreviewLayer("source", file.url, null, "Anomaly predictions", false, file.mtime);
+      const current = workspace.getContext();
+      if (current.mode !== "anomaly" || current.resultId !== context.resultId) return;
       scannedPath = sourceKey;
       byId("ppDeduplicateStep").hidden = false;
       byId("ppDeduplicateStep").classList.remove("locked");

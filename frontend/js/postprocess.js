@@ -11,12 +11,17 @@
     map: null,
     previewLayers: new Map(),
     previewLoading: new Set(),
+    previewLayerCache: new Map(),
+    previewDataCache: new Map(),
+    previewDataPromises: new Map(),
     workflows: [],
     scanComplete: false,
     editing: null,
     loadingPromise: null,
     referenceLayers: new Map(),
     referenceToken: 0,
+    referenceSourceCache: new Map(),
+    referenceLoadPromises: new Map(),
     temporarySequence: 0,
     previewHoverReset: null,
     mode: "segmentation",
@@ -28,6 +33,9 @@
     jobsLoadingPromise: null,
     modeCache: new Map(),
     stepsLoading: false,
+    modeLoadToken: 0,
+    modeAbortController: new AbortController(),
+    modeLoadTimer: null,
   };
 
   const GENERATED_STAGES = new Set([
@@ -75,6 +83,33 @@
   internalControls.set(refreshOutputs.id, refreshOutputs);
 
   const byId = id => document.getElementById(id) || internalControls.get(id) || null;
+
+  function loadContext() {
+    return {
+      token: state.modeLoadToken,
+      mode: state.mode,
+      jobId: state.currentJobId,
+      signal: state.modeAbortController.signal,
+    };
+  }
+
+  function invalidateModeLoad() {
+    if (state.modeLoadTimer) {
+      window.clearTimeout(state.modeLoadTimer);
+      state.modeLoadTimer = null;
+    }
+    state.modeAbortController.abort();
+    state.modeAbortController = new AbortController();
+    state.modeLoadToken += 1;
+  }
+
+  function isCurrentLoad(context) {
+    return !context || (
+      context.token === state.modeLoadToken
+      && context.mode === state.mode
+      && context.jobId === state.currentJobId
+    );
+  }
 
   function setStepsLoading(loading, message = "Loading configured GeoJSON data…") {
     state.stepsLoading = Boolean(loading);
@@ -519,6 +554,13 @@
     return Number(byId(id).value);
   }
 
+  function setIconButtonLabel(id, label) {
+    const button = byId(id);
+    if (!button) return;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+
   function startIndeterminate(message) {
     const progress = byId("ppProgressWrap");
     progress.hidden = false;
@@ -637,6 +679,12 @@
 
   function cacheCurrentModeState() {
     if (!state.currentJobId) return;
+    if (state.stepsLoading) {
+      state.modeCache.delete(state.mode);
+      detachLayerCollection(state.previewLayers);
+      detachLayerCollection(state.referenceLayers);
+      return;
+    }
     state.modeCache.set(state.mode, {
       resultId: byId("ppResult").value,
       sourcePath: byId("ppGeojson").value,
@@ -684,9 +732,11 @@
     for (const [key, item] of state.referenceLayers) {
       if (cached.referenceVisible.has(key) && item.layer && state.map && !state.map.hasLayer(item.layer)) item.layer.addTo(state.map);
     }
-    if (mode === "segmentation" && state.analysis) {
-      renderAnalysis(state.analysis);
-      syncSegmentationStepProgress();
+    if (mode === "segmentation") {
+      showConfiguredInitialStep();
+      if (state.analysis) renderAnalysis(state.analysis);
+      const workflow = state.workflows.find(item => item.id === state.workflowId);
+      syncSegmentationStepProgress(workflow || null);
     }
     renderReferenceLayers();
     renderPreviewLayers();
@@ -696,12 +746,14 @@
     byId("ppMessage").hidden = !cached.message;
     byId("ppMapStatus").textContent = cached.mapStatus;
     byId("ppReferenceStatus").textContent = cached.referenceStatus;
+    setStepsLoading(false);
     document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
     window.requestAnimationFrame(() => state.map?.invalidateSize());
     return true;
   }
 
   function resetModeCache() {
+    invalidateModeLoad();
     for (const cached of state.modeCache.values()) {
       detachLayerCollection(cached.previewLayers);
       detachLayerCollection(cached.referenceLayers);
@@ -910,60 +962,84 @@
 
   async function loadReferenceSources(resultId) {
     const token = ++state.referenceToken;
+    const cached = state.referenceSourceCache.get(resultId);
+    if (cached) {
+      state.referenceLayers = new Map(cached.layers);
+      renderReferenceLayers();
+      byId("ppReferenceStatus").textContent = cached.status;
+      return;
+    }
     showListLoading("ppReferenceLayers", "Loading reference layers…");
     byId("ppReferenceStatus").textContent = "Finding linked orthophoto and image references…";
-    const [summaryResult, tilesResult] = await Promise.allSettled([
-      requestJson(`/api/session_summary?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
-      requestJson(`/api/session_tiles?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
-    ]);
+    let pending = state.referenceLoadPromises.get(resultId);
+    if (!pending) {
+      pending = (async () => {
+        const [summaryResult, tilesResult] = await Promise.allSettled([
+          requestJson(`/api/session_summary?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
+          requestJson(`/api/session_tiles?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
+        ]);
+        const summary = summaryResult.status === "fulfilled" ? summaryResult.value : {};
+        const tiles = tilesResult.status === "fulfilled" ? tilesResult.value : {};
+        const layers = new Map();
+        if (Array.isArray(tiles.layers) && tiles.layers.length) {
+          const group = window.L.layerGroup();
+          let combinedBounds = null;
+          for (const definition of tiles.layers) {
+            const bounds = Array.isArray(definition.bounds) ? window.L.latLngBounds(definition.bounds) : undefined;
+            if (bounds?.isValid()) combinedBounds = combinedBounds ? combinedBounds.extend(bounds) : bounds;
+            window.L.tileLayer(definition.template, {
+              pane: "ppRasterPane",
+              bounds,
+              minZoom: definition.minzoom ?? 0,
+              maxZoom: definition.maxzoom ?? 22,
+              tileSize: 256,
+              noWrap: true,
+              opacity: 0.8,
+            }).addTo(group);
+          }
+          layers.set("orthophoto", {
+            label: "Orthophoto",
+            detail: `${tiles.layers.length.toLocaleString()} linked tile layer${tiles.layers.length === 1 ? "" : "s"} · read-only`,
+            color: "#f8fafc",
+            layer: group,
+            bounds: combinedBounds,
+            loaded: true,
+            opacity: 0.8,
+          });
+        }
+        const imagesUrl = summary.images_geojson_url || summary.images_geojson || summary.images || summary.images_gj;
+        if (imagesUrl) {
+          const item = {
+            label: "Individual images",
+            detail: "Linked footprints · images load only when clicked",
+            color: "#38bdf8",
+            layer: window.L.featureGroup(),
+            loaded: false,
+            loading: false,
+            opacity: 0.75,
+            imageLayers: new Map(),
+          };
+          item.loader = () => loadLinkedImages(item, summary, imagesUrl);
+          layers.set("images", item);
+        }
+        const status = layers.size
+          ? "Reference sources found. Enable only the imagery needed for editing."
+          : "No linked orthophoto or geolocated image references were found.";
+        return { layers, status };
+      })();
+      state.referenceLoadPromises.set(resultId, pending);
+    }
+    let loaded;
+    try {
+      loaded = await pending;
+      state.referenceSourceCache.set(resultId, loaded);
+    } finally {
+      if (state.referenceLoadPromises.get(resultId) === pending) state.referenceLoadPromises.delete(resultId);
+    }
     if (token !== state.referenceToken) return;
-    const summary = summaryResult.status === "fulfilled" ? summaryResult.value : {};
-    const tiles = tilesResult.status === "fulfilled" ? tilesResult.value : {};
-    if (Array.isArray(tiles.layers) && tiles.layers.length) {
-      const group = window.L.layerGroup();
-      let combinedBounds = null;
-      for (const definition of tiles.layers) {
-        const bounds = Array.isArray(definition.bounds) ? window.L.latLngBounds(definition.bounds) : undefined;
-        if (bounds?.isValid()) combinedBounds = combinedBounds ? combinedBounds.extend(bounds) : bounds;
-        window.L.tileLayer(definition.template, {
-          pane: "ppRasterPane",
-          bounds,
-          minZoom: definition.minzoom ?? 0,
-          maxZoom: definition.maxzoom ?? 22,
-          tileSize: 256,
-          noWrap: true,
-          opacity: 0.8,
-        }).addTo(group);
-      }
-      state.referenceLayers.set("orthophoto", {
-        label: "Orthophoto",
-        detail: `${tiles.layers.length.toLocaleString()} linked tile layer${tiles.layers.length === 1 ? "" : "s"} · read-only`,
-        color: "#f8fafc",
-        layer: group,
-        bounds: combinedBounds,
-        loaded: true,
-        opacity: 0.8,
-      });
-    }
-    const imagesUrl = summary.images_geojson_url || summary.images_geojson || summary.images || summary.images_gj;
-    if (imagesUrl) {
-      const item = {
-        label: "Individual images",
-        detail: "Linked footprints · images load only when clicked",
-        color: "#38bdf8",
-        layer: window.L.featureGroup(),
-        loaded: false,
-        loading: false,
-        opacity: 0.75,
-        imageLayers: new Map(),
-      };
-      item.loader = () => loadLinkedImages(item, summary, imagesUrl);
-      state.referenceLayers.set("images", item);
-    }
+    state.referenceLayers = new Map(loaded.layers);
     renderReferenceLayers();
-    byId("ppReferenceStatus").textContent = state.referenceLayers.size
-      ? "Reference sources found. Enable only the imagery needed for editing."
-      : "No linked orthophoto or geolocated image references were found.";
+    byId("ppReferenceStatus").textContent = loaded.status;
   }
 
   async function addTemporaryGeoJson(file) {
@@ -1256,7 +1332,7 @@
     byId("ppMovePolygons").classList.remove("active");
     byId("ppRotatePolygons").classList.remove("active");
     byId("ppMergePolygons").classList.remove("active");
-    byId("ppMergePolygons").textContent = "Merge polygons";
+    setIconButtonLabel("ppMergePolygons", "Merge polygons");
     byId("ppDeletePolygons").classList.remove("active");
     applyEditingEmphasis();
   }
@@ -1482,7 +1558,7 @@
           selected.add(layer);
           layer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.48 });
         }
-        byId("ppMergePolygons").textContent = selected.size >= 2 ? `Merge selected (${selected.size})` : "Merge polygons";
+        setIconButtonLabel("ppMergePolygons", selected.size >= 2 ? `Merge selected (${selected.size})` : "Merge polygons");
         byId("ppEditStatus").textContent = selected.size >= 2
           ? "Click Merge selected to combine the highlighted polygons into one feature."
           : `Merge mode: select at least two polygons (${selected.size} selected).`;
@@ -1492,7 +1568,7 @@
     });
     byId("ppMap").classList.add("mergeMode");
     byId("ppMergePolygons").classList.add("active");
-    byId("ppMergePolygons").textContent = "Merge polygons";
+    setIconButtonLabel("ppMergePolygons", "Merge polygons");
     byId("ppEditStatus").textContent = "Merge mode: select at least two polygons, then click Merge polygons again.";
   }
 
@@ -1749,8 +1825,10 @@
     updateFitButton();
   }
 
-  async function loadPreviewLayer(stage, url, expectedCount = null, label = null, showAlongside = false, version = null) {
+  async function loadPreviewLayer(stage, url, expectedCount = null, label = null, showAlongside = false, version = null, requestedContext = null) {
     if (!url || state.previewLoading.has(stage)) return;
+    const context = requestedContext || loadContext();
+    if (!isCurrentLoad(context)) return;
     const map = ensurePreviewMap();
     if (!map) {
       byId("ppMapStatus").textContent = "Map preview is unavailable because Leaflet did not load.";
@@ -1762,12 +1840,46 @@
       renderPreviewLayers();
       return;
     }
+    const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
+    const renderedKey = `${stage}::${url}::${version || ""}::${label || ""}`;
+    const cachedLayer = state.previewLayerCache.get(renderedKey);
+    if (cachedLayer) {
+      const existing = state.previewLayers.get(stage);
+      if (existing && existing !== cachedLayer && map.hasLayer(existing.layer)) map.removeLayer(existing.layer);
+      if (!showAlongside) {
+        for (const item of state.previewLayers.values()) {
+          if (item !== cachedLayer && map.hasLayer(item.layer)) map.removeLayer(item.layer);
+        }
+      }
+      if (!map.hasLayer(cachedLayer.layer)) cachedLayer.layer.addTo(map);
+      state.previewLayers.set(stage, cachedLayer);
+      renderPreviewLayers();
+      byId("ppMapStatus").textContent = `${cachedLayer.label} preview reused.`;
+      return;
+    }
     state.previewLoading.add(stage);
     renderPreviewLayers();
-    const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
     byId("ppMapStatus").textContent = `Loading ${style.label.toLowerCase()} polygons…`;
     try {
-      const geojson = await requestJson(url, { cache: "no-store" });
+      const dataKey = `${url}::${version || ""}`;
+      let geojson = state.previewDataCache.get(dataKey);
+      if (!geojson) {
+        let pending = state.previewDataPromises.get(dataKey);
+        if (!pending || pending.signal.aborted) {
+          pending = {
+            signal: context.signal,
+            promise: requestJson(url, { cache: "no-store", signal: context.signal }),
+          };
+          state.previewDataPromises.set(dataKey, pending);
+        }
+        try {
+          geojson = await pending.promise;
+          state.previewDataCache.set(dataKey, geojson);
+        } finally {
+          if (state.previewDataPromises.get(dataKey) === pending) state.previewDataPromises.delete(dataKey);
+        }
+      }
+      if (!isCurrentLoad(context)) return;
       const existing = state.previewLayers.get(stage);
       if (existing && map.hasLayer(existing.layer)) map.removeLayer(existing.layer);
       const created = createPreviewGeoJsonLayer(stage, geojson, label);
@@ -1780,7 +1892,7 @@
         }
       }
       layer.addTo(map);
-      state.previewLayers.set(stage, {
+      const item = {
         label: created.label,
         color: style.color,
         count: expectedCount ?? geojson.features?.length ?? 0,
@@ -1789,20 +1901,24 @@
         version,
         geojson,
         baseStyle: created.baseStyle,
-      });
+      };
+      state.previewLayers.set(stage, item);
+      state.previewLayerCache.set(renderedKey, item);
       renderPreviewLayers();
       const bounds = layer.getBounds();
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
       byId("ppMapStatus").textContent = `${style.label} preview loaded.`;
     } catch (error) {
+      if (!isCurrentLoad(context)) return;
       byId("ppMapStatus").textContent = `Could not load ${style.label.toLowerCase()} preview: ${error.message}`;
     } finally {
+      if (!isCurrentLoad(context)) return;
       state.previewLoading.delete(stage);
       renderPreviewLayers();
     }
   }
 
-  async function syncOutputPreviews(status) {
+  async function syncOutputPreviews(status, requestedContext = null) {
     const removableStages = [
       "combined", "regularized", "solar_rows",
       "panel_hierarchy", "panel_rows", "identified_panels", "edited",
@@ -1825,7 +1941,7 @@
       if (!status.outputs?.[stage]?.url) continue;
       const version = status.manual_edits?.[stage]?.updated_at
         || (stage === "regularized" && status.hierarchy_stats ? status.updated_at : null);
-      await loadPreviewLayer(stage, status.outputs[stage].url, counts[stage], null, stage === "solar_rows", version);
+      await loadPreviewLayer(stage, status.outputs[stage].url, counts[stage], null, stage === "solar_rows", version, requestedContext);
     }
   }
 
@@ -2037,8 +2153,7 @@
     if (state.loaded && !force) return;
     if (state.loadingPromise) return state.loadingPromise;
     const select = byId("ppResult");
-    const configuredResultId = state.currentJob?.sources?.[state.mode]?.result_id || "";
-    const previous = configuredResultId || select.value;
+    const previous = select.value;
     select.replaceChildren();
     addOption(select, "", "Loading test results…");
     select.disabled = true;
@@ -2055,8 +2170,9 @@
           const status = result.status === "complete" ? "Complete" : "Incomplete";
           addOption(select, result.id || result.name, `${name} · ${status} · ID: ${result.id || result.name}`);
         }
-        if (previous && [...select.options].some(option => option.value === previous)) {
-          select.value = previous;
+        const desiredResultId = state.currentJob?.sources?.[state.mode]?.result_id || previous;
+        if (desiredResultId && [...select.options].some(option => option.value === desiredResultId)) {
+          select.value = desiredResultId;
         }
         select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
         state.loaded = true;
@@ -2075,10 +2191,14 @@
     return state.loadingPromise;
   }
 
-  async function restoreLatestWorkflow(resultId, inputPath, preferredId = null) {
+  async function restoreLatestWorkflow(resultId, inputPath, preferredId = null, requestedContext = loadContext()) {
     if (!resultId) return false;
     try {
-      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, { cache: "no-store" });
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, {
+        cache: "no-store",
+        signal: requestedContext?.signal,
+      });
+      if (!isCurrentLoad(requestedContext)) return false;
       state.workflows = (payload.workflows || []).sort((first, second) =>
         String(second.created_at || "").localeCompare(String(first.created_at || ""))
       );
@@ -2089,7 +2209,7 @@
         return false;
       }
       state.workflowId = workflow.id;
-      applyWorkflow(workflow);
+      applyWorkflow(workflow, requestedContext);
       populateRegularizeSources(workflow.id);
       renderWorkflowList();
       if (workflow.source_changed) {
@@ -2110,18 +2230,23 @@
       || (allowLatest ? visible.find(item => Object.keys(item.outputs || {}).length) : null);
   }
 
-  async function loadSavedOutputsFirst(resultId) {
+  async function loadSavedOutputsFirst(resultId, requestedContext = null) {
+    if (!isCurrentLoad(requestedContext)) return null;
     showListLoading("ppWorkflowList", "Loading saved outputs…");
     showListLoading("ppLayerList", "Loading output layers…");
     try {
-      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, { cache: "no-store" });
+      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, {
+        cache: "no-store",
+        signal: requestedContext?.signal,
+      });
+      if (!isCurrentLoad(requestedContext)) return null;
       state.workflows = (payload.workflows || []).sort((first, second) =>
         String(second.created_at || "").localeCompare(String(first.created_at || ""))
       );
       const workflow = selectSavedWorkflow("", null, true);
       if (workflow) {
         state.workflowId = workflow.id;
-        await applyWorkflow(workflow);
+        applyWorkflow(workflow, requestedContext, { loadPreviews: false });
         populateRegularizeSources(workflow.id);
       } else {
         renderPreviewLayers();
@@ -2129,6 +2254,7 @@
       renderWorkflowList();
       return workflow;
     } catch (error) {
+      if (!isCurrentLoad(requestedContext)) return null;
       state.workflows = [];
       renderWorkflowList();
       renderPreviewLayers();
@@ -2138,6 +2264,8 @@
   }
 
   async function loadGeojsons() {
+    invalidateModeLoad();
+    const requestedContext = loadContext();
     if (state.currentJob) setStepsLoading(true);
     resetAnalysis({ showConfiguredStep: true });
     clearReferenceLayers();
@@ -2157,9 +2285,10 @@
     void loadReferenceSources(resultId);
     try {
       const [earlyWorkflow, payload] = await Promise.all([
-        loadSavedOutputsFirst(resultId),
-        requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`),
+        loadSavedOutputsFirst(resultId, requestedContext),
+        requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/geojsons`, { signal: requestedContext.signal }),
       ]);
+      if (!isCurrentLoad(requestedContext)) return;
       state.geojsonFiles = payload.files || [];
       select.replaceChildren();
       addOption(select, "", "Select a GeoJSON…");
@@ -2190,7 +2319,7 @@
       const restored = Boolean(matchingWorkflow);
       if (matchingWorkflow) {
         state.workflowId = matchingWorkflow.id;
-        applyWorkflow(matchingWorkflow);
+        void applyWorkflow(matchingWorkflow, requestedContext);
         populateRegularizeSources(matchingWorkflow.id);
         renderWorkflowList();
       }
@@ -2204,8 +2333,10 @@
       document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
       if (state.currentJob && state.mode === "segmentation") initializeConfiguredSegmentation();
     } catch (error) {
+      if (!isCurrentLoad(requestedContext)) return;
       setMessage(error.message, "err");
     } finally {
+      if (!isCurrentLoad(requestedContext)) return;
       stopIndeterminate();
       setStepsLoading(false);
     }
@@ -2238,7 +2369,7 @@
     renderAnalysis(summary);
     syncSegmentationStepProgress();
     const source = state.geojsonFiles.find(file => file.path === sourcePath);
-    if (source?.url) void loadPreviewLayer("source", source.url, summary.feature_count);
+    if (source?.url) void loadPreviewLayer("source", source.url, summary.feature_count, null, false, source.mtime);
     const canCombine = Boolean(summary.tile_metadata_available && summary.features_on_tile_edges);
     byId("ppCombine").disabled = !canCombine;
     setMessage("");
@@ -2265,7 +2396,7 @@
       renderAnalysis(payload.summary);
       byId("ppCombineStep").hidden = false;
       const source = state.geojsonFiles.find(file => file.path === inputPath);
-      if (source?.url) void loadPreviewLayer("source", source.url, payload.summary.feature_count);
+      if (source?.url) void loadPreviewLayer("source", source.url, payload.summary.feature_count, null, false, source.mtime);
       const restored = await restoreLatestWorkflow(resultId, inputPath);
       if (!payload.summary.tile_metadata_available) {
         setMessage("The GeoJSON can be read, but its referenced result tiles were not found. Grid-aware combining cannot run.", "warn");
@@ -2298,7 +2429,8 @@
     byId("ppProgressText").textContent = `${message || "Processing…"} ${Math.round(value)}%`;
   }
 
-  function applyWorkflow(status) {
+  function applyWorkflow(status, requestedContext = null, { loadPreviews = true } = {}) {
+    if (!isCurrentLoad(requestedContext)) return Promise.resolve();
     if (status?.id) {
       const workflowIndex = state.workflows.findIndex(item => item.id === status.id);
       if (workflowIndex >= 0) {
@@ -2313,7 +2445,9 @@
       byId("ppLog").textContent = status.log.join("\n");
       byId("ppLogWrap").hidden = !status.log.length;
     }
-    const previewPromise = syncOutputPreviews(status);
+    const previewPromise = loadPreviews
+      ? syncOutputPreviews(status, requestedContext)
+      : Promise.resolve();
     if (state.mode === "segmentation") syncSegmentationStepProgress(status);
     const running = status.status === "queued" || status.status === "running";
     const hasCombined = Boolean(status.outputs?.combined);
@@ -3359,6 +3493,7 @@
     }
     if (state.editing) stopEditing(true);
     cacheCurrentModeState();
+    invalidateModeLoad();
     state.mode = nextMode;
     if (restoreModeState(nextMode)) return;
     setStepsLoading(true, `Loading configured ${nextMode === "anomaly" ? "anomaly" : "segmentation"} GeoJSON data…`);
@@ -3373,7 +3508,11 @@
     if (configuredResultId
       && [...resultSelect.options].some(option => option.value === configuredResultId)) {
       resultSelect.value = configuredResultId;
-      void loadGeojsons();
+      const scheduledContext = loadContext();
+      state.modeLoadTimer = window.setTimeout(() => {
+        state.modeLoadTimer = null;
+        if (isCurrentLoad(scheduledContext)) void loadGeojsons();
+      }, 100);
       return;
     }
     const workflow = selectSavedWorkflow("", null, true);
