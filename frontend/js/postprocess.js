@@ -2022,7 +2022,6 @@
     // the shared tab controller is still present in the browser.
     byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
     byId("ppRefresh").addEventListener("click", () => loadResults(true));
-    byId("ppCreateJob")?.addEventListener("click", createJob);
     byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
     byId("ppResult").addEventListener("change", loadGeojsons);
     byId("ppGeojson").addEventListener("change", async () => {
@@ -2186,6 +2185,7 @@
   function showJobModal(mode, value) {
     const modal = byId("ppJobModal");
     const input = byId("ppJobName");
+    const nameField = byId("ppJobNameField");
     const save = byId("ppJobModalSave");
     const deleteButton = byId("ppJobModalDelete");
     if (!modal || !input || !save) return Promise.resolve(null);
@@ -2194,19 +2194,20 @@
       ? `Delete “${value}”? This removes the job metadata and derived outputs.`
       : "Give this workspace a name. Test-run source files remain unchanged.";
     input.value = value || "";
-    input.hidden = mode === "delete" || mode === "menu";
+    nameField.hidden = mode === "delete" || mode === "menu";
     save.textContent = mode === "create" ? "Create job" : mode === "delete" ? "Delete job" : "Save name";
     save.classList.toggle("danger", mode === "delete");
     deleteButton.hidden = mode !== "menu";
     if (mode === "menu") {
-      input.hidden = true;
       byId("ppJobModalMessage").textContent = "Choose an operation for this job.";
       save.textContent = "Rename";
     }
     modal.classList.remove("hidden");
+    modal.classList.add("show");
     input.focus();
     return new Promise(resolve => {
       const finish = result => {
+        modal.classList.remove("show");
         modal.classList.add("hidden");
         save.onclick = null;
         deleteButton.onclick = null;
@@ -2289,7 +2290,19 @@
     setMode,
     confirmReplacement,
   };
-  window.PostProcessTab = { init, activate };
+  window.PostProcessTab = { init, activate, createJob };
+  const bindJobCreateButton = () => {
+    const button = document.getElementById("ppCreateJob");
+    if (!button) {
+      console.warn("Post-process: Create job button was not found after DOM ready.");
+      return;
+    }
+    if (button.dataset.jobHandlerBound === "true") return;
+    button.dataset.jobHandlerBound = "true";
+    button.onclick = () => { void createJob(); };
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindJobCreateButton, { once: true });
+  else bindJobCreateButton();
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();

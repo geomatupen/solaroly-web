@@ -4311,6 +4311,21 @@ async def api_postprocess_jobs():
 async def api_create_postprocess_job(request: Request):
     payload = await request.json()
     name = str(payload.get("name") or "Post-processing job").strip()[:128] or "Post-processing job"
+    existing_names: set[str] = set()
+    for directory in _postprocess_jobs_dir().iterdir():
+        try:
+            metadata = json.loads((directory / "job.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        existing_name = str(metadata.get("name") or "").strip()
+        if existing_name:
+            existing_names.add(existing_name.casefold())
+    if name.casefold() in existing_names:
+        position = 2
+        base_name = name
+        while f"{base_name} ({position})".casefold() in existing_names:
+            position += 1
+        name = f"{base_name} ({position})"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")[:60] or "postprocess"
     job_id = f"{safe_name}_{uuid.uuid4().hex[:8]}"
     now = datetime.now().isoformat()

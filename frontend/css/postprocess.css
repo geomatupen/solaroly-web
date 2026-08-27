@@ -1,6 +1,21 @@
 .postprocessHeader h2,
 .postprocessHeader p { margin-bottom: 0; }
 
+#ppJobNameField {
+  display: block;
+}
+
+#ppJobNameField label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+#ppJobNameField input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .postprocessWorkspace {
   display: grid;
   grid-template-columns: minmax(360px, .85fr) minmax(680px, 1.65fr);

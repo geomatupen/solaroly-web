@@ -394,6 +394,9 @@ async function addSavedGeoJsonOverlay(overlay, options = {}) {
   const response = await fetch(overlay.path, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Could not load overlay (${response.status}).`);
   const geojson = await response.json();
+  if (!geojson || geojson.type !== 'FeatureCollection' || !Array.isArray(geojson.features)) {
+    throw new Error('Saved overlay is not a GeoJSON FeatureCollection.');
+  }
   const name = overlay.name || 'GeoJSON overlay';
   const previousEntry = Object.entries(overlayRegistry).find(([, record]) =>
     overlay.overlay_id && record?.overlay_id === overlay.overlay_id
@@ -455,7 +458,11 @@ async function loadSavedOverlays(options = {}) {
     for (const overlay of data.overlays) {
       if (options.referencesOnly && !overlay.reference) continue;
       if (overlay.type === 'geojson') {
-        await addSavedGeoJsonOverlay(overlay, { focus: false });
+        try {
+          await addSavedGeoJsonOverlay(overlay, { focus: false });
+        } catch (error) {
+          console.warn(`Skipping invalid saved overlay ${overlay.name || overlay.overlay_id || ''}:`, error.message);
+        }
       } else if (overlay.type === 'tif') {
         // Load GeoTIFF overlay - need to get tile info
         const tileResp = await fetch(`/api/get_overlay_tiles?overlay_id=${overlay.overlay_id}`);
