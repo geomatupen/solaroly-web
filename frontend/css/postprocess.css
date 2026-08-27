@@ -5,6 +5,17 @@
   display: block;
 }
 
+#ppJobModal .modalBody {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+#ppJobModalMessage {
+  margin: 0 0 16px;
+}
+
 #ppJobNameField label {
   display: block;
   margin-bottom: 6px;
