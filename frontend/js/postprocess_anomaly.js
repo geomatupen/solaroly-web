@@ -24,15 +24,23 @@
     ppManualReviewThreshold: 60,
   };
   const representativeDefaults = {
-    ppRepresentativeImageCenterWeight: 40,
-    ppRepresentativeSpatialWeight: 35,
-    ppRepresentativeConfidenceWeight: 25,
+    imageCenter: 40,
+    spatialCentrality: 35,
+    modelConfidence: 25,
   };
+  const duplicateWeightDefaults = Object.fromEntries(
+    Object.entries(scoringDefaults).filter(([id]) => id.endsWith("Weight")),
+  );
+  const modalWeightDefaults = { ...duplicateWeightDefaults };
+  const thresholdDefaultIds = [
+    "ppVisualSimilarity", "ppMinimumAppearance", "ppMinimumContext", "ppManualReviewThreshold",
+  ];
   let representativeModalSnapshot = null;
   const manualDuplicateDecisions = new Map();
   let loadedComparisonPairs = [];
   let loadedComparisonTotal = 0;
   let loadedComparisonWorkflowId = "";
+  let activeComparisonIndex = null;
 
   function comparisonPairs(workflow) {
     return loadedComparisonWorkflowId === workflow?.id && loadedComparisonPairs.length
@@ -58,22 +66,27 @@
         size: percent("ppSizeWeight"),
         proximity: percent("ppProximityWeight"),
       },
-      representativeWeights: {
-        imageCenter: percent("ppRepresentativeImageCenterWeight"),
-        spatialCentrality: percent("ppRepresentativeSpatialWeight"),
-        modelConfidence: percent("ppRepresentativeConfidenceWeight"),
-      },
+      representativeWeights: { ...representativeDefaults },
     };
   }
 
-  function validateRepresentativeWeights(config = scoringConfig()) {
-    const total = Object.values(config.representativeWeights).reduce((sum, value) => sum + value, 0);
+  function setWeightValidation(id, weights) {
+    const total = Object.values(weights).reduce((sum, value) => sum + value, 0);
     const valid = Math.abs(total - 100) < 0.01;
-    const validation = byId("ppRepresentativeWeightsValidation");
+    const validation = byId(id);
     validation.textContent = valid
       ? "Weights total 100%."
       : `Weights total ${total.toLocaleString()}%; they must total 100%.`;
     validation.classList.toggle("err", !valid);
+    return valid;
+  }
+
+  function validateDuplicateWeights(config = scoringConfig()) {
+    return setWeightValidation("ppDuplicateWeightsValidation", config.weights);
+  }
+
+  function validateWeightConfiguration(config = scoringConfig()) {
+    const valid = validateDuplicateWeights(config);
     byId("ppRepresentativeWeightsSave").disabled = !valid;
     return valid;
   }
@@ -93,6 +106,7 @@
       }
     }
     representativeModalSnapshot = null;
+    modal.classList.remove("show");
     modal.classList.add("hidden");
     refreshScoringControls();
   }
@@ -100,11 +114,37 @@
   function openRepresentativeWeightsModal() {
     const modal = document.getElementById("ppRepresentativeWeightsModal");
     representativeModalSnapshot = Object.fromEntries(
-      Object.keys(representativeDefaults).map(id => [id, document.getElementById(id).value]),
+      Object.keys(modalWeightDefaults).map(id => [id, document.getElementById(id).value]),
     );
-    validateRepresentativeWeights();
+    validateWeightConfiguration();
     modal.classList.remove("hidden");
-    document.getElementById("ppRepresentativeImageCenterWeight").focus();
+    modal.classList.add("show");
+    document.getElementById("ppAppearanceWeight").focus();
+  }
+
+  function openComparisonsModalLoading() {
+    const modal = document.getElementById("ppVisualComparisonsModal");
+    const pairs = document.getElementById("ppVisualReviewPairs");
+    const summary = document.getElementById("ppVisualComparisonsSummary");
+    const loadMore = document.getElementById("ppVisualComparisonsLoadMore");
+    const loading = document.createElement("div");
+    loading.className = "postprocessComparisonsLoading";
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const message = document.createElement("span");
+    message.textContent = "Analyzing visual duplicate candidates…";
+    loading.append(spinner, message);
+    activeComparisonIndex = null;
+    byId("ppVisualComparisonDetail").hidden = true;
+    pairs.hidden = false;
+    pairs.dataset.analysisLoading = "true";
+    pairs.replaceChildren(loading);
+    summary.textContent = "Comparing anomaly crops from neighboring images. This may take a moment.";
+    loadMore.hidden = true;
+    modal.classList.remove("hidden");
+    modal.classList.add("show");
+    document.getElementById("ppVisualComparisonsClose")?.focus();
   }
 
   function bindRepresentativeWeightsModal() {
@@ -113,17 +153,17 @@
     if (!button || !modal || button.dataset.weightsHandlerBound === "true") return;
     button.dataset.weightsHandlerBound = "true";
     button.onclick = openRepresentativeWeightsModal;
-    for (const id of Object.keys(representativeDefaults)) {
-      document.getElementById(id).oninput = () => validateRepresentativeWeights();
+    for (const id of Object.keys(modalWeightDefaults)) {
+      document.getElementById(id).oninput = () => validateWeightConfiguration();
     }
     document.getElementById("ppRepresentativeWeightsReset").onclick = () => {
-      for (const [id, value] of Object.entries(representativeDefaults)) {
+      for (const [id, value] of Object.entries(modalWeightDefaults)) {
         document.getElementById(id).value = String(value);
       }
-      validateRepresentativeWeights();
+      validateWeightConfiguration();
     };
     document.getElementById("ppRepresentativeWeightsSave").onclick = () => {
-      if (validateRepresentativeWeights()) closeRepresentativeWeightsModal(true);
+      if (validateWeightConfiguration()) closeRepresentativeWeightsModal(true);
     };
     document.getElementById("ppRepresentativeWeightsClose").onclick = () => closeRepresentativeWeightsModal(false);
     document.getElementById("ppRepresentativeWeightsCancel").onclick = () => closeRepresentativeWeightsModal(false);
@@ -143,17 +183,14 @@
   }
 
   function scoringIsValid(config = scoringConfig()) {
-    const total = Object.values(config.weights).reduce((sum, value) => sum + value, 0);
-    const representativeValid = validateRepresentativeWeights(config);
-    const valid = Math.abs(total - 100) < 0.01 && config.reviewThreshold <= config.threshold && representativeValid;
+    const duplicateValid = validateDuplicateWeights(config);
+    const valid = duplicateValid && config.reviewThreshold <= config.threshold;
     const validation = byId("ppScoringValidation");
-    validation.textContent = Math.abs(total - 100) >= 0.01
-      ? `Weights total ${total.toLocaleString()}%; they must total 100%.`
+    validation.textContent = !duplicateValid
+      ? "Duplicate-matching weights must total 100%. Open Configure weights to correct them."
       : config.reviewThreshold > config.threshold
         ? "Manual-review threshold must not exceed the automatic threshold."
-        : !representativeValid
-          ? "Representative-selection weights must total 100%."
-          : "Weights total 100%.";
+        : "Weights total 100%.";
     validation.classList.toggle("err", !valid);
     const warning = byId("ppVisualThresholdWarning");
     warning.hidden = config.threshold >= 70;
@@ -208,16 +245,155 @@
     byId("ppDuplicateScoringAdvanced").classList.toggle("locked", manualMode);
   }
 
+  function comparisonEdgeKey(pair) {
+    return `${Math.min(pair.first_index, pair.second_index)}:${Math.max(pair.first_index, pair.second_index)}`;
+  }
+
+  function currentAnomalyWorkflow() {
+    const context = api()?.getContext();
+    return context?.workflows.find(item => item.id === context.workflowId && item.workflow_kind === "anomaly");
+  }
+
+  function syncPairCardDecision(pair, pairIndex) {
+    const card = byId("ppVisualReviewPairs").querySelector(`[data-pair-index="${pairIndex}"]`);
+    if (!card) return;
+    const decision = manualDuplicateDecisions.get(comparisonEdgeKey(pair));
+    const mark = card.querySelector('[data-role="manual-duplicate"]');
+    const keep = card.querySelector('[data-role="manual-keep"]');
+    if (mark) mark.checked = Boolean(decision);
+    if (keep) {
+      keep.value = String(decision?.keep_index ?? pair.first_index);
+      keep.disabled = !decision;
+    }
+  }
+
+  function saveManualPairDecision(pair, pairIndex, marked, keepIndex) {
+    const edgeKey = comparisonEdgeKey(pair);
+    if (marked) {
+      manualDuplicateDecisions.set(edgeKey, {
+        first_index: Number(pair.first_index),
+        second_index: Number(pair.second_index),
+        keep_index: Number(keepIndex),
+      });
+    } else manualDuplicateDecisions.delete(edgeKey);
+    syncPairCardDecision(pair, pairIndex);
+    const workflow = currentAnomalyWorkflow();
+    if (workflow) updateThresholdEffect(workflow);
+  }
+
+  function showComparisonGrid() {
+    activeComparisonIndex = null;
+    byId("ppVisualComparisonDetail").hidden = true;
+    byId("ppVisualReviewPairs").hidden = false;
+    byId("ppVisualComparisonsTitle").textContent = "Image comparisons";
+    const loadMore = byId("ppVisualComparisonsLoadMore");
+    loadMore.hidden = loadedComparisonPairs.length >= loadedComparisonTotal;
+  }
+
+  function renderComparisonDetail(pairIndex) {
+    const pair = loadedComparisonPairs[pairIndex];
+    if (!pair) return;
+    activeComparisonIndex = pairIndex;
+    byId("ppVisualReviewPairs").hidden = true;
+    byId("ppVisualComparisonDetail").hidden = false;
+    byId("ppVisualComparisonsLoadMore").hidden = true;
+    byId("ppVisualComparisonsTitle").textContent = "Full-image comparison";
+    byId("ppVisualComparisonPosition").textContent = `Comparison ${(pairIndex + 1).toLocaleString()} of ${loadedComparisonTotal.toLocaleString()}`;
+    byId("ppVisualComparisonPrevious").disabled = pairIndex <= 0;
+    byId("ppVisualComparisonNext").disabled = pairIndex + 1 >= loadedComparisonTotal;
+
+    const images = byId("ppVisualComparisonFullImages");
+    images.replaceChildren();
+    for (const [side, imageUrl, cropUrl, name] of [
+      ["Left", pair.first_image_url, pair.first_crop_url, pair.first_image],
+      ["Right", pair.second_image_url, pair.second_crop_url, pair.second_image],
+    ]) {
+      const figure = document.createElement("figure");
+      const frame = document.createElement("div");
+      frame.className = "postprocessComparisonImageFrame";
+      const availableUrl = imageUrl || cropUrl;
+      if (availableUrl) {
+        const image = document.createElement("img");
+        image.src = availableUrl;
+        image.alt = `${side} full source image showing anomaly ${name || "prediction"}`;
+        frame.appendChild(image);
+      } else {
+        const missing = document.createElement("div");
+        missing.className = "postprocessComparisonImageMissing";
+        missing.textContent = "Full image unavailable";
+        frame.appendChild(missing);
+      }
+      const caption = document.createElement("figcaption");
+      const label = document.createElement("strong");
+      label.textContent = side;
+      const filename = document.createElement("span");
+      filename.textContent = name || "Source image unavailable";
+      caption.append(label, filename);
+      if (!imageUrl && cropUrl) {
+        const cropOnly = document.createElement("small");
+        cropOnly.className = "muted";
+        cropOnly.textContent = "Showing crop because the full image is unavailable";
+        caption.appendChild(cropOnly);
+      }
+      figure.append(frame, caption);
+      images.appendChild(figure);
+    }
+
+    const details = byId("ppVisualComparisonDetails");
+    details.replaceChildren();
+    const config = scoringConfig();
+    const score = compositeScore(pair, config);
+    const metrics = document.createElement("p");
+    metrics.className = "muted tiny";
+    metrics.textContent = pair.appearance_similarity == null
+      ? `IoU ${Math.round(Number(pair.iou || 0) * 100)}% · Component scores unavailable`
+      : `${score == null ? "No duplicate score" : `${Math.round(score)}% duplicate`} · Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
+    details.appendChild(metrics);
+
+    const manualControls = document.createElement("div");
+    manualControls.className = "postprocessManualPairControls postprocessComparisonManualControls";
+    manualControls.hidden = byId("ppDeduplicationMode").value !== "manual";
+    const decision = manualDuplicateDecisions.get(comparisonEdgeKey(pair));
+    const markLabel = document.createElement("label");
+    const mark = document.createElement("input");
+    mark.type = "checkbox";
+    mark.checked = Boolean(decision);
+    mark.disabled = !(pair.first_image_url || pair.first_crop_url) || !(pair.second_image_url || pair.second_crop_url);
+    markLabel.append(mark, document.createTextNode("Mark as duplicate"));
+    const keep = document.createElement("select");
+    addOption(keep, String(pair.first_index), `Keep left · ${pair.first_image || Number(pair.first_index) + 1}`);
+    addOption(keep, String(pair.second_index), `Keep right · ${pair.second_image || Number(pair.second_index) + 1}`);
+    keep.value = String(decision?.keep_index ?? pair.first_index);
+    keep.disabled = !mark.checked || mark.disabled;
+    const persist = () => {
+      keep.disabled = !mark.checked || mark.disabled;
+      saveManualPairDecision(pair, pairIndex, mark.checked, keep.value);
+    };
+    mark.onchange = persist;
+    keep.onchange = persist;
+    manualControls.append(markLabel, keep);
+    details.appendChild(manualControls);
+  }
+
+  async function navigateComparison(direction) {
+    if (activeComparisonIndex == null) return;
+    const target = activeComparisonIndex + direction;
+    if (target < 0 || target >= loadedComparisonTotal) return;
+    if (target >= loadedComparisonPairs.length) await loadComparisonPage(false);
+    if (loadedComparisonPairs[target]) renderComparisonDetail(target);
+  }
+
   function renderVisualReview(workflow) {
     const review = byId("ppVisualReview");
     const pairsHost = byId("ppVisualReviewPairs");
     const stats = workflow?.visual_analysis_stats;
     if (!stats || !workflow?.visual_review) {
       review.hidden = true;
-      pairsHost.replaceChildren();
+      if (pairsHost.dataset.analysisLoading !== "true") pairsHost.replaceChildren();
       byId("ppViewVisualComparisons").hidden = true;
       return;
     }
+    delete pairsHost.dataset.analysisLoading;
     if (loadedScoringWorkflowId !== workflow.id) {
       loadedScoringWorkflowId = workflow.id;
       loadedComparisonPairs = [];
@@ -235,12 +411,10 @@
         ppMinimumAppearance: saved.minimum_appearance_percent,
         ppMinimumContext: saved.minimum_context_percent,
         ppManualReviewThreshold: saved.manual_review_percent,
-        ppRepresentativeImageCenterWeight: saved.representative_image_center_weight_percent,
-        ppRepresentativeSpatialWeight: saved.representative_spatial_centrality_weight_percent,
-        ppRepresentativeConfidenceWeight: saved.representative_confidence_weight_percent,
       };
       for (const [id, value] of Object.entries(fields)) {
-        if (value != null) byId(id).value = String(value);
+        const field = byId(id);
+        if (field && value != null) field.value = String(value);
       }
       manualDuplicateDecisions.clear();
       for (const decision of saved.manual_decisions || []) {
@@ -260,6 +434,9 @@
       const card = document.createElement("article");
       card.className = "postprocessVisualPair";
       card.dataset.pairIndex = String(pairIndex);
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Open full images for comparison ${pairIndex + 1}`);
       const images = document.createElement("div");
       images.className = "postprocessVisualPairImages";
       for (const [url, name] of [[pair.first_crop_url, pair.first_image], [pair.second_crop_url, pair.second_image]]) {
@@ -297,30 +474,34 @@
       const markLabel = document.createElement("label");
       const mark = document.createElement("input");
       mark.type = "checkbox";
+      mark.dataset.role = "manual-duplicate";
       mark.checked = Boolean(existingDecision);
-      mark.disabled = !pair.first_crop_url || !pair.second_crop_url;
-      if (mark.disabled) mark.title = "Both image crops are required for manual duplicate selection.";
+      mark.disabled = !(pair.first_image_url || pair.first_crop_url) || !(pair.second_image_url || pair.second_crop_url);
+      if (mark.disabled) mark.title = "Both source images are required for manual duplicate selection.";
       markLabel.append(mark, document.createTextNode("Duplicate"));
       const keep = document.createElement("select");
+      keep.dataset.role = "manual-keep";
       addOption(keep, String(pair.first_index), `Keep left · ${Number(pair.first_index) + 1}`);
       addOption(keep, String(pair.second_index), `Keep right · ${Number(pair.second_index) + 1}`);
       keep.value = String(existingDecision?.keep_index ?? pair.first_index);
       keep.disabled = !mark.checked || mark.disabled;
       const saveManualDecision = () => {
         keep.disabled = !mark.checked || mark.disabled;
-        if (mark.checked) {
-          manualDuplicateDecisions.set(edgeKey, {
-            first_index: Number(pair.first_index),
-            second_index: Number(pair.second_index),
-            keep_index: Number(keep.value),
-          });
-        } else manualDuplicateDecisions.delete(edgeKey);
-        updateThresholdEffect(workflow);
+        saveManualPairDecision(pair, pairIndex, mark.checked, keep.value);
       };
       mark.addEventListener("change", saveManualDecision);
       keep.addEventListener("change", saveManualDecision);
       manualControls.append(markLabel, keep);
       card.append(images, meta, components, manualControls);
+      card.onclick = event => {
+        if (!manualControls.contains(event.target)) renderComparisonDetail(pairIndex);
+      };
+      card.onkeydown = event => {
+        if ((event.key === "Enter" || event.key === " ") && !manualControls.contains(event.target)) {
+          event.preventDefault();
+          renderComparisonDetail(pairIndex);
+        }
+      };
       pairsHost.appendChild(card);
     }
     const totalPairs = loadedComparisonTotal || Number(review.total_pairs || 0);
@@ -337,6 +518,7 @@
     loadMore.hidden = pairs.length >= totalPairs;
     loadMore.disabled = false;
     updateThresholdEffect(workflow);
+    if (activeComparisonIndex != null) renderComparisonDetail(activeComparisonIndex);
   }
 
   function addOption(select, value, label, data = {}) {
@@ -604,13 +786,20 @@
   async function deduplicate() {
     const workspace = api();
     const context = workspace.getContext();
-    const source = byId("ppAnomalyGeojson").value;
-    if (!context.resultId || !source) return;
-    byId("ppDeduplicate").disabled = true;
+    const resultId = context.resultId || context.configuredResultId;
+    const source = byId("ppAnomalyGeojson")?.value || context.configuredSourcePath;
+    const button = document.getElementById("ppDeduplicate");
+    if (!resultId || !source) {
+      workspace.setMessage("The configured anomaly result or GeoJSON source is unavailable. Open Edit config and verify the anomaly source.", "err");
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Starting visual analysis…";
     workspace.setMessage("Starting anomaly deduplication…");
+    openComparisonsModalLoading();
     try {
       const payload = await workspace.requestJson(
-        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/anomalies/deduplicate`,
+        `/api/results/${encodeURIComponent(resultId)}/postprocess/anomalies/deduplicate`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -623,10 +812,26 @@
         },
       );
       await workspace.runWorkflow(payload);
+      await loadComparisonPage(true);
     } catch (error) {
       workspace.setMessage(error.message, "err");
-      byId("ppDeduplicate").disabled = false;
+      button.disabled = false;
+      button.textContent = "Analyze visual duplicates";
+      const pairs = document.getElementById("ppVisualReviewPairs");
+      delete pairs.dataset.analysisLoading;
+      const errorMessage = document.createElement("p");
+      errorMessage.className = "statusLine err";
+      errorMessage.textContent = error.message;
+      pairs.replaceChildren(errorMessage);
+      document.getElementById("ppVisualComparisonsSummary").textContent = "Visual duplicate analysis could not be completed.";
     }
+  }
+
+  function bindAnalyzeVisualDuplicates() {
+    const button = document.getElementById("ppDeduplicate");
+    if (!button || button.dataset.analyzeHandlerBound === "true") return;
+    button.dataset.analyzeHandlerBound = "true";
+    button.onclick = () => void deduplicate();
   }
 
   async function applyVisualDeduplication() {
@@ -728,22 +933,33 @@
       if (option?.dataset.url) void showSegmentationReferences(option, context);
     });
     byId("ppScanAnomalies")?.addEventListener("click", scanPredictions);
-    byId("ppDeduplicate")?.addEventListener("click", deduplicate);
     byId("ppApplyVisualDeduplication")?.addEventListener("click", applyVisualDeduplication);
     for (const id of Object.keys(scoringDefaults)) byId(id)?.addEventListener("input", refreshScoringControls);
-    byId("ppDeduplicationMode")?.addEventListener("change", refreshScoringControls);
+    byId("ppDeduplicationMode")?.addEventListener("change", () => {
+      refreshScoringControls();
+      if (activeComparisonIndex != null) renderComparisonDetail(activeComparisonIndex);
+    });
     byId("ppResetScoringDefaults")?.addEventListener("click", () => {
-      for (const [id, value] of Object.entries(scoringDefaults)) byId(id).value = String(value);
+      for (const id of thresholdDefaultIds) byId(id).value = String(scoringDefaults[id]);
       refreshScoringControls();
     });
     const comparisonsModal = byId("ppVisualComparisonsModal");
-    const closeComparisonsModal = () => comparisonsModal.classList.add("hidden");
+    const closeComparisonsModal = () => {
+      comparisonsModal.classList.remove("show");
+      comparisonsModal.classList.add("hidden");
+      showComparisonGrid();
+    };
     byId("ppViewVisualComparisons")?.addEventListener("click", () => {
+      showComparisonGrid();
       comparisonsModal.classList.remove("hidden");
+      comparisonsModal.classList.add("show");
       byId("ppVisualComparisonsClose").focus();
       void loadComparisonPage(true);
     });
     byId("ppVisualComparisonsLoadMore")?.addEventListener("click", () => void loadComparisonPage(false));
+    byId("ppVisualComparisonBack").onclick = showComparisonGrid;
+    byId("ppVisualComparisonPrevious").onclick = () => void navigateComparison(-1);
+    byId("ppVisualComparisonNext").onclick = () => void navigateComparison(1);
     byId("ppVisualComparisonsClose")?.addEventListener("click", closeComparisonsModal);
     byId("ppVisualComparisonsDone")?.addEventListener("click", closeComparisonsModal);
     comparisonsModal?.addEventListener("click", event => {
@@ -756,6 +972,10 @@
       }
       if (event.key === "Escape" && !comparisonsModal?.classList.contains("hidden")) {
         closeComparisonsModal();
+      }
+      if (!comparisonsModal?.classList.contains("hidden") && activeComparisonIndex != null) {
+        if (event.key === "ArrowLeft") void navigateComparison(-1);
+        else if (event.key === "ArrowRight") void navigateComparison(1);
       }
     });
     byId("ppAssociate")?.addEventListener("click", associate);
@@ -786,14 +1006,17 @@
       loadedComparisonPairs = [];
       loadedComparisonTotal = 0;
       loadedComparisonWorkflowId = "";
+      activeComparisonIndex = null;
     });
   }
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", bindRepresentativeWeightsModal, { once: true });
+    document.addEventListener("DOMContentLoaded", bindAnalyzeVisualDuplicates, { once: true });
     document.addEventListener("DOMContentLoaded", init);
   } else {
     bindRepresentativeWeightsModal();
+    bindAnalyzeVisualDuplicates();
     init();
   }
 })();

@@ -89,7 +89,7 @@ def _image_catalog(result_dir: Path) -> dict[str, dict[str, Any]]:
     return catalog
 
 
-def _find_review_image(result_dir: Path, image_name: str) -> Path | None:
+def find_review_image(result_dir: Path, image_name: str) -> Path | None:
     stem = Path(image_name).stem
     candidates = [
         result_dir / "overlays" / f"{stem}.png",
@@ -388,7 +388,7 @@ def analyze_visual_duplicates(
             return crop_cache[source_index]
         image_name = _image_name(properties)
         entry = _catalog_entry(catalog, image_name) if image_name else None
-        image_path = _find_review_image(result_dir, image_name) if image_name else None
+        image_path = find_review_image(result_dir, image_name) if image_name else None
         crop_output = review_images_dir / f"anomaly_{source_index + 1}.jpg"
         relative = crop_output.relative_to(review_path.parent).as_posix()
         prediction_index = int(properties.get("prediction_index", image_ordinals.get(source_index, 0)))

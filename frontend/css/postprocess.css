@@ -535,6 +535,47 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   overflow: hidden;
 }
 
+.postprocessMeasureControl button.postprocessMeasureButton {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+  place-items: center;
+  color: #1f2937;
+  background: #fff;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.postprocessMeasureControl button.postprocessMeasureButton:hover,
+.postprocessMeasureControl button.postprocessMeasureButton:focus-visible { background: #f1f5f9; }
+.postprocessMeasureControl button.postprocessMeasureButton.active {
+  color: #fff;
+  background: #0284c7;
+}
+.postprocessMeasureButton svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.postprocessMap.postprocessMeasureMode { cursor: crosshair; }
+.leaflet-tooltip.postprocessMeasureTooltip {
+  padding: 4px 7px;
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  background: #0f172a;
+  border: 1px solid #38bdf8;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 28%);
+}
+.leaflet-tooltip-top.postprocessMeasureTooltip::before { border-top-color: #38bdf8; }
+
 .postprocessLayerList {
   display: flex;
   flex-direction: column;
@@ -1154,12 +1195,16 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   gap: 10px;
   margin: 14px 0;
 }
+.postprocessVisualReviewPairs[hidden] { display: none; }
 .postprocessVisualPair {
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-raised, rgba(255, 255, 255, 0.025));
+  cursor: pointer;
 }
+.postprocessVisualPair:hover { border-color: #64748b; background: rgba(255, 255, 255, .045); }
+.postprocessVisualPair:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .postprocessVisualPairImages {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1240,9 +1285,70 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: 12px;
 }
-.postprocessWeightsModalContent { max-width: 620px; }
-#ppRepresentativeWeightsValidation.err { color: var(--danger, #ef6b73); }
+
+.postprocessStepActions button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+.postprocessWeightsModalContent {
+  display: flex;
+  width: min(760px, calc(100vw - 32px));
+  max-width: 760px;
+  max-height: calc(100vh - 40px);
+  padding: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+.postprocessWeightsModalContent .modalHeader,
+.postprocessWeightsModalContent .modalFooter { flex: 0 0 auto; }
+.postprocessWeightsModalContent .modalHeader > div { min-width: 0; }
+.postprocessWeightsModalContent .modalHeader h3 { margin: 0; }
+.postprocessWeightsModalContent .modalHeader p { margin: 4px 0 0; }
+.postprocessWeightsModalBody {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+}
+.postprocessWeightGroup {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(11, 17, 23, .55);
+}
+.postprocessWeightGroup + .postprocessWeightGroup { margin-top: 12px; }
+.postprocessWeightGroupHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 13px;
+}
+.postprocessWeightGroupHeader h4 { margin: 1px 0 4px; }
+.postprocessWeightGroupHeader p { margin: 0; line-height: 1.45; }
+.postprocessWeightGroupNumber {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  place-items: center;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+}
+.postprocessWeightFields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.postprocessWeightFields small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.postprocessWeightValidation { margin: 10px 0 0; }
+.postprocessWeightValidation.err { color: var(--danger, #ef6b73); }
 .postprocessVisualComparisonsModalContent {
   width: min(1120px, calc(100vw - 40px));
   max-width: 1120px;
@@ -1252,8 +1358,78 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessVisualComparisonsModalContent .modalHeader h3 { margin: 0; }
 .postprocessVisualComparisonsModalContent .modalHeader p { margin: 4px 0 0; }
 .postprocessVisualComparisonsBody {
+  display: block;
+  align-items: stretch;
+  justify-content: initial;
   overflow-y: auto;
   min-height: 220px;
+}
+.postprocessVisualComparisonDetail[hidden] { display: none; }
+.postprocessComparisonDetailToolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.postprocessComparisonDetailToolbar > .muted {
+  flex: 1;
+  text-align: center;
+}
+.postprocessComparisonNavigation { display: flex; gap: 8px; }
+.postprocessComparisonFullImages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.postprocessComparisonFullImages figure {
+  min-width: 0;
+  margin: 0;
+}
+.postprocessComparisonImageFrame {
+  display: grid;
+  height: clamp(320px, 55vh, 650px);
+  place-items: center;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #05090d;
+}
+.postprocessComparisonImageFrame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.postprocessComparisonImageMissing {
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+}
+.postprocessComparisonFullImages figcaption {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 9px;
+  padding: 8px 2px 0;
+  font-size: 12px;
+}
+.postprocessComparisonFullImages figcaption span { overflow-wrap: anywhere; }
+.postprocessComparisonFullImages figcaption small { grid-column: 1 / -1; }
+.postprocessComparisonDetails {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(11, 17, 23, .6);
+}
+.postprocessComparisonDetails > p { margin: 0; line-height: 1.5; }
+.postprocessComparisonManualControls { max-width: 540px; }
+.postprocessComparisonsLoading {
+  display: flex;
+  min-height: 190px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
 }
 .postprocessNeighborEstimate {
   display: block;
@@ -1276,6 +1452,10 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 @media (max-width: 1050px) {
   .postprocessVisualReviewPairs { grid-template-columns: 1fr; }
+  .postprocessComparisonFullImages { grid-template-columns: 1fr; }
+  .postprocessComparisonImageFrame { height: min(48vh, 520px); }
+  .postprocessComparisonDetailToolbar { align-items: stretch; flex-wrap: wrap; }
+  .postprocessComparisonDetailToolbar > .muted { order: 3; flex-basis: 100%; }
 }
 
 .postprocessLogWrap { margin-top: 12px; }

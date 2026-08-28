@@ -24,6 +24,7 @@ from ..postprocess import (
     build_panel_hierarchy,
     combine_tile_fragments,
     deduplicate_anomalies,
+    find_review_image,
     image_neighbor_statistics,
     regularize_polygons,
 )
@@ -945,6 +946,10 @@ def create_postprocess_router(
                 crop_path = (workflow_dir / relative).resolve() if relative else None
                 if crop_path and crop_path.is_file() and crop_path.is_relative_to(workflow_dir):
                     item[key.replace("_path", "_url")] = media_url(crop_path)
+            for prefix in ("first", "second"):
+                image_path = find_review_image(result_dir, str(item.get(f"{prefix}_image") or ""))
+                if image_path and image_path.is_file() and image_path.is_relative_to(result_dir):
+                    item[f"{prefix}_image_url"] = media_url(image_path)
             pairs.append(item)
         return {
             "ok": True,

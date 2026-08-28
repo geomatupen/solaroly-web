@@ -9,6 +9,11 @@
     pollToken: 0,
     geojsonFiles: [],
     map: null,
+    measureActive: false,
+    measureDoubleClickZoomWasEnabled: false,
+    measureLayer: null,
+    measurePoints: [],
+    measurePreviousMapStatus: "",
     previewLayers: new Map(),
     previewLoading: new Set(),
     previewLayerCache: new Map(),
@@ -633,22 +638,185 @@
     if (showConfiguredStep) showConfiguredInitialStep();
   }
 
+  function formatMeasuredDistance(distanceMetres) {
+    if (distanceMetres >= 1000) {
+      const kilometres = distanceMetres / 1000;
+      return `${kilometres >= 10 ? kilometres.toFixed(1) : kilometres.toFixed(2)} km`;
+    }
+    return `${distanceMetres >= 100 ? distanceMetres.toFixed(0) : distanceMetres.toFixed(1)} m`;
+  }
+
+  function measuredDistance() {
+    if (!state.map || state.measurePoints.length < 2) return 0;
+    return state.measurePoints.slice(1).reduce((total, point, index) => (
+      total + state.map.distance(state.measurePoints[index], point)
+    ), 0);
+  }
+
+  function measureControlButton() {
+    return document.getElementById("ppMeasureDistance");
+  }
+
+  function renderMeasurement() {
+    if (!state.map) return;
+    if (!state.measureLayer) state.measureLayer = window.L.layerGroup().addTo(state.map);
+    state.measureLayer.clearLayers();
+    if (!state.measurePoints.length) return;
+
+    if (state.measurePoints.length > 1) {
+      window.L.polyline(state.measurePoints, {
+        color: "#38bdf8",
+        weight: 3,
+        opacity: 0.95,
+        dashArray: "7 6",
+        interactive: false,
+      }).addTo(state.measureLayer);
+    }
+    state.measurePoints.forEach(point => {
+      window.L.circleMarker(point, {
+        radius: 4,
+        color: "#e0f2fe",
+        weight: 2,
+        fillColor: "#0284c7",
+        fillOpacity: 1,
+        interactive: false,
+      }).addTo(state.measureLayer);
+    });
+    window.L.tooltip({
+      permanent: true,
+      direction: "top",
+      offset: [0, -8],
+      className: "postprocessMeasureTooltip",
+    })
+      .setLatLng(state.measurePoints[state.measurePoints.length - 1])
+      .setContent(state.measurePoints.length === 1 ? "Add another point" : formatMeasuredDistance(measuredDistance()))
+      .addTo(state.measureLayer);
+  }
+
+  function finishMeasurement({ clear = false } = {}) {
+    if (!state.map) return;
+    state.measureActive = false;
+    state.map.getContainer().classList.remove("postprocessMeasureMode");
+    state.map.off("click", addMeasurementPoint);
+    state.map.off("dblclick", finishMeasurementFromMap);
+    document.removeEventListener("keydown", handleMeasurementKeydown);
+    if (state.measureDoubleClickZoomWasEnabled) state.map.doubleClickZoom.enable();
+    const button = measureControlButton();
+    if (button) {
+      button.classList.remove("active");
+      button.setAttribute("aria-pressed", "false");
+      button.title = "Measure distance";
+      button.setAttribute("aria-label", "Measure distance");
+    }
+    const mapStatus = byId("ppMapStatus");
+    if (mapStatus && state.measurePreviousMapStatus) {
+      mapStatus.textContent = state.measurePreviousMapStatus;
+      state.measurePreviousMapStatus = "";
+    }
+    if (clear) {
+      state.measurePoints = [];
+      state.measureLayer?.clearLayers();
+    }
+  }
+
+  function addMeasurementPoint(event) {
+    const previous = state.measurePoints[state.measurePoints.length - 1];
+    if (!previous || previous.distanceTo(event.latlng) > 0.01) state.measurePoints.push(event.latlng);
+    renderMeasurement();
+  }
+
+  function finishMeasurementFromMap(event) {
+    window.L.DomEvent.stop(event.originalEvent);
+    finishMeasurement({ clear: state.measurePoints.length < 2 });
+  }
+
+  function handleMeasurementKeydown(event) {
+    if (event.key === "Escape") finishMeasurement({ clear: true });
+  }
+
+  function startMeasurement() {
+    if (!state.map) return;
+    if (!stopEditing(true)) return;
+    finishMeasurement({ clear: true });
+    state.measureActive = true;
+    state.measureDoubleClickZoomWasEnabled = state.map.doubleClickZoom.enabled();
+    state.map.doubleClickZoom.disable();
+    state.map.getContainer().classList.add("postprocessMeasureMode");
+    const button = measureControlButton();
+    button?.classList.add("active");
+    button?.setAttribute("aria-pressed", "true");
+    if (button) {
+      const finishLabel = "Finish measuring (double-click map or press Escape to cancel)";
+      button.title = finishLabel;
+      button.setAttribute("aria-label", finishLabel);
+    }
+    const mapStatus = byId("ppMapStatus");
+    if (mapStatus) {
+      state.measurePreviousMapStatus = mapStatus.textContent;
+      mapStatus.textContent = "Measurement active — click the map to add points, then double-click to finish.";
+    }
+    state.map.on("click", addMeasurementPoint);
+    state.map.on("dblclick", finishMeasurementFromMap);
+    document.addEventListener("keydown", handleMeasurementKeydown);
+  }
+
+  function addMeasureControl(map) {
+    const MeasureControl = window.L.Control.extend({
+      options: { position: "topleft" },
+      onAdd() {
+        const container = window.L.DomUtil.create("div", "leaflet-bar postprocessMeasureControl");
+        const button = window.L.DomUtil.create("button", "postprocessMeasureButton", container);
+        button.id = "ppMeasureDistance";
+        button.type = "button";
+        button.title = "Measure distance";
+        button.setAttribute("aria-label", "Measure distance");
+        button.setAttribute("aria-pressed", "false");
+        button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17 17 5l2 2L7 19 5 17Zm3-1-2-2m5-1-2-2m5-1-2-2m5-1-2-2"/></svg>';
+        window.L.DomEvent.disableClickPropagation(container);
+        return container;
+      },
+    });
+    new MeasureControl().addTo(map);
+    const button = document.getElementById("ppMeasureDistance");
+    if (!button) {
+      console.error("Measure control button #ppMeasureDistance was not created.");
+      return;
+    }
+    button.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (state.measureActive) finishMeasurement({ clear: state.measurePoints.length < 2 });
+      else startMeasurement();
+    };
+  }
+
   function ensurePreviewMap() {
     if (state.map || !window.L || !byId("ppMap")) return state.map;
-    state.map = window.L.map("ppMap", { preferCanvas: true, zoomControl: true }).setView([48.8566, 2.3522], 5);
+    const street = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 22,
+      attribution: "&copy; OpenStreetMap contributors",
+    });
+    const satellite = window.L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 22,
+      attribution: "&copy; Esri",
+    });
+    state.map = window.L.map("ppMap", {
+      preferCanvas: true,
+      zoomControl: true,
+      layers: [street],
+    }).setView([48.8566, 2.3522], 5);
     const rasterPane = state.map.createPane("ppRasterPane");
     rasterPane.style.zIndex = "250";
     const referencePane = state.map.createPane("ppReferencePane");
     referencePane.style.zIndex = "350";
-    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 22,
-      attribution: "&copy; OpenStreetMap contributors",
-    }).addTo(state.map);
+    window.L.control.layers({ Street: street, Satellite: satellite }, {}, { position: "topleft" }).addTo(state.map);
+    addMeasureControl(state.map);
     return state.map;
   }
 
   function clearPreviewLayers() {
     stopEditing(false);
+    finishMeasurement({ clear: true });
     if (state.map) {
       for (const item of state.previewLayers.values()) {
         if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
@@ -1373,6 +1541,7 @@
     const item = state.previewLayers.get(stage);
     if (!item || !state.workflowId) return;
     if (state.editing?.dirty && !window.confirm("Discard the unsaved edits on the current layer?")) return;
+    finishMeasurement();
     stopEditing(false);
     const visibleStages = new Set(
       [...state.previewLayers].filter(([, candidate]) => state.map.hasLayer(candidate.layer)).map(([key]) => key)

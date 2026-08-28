@@ -7,6 +7,7 @@ from .anomaly import (
     apply_visual_deduplication,
     associate_anomalies,
     deduplicate_anomalies,
+    find_review_image,
     image_neighbor_statistics,
 )
 
@@ -18,6 +19,7 @@ __all__ = [
     "build_panel_hierarchy",
     "combine_tile_fragments",
     "deduplicate_anomalies",
+    "find_review_image",
     "image_neighbor_statistics",
     "regularize_polygons",
 ]
