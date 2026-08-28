@@ -14,6 +14,10 @@
     measureLayer: null,
     measurePoints: [],
     measurePreviousMapStatus: "",
+    anomalyReviewPairs: [],
+    anomalyReviewSelectedIndex: null,
+    anomalyReviewAllLayer: null,
+    anomalyReviewSelectedLayer: null,
     previewLayers: new Map(),
     previewLoading: new Set(),
     previewLayerCache: new Map(),
@@ -70,7 +74,7 @@
     select.disabled = true;
     internalControls.set(id, select);
   }
-  for (const id of ["ppAnalyze", "ppScanAnomalies"]) {
+  for (const id of ["ppAnalyze"]) {
     const button = document.createElement("button");
     button.id = id;
     button.type = "button";
@@ -120,6 +124,9 @@
 
   function setStepsLoading(loading, message = "Loading configured GeoJSON data…") {
     state.stepsLoading = Boolean(loading);
+    const lockModeTabs = Boolean(loading && state.currentJob);
+    byId("ppSegmentationTab").disabled = lockModeTabs;
+    byId("ppAnomalyTab").disabled = lockModeTabs;
     const indicator = byId("ppStepsLoading");
     if (!indicator) return;
     indicator.hidden = !loading;
@@ -814,9 +821,157 @@
     return state.map;
   }
 
+  function geoJsonFeatureCenter(feature) {
+    const coordinates = feature?.geometry?.coordinates;
+    if (!Array.isArray(coordinates)) return null;
+    let minimumLongitude = Infinity;
+    let minimumLatitude = Infinity;
+    let maximumLongitude = -Infinity;
+    let maximumLatitude = -Infinity;
+    const visit = value => {
+      if (!Array.isArray(value)) return;
+      if (value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))) {
+        const longitude = Number(value[0]);
+        const latitude = Number(value[1]);
+        minimumLongitude = Math.min(minimumLongitude, longitude);
+        maximumLongitude = Math.max(maximumLongitude, longitude);
+        minimumLatitude = Math.min(minimumLatitude, latitude);
+        maximumLatitude = Math.max(maximumLatitude, latitude);
+        return;
+      }
+      value.forEach(visit);
+    };
+    visit(coordinates);
+    if (![minimumLongitude, minimumLatitude, maximumLongitude, maximumLatitude].every(Number.isFinite)) return null;
+    return window.L.latLng(
+      (minimumLatitude + maximumLatitude) / 2,
+      (minimumLongitude + maximumLongitude) / 2,
+    );
+  }
+
+  function anomalySourceFeatures() {
+    return state.previewLayers.get("source")?.geojson?.features || [];
+  }
+
+  function clearAnomalyReviewMap() {
+    if (state.map) {
+      for (const layer of [state.anomalyReviewAllLayer, state.anomalyReviewSelectedLayer]) {
+        if (layer && state.map.hasLayer(layer)) state.map.removeLayer(layer);
+      }
+    }
+    state.anomalyReviewAllLayer = null;
+    state.anomalyReviewSelectedLayer = null;
+    state.anomalyReviewPairs = [];
+    state.anomalyReviewSelectedIndex = null;
+    byId("ppAnomalyMapReview").hidden = true;
+    byId("ppShowAllAnomalyPairs").checked = false;
+  }
+
+  function anomalyPairColor(pair) {
+    if (pair.review_status === "duplicate") return "#ef4444";
+    if (pair.review_status === "review") return "#f59e0b";
+    return "#64748b";
+  }
+
+  function renderAllAnomalyReviewPairs() {
+    if (!state.map) return;
+    if (state.anomalyReviewAllLayer && state.map.hasLayer(state.anomalyReviewAllLayer)) {
+      state.map.removeLayer(state.anomalyReviewAllLayer);
+    }
+    state.anomalyReviewAllLayer = null;
+    if (!byId("ppShowAllAnomalyPairs").checked) return;
+    const features = anomalySourceFeatures();
+    const group = window.L.layerGroup();
+    const featureStyles = new Map();
+    for (const pair of state.anomalyReviewPairs) {
+      const first = features[Number(pair.first_index)];
+      const second = features[Number(pair.second_index)];
+      const firstCenter = geoJsonFeatureCenter(first);
+      const secondCenter = geoJsonFeatureCenter(second);
+      const color = anomalyPairColor(pair);
+      if (firstCenter && secondCenter) {
+        window.L.polyline([firstCenter, secondCenter], {
+          color,
+          weight: 1.5,
+          opacity: 0.5,
+          dashArray: "5 5",
+          interactive: false,
+        }).addTo(group);
+      }
+      for (const index of [Number(pair.first_index), Number(pair.second_index)]) {
+        const priority = pair.review_status === "duplicate" ? 3 : pair.review_status === "review" ? 2 : 1;
+        if (!featureStyles.has(index) || featureStyles.get(index).priority < priority) {
+          featureStyles.set(index, { color, priority });
+        }
+      }
+    }
+    for (const [index, style] of featureStyles) {
+      const feature = features[index];
+      if (!feature) continue;
+      window.L.geoJSON(feature, {
+        interactive: false,
+        style: { color: style.color, weight: 1.5, opacity: 0.6, fillColor: style.color, fillOpacity: 0.08 },
+      }).addTo(group);
+    }
+    group.addTo(state.map);
+    state.anomalyReviewAllLayer = group;
+    state.anomalyReviewSelectedLayer?.bringToFront?.();
+  }
+
+  function showAnomalyReviewPair(pairs, selectedIndex = 0, showAll = false) {
+    const map = ensurePreviewMap();
+    const features = anomalySourceFeatures();
+    const pair = pairs?.[selectedIndex];
+    if (!map || !pair || !features.length) {
+      setMessage("The configured anomaly source layer must be loaded before a pair can be shown on the map.", "err");
+      return false;
+    }
+    if (state.anomalyReviewSelectedLayer && map.hasLayer(state.anomalyReviewSelectedLayer)) {
+      map.removeLayer(state.anomalyReviewSelectedLayer);
+    }
+    state.anomalyReviewPairs = pairs.slice();
+    state.anomalyReviewSelectedIndex = selectedIndex;
+    const first = features[Number(pair.first_index)];
+    const second = features[Number(pair.second_index)];
+    if (!first || !second) {
+      setMessage("This comparison no longer matches the loaded anomaly source ordering.", "err");
+      return false;
+    }
+    byId("ppShowAllAnomalyPairs").checked = Boolean(showAll);
+    renderAllAnomalyReviewPairs();
+    const selected = window.L.featureGroup();
+    const firstLayer = window.L.geoJSON(first, {
+      style: { color: "#22d3ee", weight: 4, opacity: 1, fillColor: "#22d3ee", fillOpacity: 0.22 },
+    }).bindTooltip("Left image anomaly", { sticky: true });
+    const secondLayer = window.L.geoJSON(second, {
+      style: { color: "#e879f9", weight: 4, opacity: 1, fillColor: "#e879f9", fillOpacity: 0.22 },
+    }).bindTooltip("Right image anomaly", { sticky: true });
+    firstLayer.addTo(selected);
+    secondLayer.addTo(selected);
+    const centers = [geoJsonFeatureCenter(first), geoJsonFeatureCenter(second)].filter(Boolean);
+    if (centers.length === 2) {
+      window.L.polyline(centers, { color: "#ffffff", weight: 2.5, dashArray: "7 6", opacity: 0.95 }).addTo(selected);
+    }
+    selected.addTo(map);
+    state.anomalyReviewSelectedLayer = selected;
+    const bounds = selected.getBounds();
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 21 });
+    byId("ppAnomalyMapReview").hidden = false;
+    byId("ppAnomalyMapReviewTitle").textContent = `Duplicate comparison ${selectedIndex + 1}`;
+    byId("ppAnomalyMapReviewDetails").textContent = `${pair.display_score == null ? "Score unavailable" : `${Math.round(pair.display_score)}% duplicate`} · ${Number(pair.center_distance_m || 0).toFixed(2)} m apart`;
+    window.requestAnimationFrame(() => map.invalidateSize());
+    return true;
+  }
+
+  function updateAnomalyReviewPairs(pairs) {
+    state.anomalyReviewPairs = Array.isArray(pairs) ? pairs.slice() : [];
+    renderAllAnomalyReviewPairs();
+  }
+
   function clearPreviewLayers() {
     stopEditing(false);
     finishMeasurement({ clear: true });
+    clearAnomalyReviewMap();
     if (state.map) {
       for (const item of state.previewLayers.values()) {
         if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
@@ -859,7 +1014,9 @@
 
   function cacheCurrentModeState() {
     if (!state.currentJobId) return;
-    if (state.stepsLoading) {
+    const activeWorkflow = state.workflows.find(item => item.id === state.workflowId);
+    const workflowRunning = activeWorkflow?.status === "queued" || activeWorkflow?.status === "running";
+    if (state.stepsLoading || workflowRunning) {
       state.modeCache.delete(state.mode);
       detachLayerCollection(state.previewLayers);
       detachLayerCollection(state.referenceLayers);
@@ -2120,15 +2277,38 @@
     }
     renderPreviewLayers();
     const counts = {
-      combined: status.combine_stats?.output_features,
-      regularized: status.hierarchy_stats?.panel_count ?? status.regularize_stats?.output_features,
-      solar_rows: status.hierarchy_stats?.row_count,
-      deduplicated: status.deduplicate_stats?.output_features,
-      associated: status.association_stats?.output_features,
+      combined: status.manual_edits?.combined?.feature_count ?? status.combine_stats?.output_features,
+      regularized: status.manual_edits?.regularized?.feature_count ?? status.hierarchy_stats?.panel_count ?? status.regularize_stats?.output_features,
+      solar_rows: status.manual_edits?.solar_rows?.feature_count ?? status.hierarchy_stats?.row_count,
+      deduplicated: status.manual_edits?.deduplicated?.feature_count ?? status.deduplicate_stats?.output_features,
+      associated: status.manual_edits?.associated?.feature_count ?? status.association_stats?.output_features,
     };
+    const availableStages = [...GENERATED_STAGES].filter(stage => status.outputs?.[stage]?.url);
+    await Promise.allSettled(availableStages.map(async stage => {
+      const output = status.outputs[stage];
+      const version = output.mtime || status.manual_edits?.[stage]?.updated_at || "";
+      const dataKey = `${output.url}::${version}`;
+      if (state.previewDataCache.has(dataKey)) return;
+      let pending = state.previewDataPromises.get(dataKey);
+      if (!pending || pending.signal?.aborted) {
+        pending = {
+          signal: requestedContext?.signal,
+          promise: requestJson(output.url, { cache: "no-store", signal: requestedContext?.signal }),
+        };
+        state.previewDataPromises.set(dataKey, pending);
+      }
+      try {
+        const geojson = await pending.promise;
+        if (isCurrentLoad(requestedContext)) state.previewDataCache.set(dataKey, geojson);
+      } finally {
+        if (state.previewDataPromises.get(dataKey) === pending) state.previewDataPromises.delete(dataKey);
+      }
+    }));
+    if (!isCurrentLoad(requestedContext)) return;
     for (const stage of GENERATED_STAGES) {
       if (!status.outputs?.[stage]?.url) continue;
-      const version = status.manual_edits?.[stage]?.updated_at
+      const version = status.outputs[stage].mtime
+        || status.manual_edits?.[stage]?.updated_at
         || (stage === "regularized" && status.hierarchy_stats ? status.updated_at : null);
       await loadPreviewLayer(stage, status.outputs[stage].url, counts[stage], null, stage === "solar_rows", version, requestedContext);
     }
@@ -2490,12 +2670,12 @@
       const previousSource = earlyWorkflow
         ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(earlyWorkflow.input_path))
         : null;
-      const configuredSegmentationPath = state.currentJob?.sources?.segmentation?.path || "";
-      const configuredSource = configuredSegmentationPath
-        ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(configuredSegmentationPath))
+      const configuredModePath = state.currentJob?.sources?.[state.mode]?.path || "";
+      const configuredSource = configuredModePath
+        ? [...select.options].find(option => sourceIdentity(option.value) === sourceIdentity(configuredModePath))
         : null;
-      const configuredWorkingCopy = earlyWorkflow?.outputs?.source
-        && sourceIdentity(earlyWorkflow.original_input_path) === sourceIdentity(configuredSegmentationPath)
+      const configuredWorkingCopy = state.mode === "segmentation" && earlyWorkflow?.outputs?.source
+        && sourceIdentity(earlyWorkflow.original_input_path) === sourceIdentity(configuredModePath)
         ? previousSource
         : null;
       const predictions = [...select.options].find(option => option.value.toLowerCase() === "predictions.geojson")
@@ -2507,11 +2687,27 @@
       else if (select.options.length > 1) select.selectedIndex = 1;
       select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
       byId("ppAnalyze").disabled = !select.value;
+      if (state.currentJob && state.mode === "segmentation") {
+        await initializeConfiguredSegmentation();
+      } else if (state.currentJob && state.mode === "anomaly") {
+        const configuredAnomaly = state.currentJob.sources?.anomaly;
+        const source = state.geojsonFiles.find(file => file.path === select.value);
+        if (source?.url) {
+          await loadPreviewLayer(
+            "source",
+            source.url,
+            configuredAnomaly?.summary?.feature_count,
+            "Anomaly predictions",
+            false,
+            source.mtime,
+          );
+        }
+      }
       const matchingWorkflow = selectSavedWorkflow(select.value, null, false);
       const restored = Boolean(matchingWorkflow);
       if (matchingWorkflow) {
         state.workflowId = matchingWorkflow.id;
-        void applyWorkflow(matchingWorkflow, requestedContext);
+        await applyWorkflow(matchingWorkflow, requestedContext);
         populateRegularizeSources(matchingWorkflow.id);
         renderWorkflowList();
       }
@@ -2523,7 +2719,6 @@
         }
       }
       document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
-      if (state.currentJob && state.mode === "segmentation") initializeConfiguredSegmentation();
     } catch (error) {
       if (!isCurrentLoad(requestedContext)) return;
       setMessage(error.message, "err");
@@ -2551,7 +2746,7 @@
     container.hidden = true;
   }
 
-  function initializeConfiguredSegmentation() {
+  async function initializeConfiguredSegmentation() {
     const configured = state.currentJob?.sources?.segmentation;
     const summary = configured?.summary;
     const sourcePath = byId("ppGeojson").value;
@@ -2561,7 +2756,7 @@
     renderAnalysis(summary);
     syncSegmentationStepProgress();
     const source = state.geojsonFiles.find(file => file.path === sourcePath);
-    if (source?.url) void loadPreviewLayer("source", source.url, summary.feature_count, null, false, source.mtime);
+    if (source?.url) await loadPreviewLayer("source", source.url, summary.feature_count, null, false, source.mtime);
     const canCombine = Boolean(summary.tile_metadata_available && summary.features_on_tile_edges);
     byId("ppCombine").disabled = !canCombine;
     setMessage("");
@@ -2653,18 +2848,17 @@
     return previewPromise;
   }
 
-  async function pollWorkflow(token) {
-    const resultId = byId("ppResult").value;
+  async function pollWorkflow(token, requestedContext, resultId, workflowId) {
     let consecutiveErrors = 0;
-    while (token === state.pollToken && state.workflowId) {
+    while (token === state.pollToken && isCurrentLoad(requestedContext)) {
       await new Promise(resolve => setTimeout(resolve, 900));
-      if (token !== state.pollToken) return;
+      if (token !== state.pollToken || !isCurrentLoad(requestedContext)) return;
       try {
-        const status = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(state.workflowId)}`);
+        const status = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(workflowId)}`);
         consecutiveErrors = 0;
-        applyWorkflow(status);
+        await applyWorkflow(status, requestedContext);
         if (status.status !== "queued" && status.status !== "running") {
-          await restoreLatestWorkflow(resultId, byId("ppGeojson").value, state.workflowId);
+          await restoreLatestWorkflow(resultId, byId("ppGeojson").value, workflowId, requestedContext);
           return;
         }
       } catch (error) {
@@ -2727,10 +2921,7 @@
           remove_contained_polygons: byId("ppRemoveContained").checked,
         }),
       });
-      state.workflowId = payload.id;
-      state.pollToken += 1;
-      applyWorkflow(payload);
-      await pollWorkflow(state.pollToken);
+      await runWorkflow(payload);
     } catch (error) {
       byId("ppCombine").disabled = false;
       setMessage(error.message, "err");
@@ -2772,9 +2963,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ max_area_change_percent: numberValue("ppAreaChange") }),
       });
-      state.pollToken += 1;
-      applyWorkflow(payload);
-      await pollWorkflow(state.pollToken);
+      await runWorkflow(payload);
     } catch (error) {
       byId("ppRegularize").disabled = false;
       setMessage(error.message, "err");
@@ -2800,7 +2989,6 @@
     });
     // Keep activation self-contained. This also works if an older cached copy of
     // the shared tab controller is still present in the browser.
-    byId("btnPostprocess")?.addEventListener("click", () => loadResults(false));
     byId("ppRefresh").addEventListener("click", () => loadResults(true));
     byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
     byId("ppEditJobConfig")?.addEventListener("click", () => {
@@ -2829,6 +3017,18 @@
     });
     byId("ppFitLayers").addEventListener("click", fitVisibleLayers);
     byId("ppFullscreen").addEventListener("click", togglePreviewFullscreen);
+    byId("ppShowAllAnomalyPairs").addEventListener("change", event => {
+      renderAllAnomalyReviewPairs();
+      if (event.target.checked) {
+        document.dispatchEvent(new CustomEvent("postprocess:request-all-anomaly-pairs"));
+      }
+    });
+    byId("ppReturnToComparison").addEventListener("click", () => {
+      document.dispatchEvent(new CustomEvent("postprocess:return-comparisons", {
+        detail: { pairIndex: state.anomalyReviewSelectedIndex },
+      }));
+    });
+    byId("ppClearAnomalyPair").addEventListener("click", clearAnomalyReviewMap);
     byId("ppRefreshOutputs").addEventListener("click", () =>
       restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value, state.workflowId)
     );
@@ -3680,12 +3880,10 @@
 
   function setMode(mode) {
     const nextMode = mode === "anomaly" ? "anomaly" : "segmentation";
-    if (nextMode === state.mode) {
-      document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
-      return;
-    }
+    if (nextMode === state.mode || state.stepsLoading) return;
     if (state.editing) stopEditing(true);
     cacheCurrentModeState();
+    state.pollToken += 1;
     invalidateModeLoad();
     state.mode = nextMode;
     if (restoreModeState(nextMode)) return;
@@ -3717,10 +3915,12 @@
   }
 
   async function runWorkflow(payload) {
+    const requestedContext = loadContext();
+    const resultId = byId("ppResult").value;
     state.workflowId = payload.id;
     state.pollToken += 1;
-    applyWorkflow(payload);
-    await pollWorkflow(state.pollToken);
+    applyWorkflow(payload, requestedContext);
+    await pollWorkflow(state.pollToken, requestedContext, resultId, payload.id);
   }
 
   function selectWorkflow(workflowId) {
@@ -3738,6 +3938,8 @@
     requestJson,
     runWorkflow,
     selectWorkflow,
+    showAnomalyReviewPair,
+    updateAnomalyReviewPairs,
     setMessage,
     setMode,
     setStepsLoading,

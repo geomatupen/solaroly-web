@@ -457,11 +457,37 @@
 }
 
 .postprocessPreviewMapColumn {
+  position: relative;
   grid-column: 2;
   grid-row: 1;
   display: flex;
   min-height: 0;
   flex-direction: column;
+}
+
+.postprocessAnomalyMapReview {
+  position: absolute;
+  z-index: 900;
+  top: 12px;
+  left: 58px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #334155;
+  border-radius: 9px;
+  background: rgba(11, 17, 23, .94);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .32);
+}
+.postprocessAnomalyMapReview[hidden] { display: none; }
+.postprocessAnomalyMapReview > div:first-child { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.postprocessMapPairToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 12px;
 }
 
 .postprocessPreview.postprocessFullscreen,
@@ -1233,6 +1259,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   margin-top: 8px;
   font-size: 12px;
 }
+.postprocessPairMapButton { margin-left: auto; white-space: nowrap; }
 .postprocessVisualSimilarity { font-weight: 700; }
 .postprocessVisualPair.isDuplicate { border-color: var(--accent); }
 .postprocessVisualPair.needsReview { border-color: #d99b34; }
@@ -1376,6 +1403,17 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   text-align: center;
 }
 .postprocessComparisonNavigation { display: flex; gap: 8px; }
+.postprocessComparisonZoomControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.postprocessComparisonZoomControls button:not(.tiny) {
+  width: 34px;
+  min-width: 34px;
+  padding: 6px;
+}
+.postprocessComparisonZoomControls > span { min-width: 44px; text-align: center; }
 .postprocessComparisonFullImages {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1389,7 +1427,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   display: grid;
   height: clamp(320px, 55vh, 650px);
   place-items: center;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: #05090d;
@@ -1399,6 +1437,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   width: 100%;
   height: 100%;
   object-fit: contain;
+  transition: transform .18s ease;
 }
 .postprocessComparisonImageMissing {
   padding: 20px;
@@ -1423,6 +1462,11 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 .postprocessComparisonDetails > p { margin: 0; line-height: 1.5; }
 .postprocessComparisonManualControls { max-width: 540px; }
+.postprocessComparisonMapAction {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
 .postprocessComparisonsLoading {
   display: flex;
   min-height: 190px;
@@ -1456,6 +1500,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   .postprocessComparisonImageFrame { height: min(48vh, 520px); }
   .postprocessComparisonDetailToolbar { align-items: stretch; flex-wrap: wrap; }
   .postprocessComparisonDetailToolbar > .muted { order: 3; flex-basis: 100%; }
+  .postprocessAnomalyMapReview { left: 12px; flex-wrap: wrap; }
 }
 
 .postprocessLogWrap { margin-top: 12px; }

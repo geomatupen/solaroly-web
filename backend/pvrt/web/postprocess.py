@@ -229,6 +229,7 @@ def create_postprocess_router(
                 output_path = (workflow_dir.parent.parent / output["path"]).resolve()
                 if output_path.is_file():
                     output["url"] = media_url(output_path)
+                    output["mtime"] = int(output_path.stat().st_mtime_ns)
         review_path_value = str(payload.get("visual_review_path") or "")
         if review_path_value:
             review_path = (workflow_dir.parent.parent / review_path_value).resolve()
@@ -958,6 +959,29 @@ def create_postprocess_router(
             "limit": limit,
             "total_pairs": len(all_pairs),
             "has_more": offset + len(pairs) < len(all_pairs),
+        }
+
+    @router.get("/{result_id}/postprocess/{workflow_id}/visual-review-map")
+    async def visual_review_map_pairs(result_id: str, workflow_id: str) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        review_path = workflow_dir / "visual_review.json"
+        if not review_path.is_file():
+            raise HTTPException(status_code=404, detail="Visual review is not available for this workflow.")
+        try:
+            review = await asyncio.to_thread(lambda: json.loads(review_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
+        fields = {
+            "first_index", "second_index", "center_distance_m", "appearance_similarity",
+            "context_similarity", "shape_similarity", "size_similarity", "proximity_similarity",
+        }
+        return {
+            "ok": True,
+            "pairs": [
+                {key: value for key, value in pair.items() if key in fields}
+                for pair in (review.get("pairs") or [])
+            ],
         }
 
     @router.post("/{result_id}/postprocess/{workflow_id}/associate")

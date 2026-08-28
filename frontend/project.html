@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260827o" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260828j" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260828k" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -734,6 +734,15 @@
           <div class="postprocessPreviewWorkspace">
             <div class="postprocessPreviewMapColumn">
               <div id="ppMap" class="postprocessMap" aria-label="Post-processing GeoJSON preview"></div>
+              <div id="ppAnomalyMapReview" class="postprocessAnomalyMapReview" hidden>
+                <div>
+                  <strong id="ppAnomalyMapReviewTitle">Duplicate pair</strong>
+                  <span id="ppAnomalyMapReviewDetails" class="muted tiny"></span>
+                </div>
+                <label class="postprocessMapPairToggle"><input id="ppShowAllAnomalyPairs" type="checkbox" /> Show all candidate pairs</label>
+                <button id="ppReturnToComparison" class="secondary tiny" type="button">Return to images</button>
+                <button id="ppClearAnomalyPair" class="secondary tiny" type="button">Clear</button>
+              </div>
               <div id="ppMapStatus" class="statusLine tiny">Configured layers will appear here.</div>
             </div>
             <div class="postprocessPreviewLayersColumn">
@@ -1088,6 +1097,12 @@
           <div class="postprocessComparisonDetailToolbar">
             <button id="ppVisualComparisonBack" class="secondary" type="button"><span aria-hidden="true">←</span> Back to comparisons</button>
             <span id="ppVisualComparisonPosition" class="muted tiny"></span>
+            <div class="postprocessComparisonZoomControls" aria-label="Synchronized image zoom controls">
+              <button id="ppVisualComparisonZoomOut" class="secondary" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+              <span id="ppVisualComparisonZoomLevel" class="muted tiny">100%</span>
+              <button id="ppVisualComparisonZoomIn" class="secondary" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+              <button id="ppVisualComparisonFit" class="secondary tiny" type="button">Fit images</button>
+            </div>
             <div class="postprocessComparisonNavigation">
               <button id="ppVisualComparisonPrevious" class="secondary" type="button" aria-label="Previous comparison" title="Previous comparison">← Previous</button>
               <button id="ppVisualComparisonNext" class="secondary" type="button" aria-label="Next comparison" title="Next comparison">Next →</button>
@@ -1095,6 +1110,9 @@
           </div>
           <div id="ppVisualComparisonFullImages" class="postprocessComparisonFullImages"></div>
           <div id="ppVisualComparisonDetails" class="postprocessComparisonDetails"></div>
+          <div class="postprocessComparisonMapAction">
+            <button id="ppVisualComparisonViewOnMap" class="secondary" type="button">⌖ View this pair on map</button>
+          </div>
         </section>
       </div>
       <div class="modalFooter">
@@ -1595,9 +1613,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260828c"></script>
+  <script src="js/postprocess.js?v=20260828g"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260828k"></script>
+  <script src="js/postprocess_anomaly.js?v=20260828n"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

@@ -4,9 +4,9 @@
   const byId = id => document.getElementById(id) || window.PostprocessWorkspace?.getInternalControl?.(id) || null;
   const api = () => window.PostprocessWorkspace;
   let scannedPath = "";
-  let scanningPath = "";
   let panelLayers = [];
   let panelLayersLoaded = false;
+  let loadedPanelReferenceKey = "";
   let loadedScoringWorkflowId = "";
   let neighborStatsTimer = null;
   let neighborStatsToken = 0;
@@ -41,6 +41,7 @@
   let loadedComparisonTotal = 0;
   let loadedComparisonWorkflowId = "";
   let activeComparisonIndex = null;
+  let comparisonImageZoom = 1;
 
   function comparisonPairs(workflow) {
     return loadedComparisonWorkflowId === workflow?.id && loadedComparisonPairs.length
@@ -281,6 +282,43 @@
     if (workflow) updateThresholdEffect(workflow);
   }
 
+  function mapReviewPair(pair) {
+    const config = scoringConfig();
+    const score = compositeScore(pair, config);
+    const qualifies = score != null
+      && score >= config.threshold
+      && Number(pair.appearance_similarity || 0) * 100 >= config.minimumAppearance
+      && Number(pair.context_similarity || 0) * 100 >= config.minimumContext;
+    return {
+      ...pair,
+      display_score: score,
+      review_status: qualifies ? "duplicate" : score != null && score >= config.reviewThreshold ? "review" : "below",
+    };
+  }
+
+  function viewComparisonOnMap(pairIndex) {
+    const pairs = loadedComparisonPairs.map(mapReviewPair);
+    if (!api()?.showAnomalyReviewPair(pairs, pairIndex, false)) return;
+    const modal = byId("ppVisualComparisonsModal");
+    modal.classList.remove("show");
+    modal.classList.add("hidden");
+  }
+
+  async function loadAllComparisonMapPairs() {
+    const workspace = api();
+    const context = workspace?.getContext();
+    if (!context?.resultId || !context.workflowId) return;
+    try {
+      const payload = await workspace.requestJson(
+        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/visual-review-map`,
+        { cache: "no-store" },
+      );
+      workspace.updateAnomalyReviewPairs((payload.pairs || []).map(mapReviewPair));
+    } catch (error) {
+      workspace.setMessage(`Could not show all duplicate candidates on the map: ${error.message}`, "err");
+    }
+  }
+
   function showComparisonGrid() {
     activeComparisonIndex = null;
     byId("ppVisualComparisonDetail").hidden = true;
@@ -288,6 +326,23 @@
     byId("ppVisualComparisonsTitle").textContent = "Image comparisons";
     const loadMore = byId("ppVisualComparisonsLoadMore");
     loadMore.hidden = loadedComparisonPairs.length >= loadedComparisonTotal;
+  }
+
+  function focusBoxScale(box) {
+    if (!Array.isArray(box) || box.length !== 4) return null;
+    const width = Math.max(0.001, Number(box[2]) - Number(box[0]));
+    const height = Math.max(0.001, Number(box[3]) - Number(box[1]));
+    return Math.max(1, Math.min(8, 0.38 / Math.max(width, height)));
+  }
+
+  function setComparisonImageZoom(zoom) {
+    comparisonImageZoom = Math.max(1, Math.min(10, Number(zoom) || 1));
+    for (const image of byId("ppVisualComparisonFullImages").querySelectorAll("img[data-focus-x]")) {
+      image.style.transformOrigin = `${image.dataset.focusX}% ${image.dataset.focusY}%`;
+      image.style.transform = `scale(${comparisonImageZoom})`;
+    }
+    byId("ppVisualComparisonZoomLevel").textContent = `${Math.round(comparisonImageZoom * 100)}%`;
+    byId("ppVisualComparisonZoomOut").disabled = comparisonImageZoom <= 1;
   }
 
   function renderComparisonDetail(pairIndex) {
@@ -301,12 +356,17 @@
     byId("ppVisualComparisonPosition").textContent = `Comparison ${(pairIndex + 1).toLocaleString()} of ${loadedComparisonTotal.toLocaleString()}`;
     byId("ppVisualComparisonPrevious").disabled = pairIndex <= 0;
     byId("ppVisualComparisonNext").disabled = pairIndex + 1 >= loadedComparisonTotal;
+    const focusScales = [
+      pair.first_image_url ? focusBoxScale(pair.first_focus_box) : null,
+      pair.second_image_url ? focusBoxScale(pair.second_focus_box) : null,
+    ].filter(Number.isFinite);
+    comparisonImageZoom = focusScales.length ? Math.min(...focusScales) : 1;
 
     const images = byId("ppVisualComparisonFullImages");
     images.replaceChildren();
-    for (const [side, imageUrl, cropUrl, name] of [
-      ["Left", pair.first_image_url, pair.first_crop_url, pair.first_image],
-      ["Right", pair.second_image_url, pair.second_crop_url, pair.second_image],
+    for (const [side, imageUrl, cropUrl, name, focusBox] of [
+      ["Left", pair.first_image_url, pair.first_crop_url, pair.first_image, pair.first_focus_box],
+      ["Right", pair.second_image_url, pair.second_crop_url, pair.second_image, pair.second_focus_box],
     ]) {
       const figure = document.createElement("figure");
       const frame = document.createElement("div");
@@ -316,6 +376,11 @@
         const image = document.createElement("img");
         image.src = availableUrl;
         image.alt = `${side} full source image showing anomaly ${name || "prediction"}`;
+        const validFocus = imageUrl && Array.isArray(focusBox) && focusBox.length === 4;
+        const focusX = validFocus ? (Number(focusBox[0]) + Number(focusBox[2])) * 50 : 50;
+        const focusY = validFocus ? (Number(focusBox[1]) + Number(focusBox[3])) * 50 : 50;
+        image.dataset.focusX = String(focusX);
+        image.dataset.focusY = String(focusY);
         frame.appendChild(image);
       } else {
         const missing = document.createElement("div");
@@ -338,6 +403,7 @@
       figure.append(frame, caption);
       images.appendChild(figure);
     }
+    setComparisonImageZoom(comparisonImageZoom);
 
     const details = byId("ppVisualComparisonDetails");
     details.replaceChildren();
@@ -462,6 +528,17 @@
       similarity.className = "postprocessVisualSimilarity";
       similarity.textContent = "Calculating score…";
       meta.append(spatial, similarity);
+      const mapButton = document.createElement("button");
+      mapButton.className = "secondary tiny postprocessPairMapButton";
+      mapButton.type = "button";
+      mapButton.textContent = "⌖ Map";
+      mapButton.title = "View this pair on the map";
+      mapButton.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        viewComparisonOnMap(pairIndex);
+      };
+      meta.appendChild(mapButton);
       const components = document.createElement("small");
       components.className = "postprocessVisualComponents muted";
       components.textContent = pair.appearance_similarity == null
@@ -608,6 +685,7 @@
   }
 
   function switchMode(mode) {
+    if (api()?.getContext()?.mode === mode) return;
     const anomaly = mode === "anomaly";
     byId("ppSegmentationWorkflow").hidden = anomaly;
     byId("ppAnomalyControls").hidden = !anomaly;
@@ -618,7 +696,6 @@
     byId("ppAnomalyTab").classList.toggle("secondary", !anomaly);
     byId("ppAnomalyTab").setAttribute("aria-selected", String(anomaly));
     api()?.setMode(mode);
-    refresh(api()?.getContext());
     if (anomaly) void loadPanelLayers();
   }
 
@@ -644,24 +721,31 @@
 
   async function showSegmentationReferences(option, context = api()?.getContext()) {
     if (!option?.dataset.url || context?.mode !== "anomaly") return;
-    await api()?.loadPreviewLayer(
-      "segmentation_regularized_reference",
-      option.dataset.url,
-      null,
-      "Final regularized panels (read-only)",
-      true,
-      option.dataset.mtime,
-    );
-    if (option.dataset.rowsUrl) {
-      await api()?.loadPreviewLayer(
-        "segmentation_rows_reference",
-        option.dataset.rowsUrl,
+    const referenceKey = `${option.dataset.url}::${option.dataset.mtime || ""}::${option.dataset.rowsUrl || ""}::${option.dataset.rowsMtime || ""}`;
+    if (referenceKey === loadedPanelReferenceKey) return;
+    loadedPanelReferenceKey = referenceKey;
+    await Promise.all([
+      api()?.loadPreviewLayer(
+        "segmentation_regularized_reference",
+        option.dataset.url,
         null,
-        "Final rows (visual reference)",
+        "Final regularized panels (read-only)",
         true,
-        option.dataset.rowsMtime,
-      );
-    }
+        option.dataset.mtime,
+      ),
+      option.dataset.rowsUrl
+        ? api()?.loadPreviewLayer(
+          "segmentation_rows_reference",
+          option.dataset.rowsUrl,
+          null,
+          "Final rows (visual reference)",
+          true,
+          option.dataset.rowsMtime,
+        )
+        : Promise.resolve(),
+    ]).catch(() => {
+      loadedPanelReferenceKey = "";
+    });
   }
 
   function refresh(context = api()?.getContext()) {
@@ -691,7 +775,6 @@
       if (likely) anomalySelect.value = likely.path;
     }
     anomalySelect.disabled = Boolean(context.configuredSourcePath) || !context.resultId || candidates.length === 0;
-    byId("ppScanAnomalies").disabled = !anomalySelect.value;
     const selectedKey = anomalySelect.value ? `${context.resultId}::${anomalySelect.value}` : "";
     const configuredReady = Boolean(
       context.mode === "anomaly"
@@ -750,36 +833,7 @@
     byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
     if (context.mode === "anomaly" && context.resultId && context.geojsonFiles.length) {
-      api()?.setStepsLoading(false);
       scheduleNeighborStats();
-    }
-  }
-
-  async function scanPredictions() {
-    const workspace = api();
-    const context = workspace.getContext();
-    const path = byId("ppAnomalyGeojson").value;
-    const file = context.geojsonFiles.find(item => item.path === path);
-    if (!path || !file?.url) return;
-    const sourceKey = `${context.resultId}::${path}`;
-    scanningPath = sourceKey;
-    byId("ppScanAnomalies").disabled = true;
-    workspace.setMessage("Loading prediction polygons into the map…");
-    try {
-      await workspace.loadPreviewLayer("source", file.url, null, "Anomaly predictions", false, file.mtime);
-      const current = workspace.getContext();
-      if (current.mode !== "anomaly" || current.resultId !== context.resultId) return;
-      scannedPath = sourceKey;
-      byId("ppDeduplicateStep").hidden = false;
-      byId("ppDeduplicateStep").classList.remove("locked");
-      byId("ppDeduplicateStep").setAttribute("aria-disabled", "false");
-      byId("ppDeduplicate").disabled = false;
-      workspace.setMessage("Anomalies GeoJSON is ready. Review it, then deduplicate overlapping-image detections.", "ok");
-    } catch (error) {
-      workspace.setMessage(error.message, "err");
-    } finally {
-      scanningPath = "";
-      byId("ppScanAnomalies").disabled = !byId("ppAnomalyGeojson").value;
     }
   }
 
@@ -910,17 +964,6 @@
   function init() {
     byId("ppSegmentationTab")?.addEventListener("click", () => switchMode("segmentation"));
     byId("ppAnomalyTab")?.addEventListener("click", () => switchMode("anomaly"));
-    byId("ppAnomalyGeojson")?.addEventListener("change", event => {
-      scannedPath = "";
-      byId("ppScanAnomalies").disabled = !event.target.value;
-      for (const id of ["ppDeduplicateStep", "ppAdjustAnomaliesStep", "ppAssociateStep"]) {
-        byId(id).hidden = false;
-        byId(id).classList.add("locked");
-        byId(id).setAttribute("aria-disabled", "true");
-      }
-      lastNeighborStatsKey = "";
-      scheduleNeighborStats(true);
-    });
     byId("ppAnomalyNeighborRadius")?.addEventListener("input", () => {
       lastNeighborStatsKey = "";
       scheduleNeighborStats(true);
@@ -932,7 +975,6 @@
       const option = event.target.selectedOptions[0];
       if (option?.dataset.url) void showSegmentationReferences(option, context);
     });
-    byId("ppScanAnomalies")?.addEventListener("click", scanPredictions);
     byId("ppApplyVisualDeduplication")?.addEventListener("click", applyVisualDeduplication);
     for (const id of Object.keys(scoringDefaults)) byId(id)?.addEventListener("input", refreshScoringControls);
     byId("ppDeduplicationMode")?.addEventListener("change", () => {
@@ -960,6 +1002,12 @@
     byId("ppVisualComparisonBack").onclick = showComparisonGrid;
     byId("ppVisualComparisonPrevious").onclick = () => void navigateComparison(-1);
     byId("ppVisualComparisonNext").onclick = () => void navigateComparison(1);
+    byId("ppVisualComparisonZoomOut").onclick = () => setComparisonImageZoom(comparisonImageZoom - 0.5);
+    byId("ppVisualComparisonZoomIn").onclick = () => setComparisonImageZoom(comparisonImageZoom + 0.5);
+    byId("ppVisualComparisonFit").onclick = () => setComparisonImageZoom(1);
+    byId("ppVisualComparisonViewOnMap").onclick = () => {
+      if (activeComparisonIndex != null) viewComparisonOnMap(activeComparisonIndex);
+    };
     byId("ppVisualComparisonsClose")?.addEventListener("click", closeComparisonsModal);
     byId("ppVisualComparisonsDone")?.addEventListener("click", closeComparisonsModal);
     comparisonsModal?.addEventListener("click", event => {
@@ -995,9 +1043,9 @@
     });
     document.addEventListener("postprocess:cache-reset", () => {
       scannedPath = "";
-      scanningPath = "";
       panelLayers = [];
       panelLayersLoaded = false;
+      loadedPanelReferenceKey = "";
       loadedScoringWorkflowId = "";
       lastNeighborStatsKey = "";
       pendingNeighborStatsKey = "";
@@ -1007,6 +1055,14 @@
       loadedComparisonTotal = 0;
       loadedComparisonWorkflowId = "";
       activeComparisonIndex = null;
+    });
+    document.addEventListener("postprocess:request-all-anomaly-pairs", () => void loadAllComparisonMapPairs());
+    document.addEventListener("postprocess:return-comparisons", event => {
+      const pairIndex = Number(event.detail?.pairIndex);
+      comparisonsModal.classList.remove("hidden");
+      comparisonsModal.classList.add("show");
+      if (Number.isInteger(pairIndex) && loadedComparisonPairs[pairIndex]) renderComparisonDetail(pairIndex);
+      else showComparisonGrid();
     });
   }
 

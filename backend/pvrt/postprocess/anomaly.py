@@ -114,7 +114,7 @@ def _anomaly_crop(
     image_path: Path,
     corners: list[Any],
     output_path: Path,
-) -> tuple[Any, float] | None:
+) -> tuple[Any, float, list[float]] | None:
     import cv2
     import numpy as np
 
@@ -142,6 +142,12 @@ def _anomaly_crop(
         return None
     x1, y1 = np.floor(pixels.min(axis=0)).astype(int)
     x2, y2 = np.ceil(pixels.max(axis=0)).astype(int)
+    focus_box = [
+        round(max(0.0, min(1.0, float(x1) / max(width, 1))), 6),
+        round(max(0.0, min(1.0, float(y1) / max(height, 1))), 6),
+        round(max(0.0, min(1.0, float(x2) / max(width, 1))), 6),
+        round(max(0.0, min(1.0, float(y2) / max(height, 1))), 6),
+    ]
     anomaly_center_x = (x1 + x2) / 2.0
     anomaly_center_y = (y1 + y2) / 2.0
     normalized_distance = (
@@ -157,7 +163,7 @@ def _anomaly_crop(
     crop = image[y1:y2, x1:x2].copy()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), crop)
-    return crop, image_center_proximity
+    return crop, image_center_proximity, focus_box
 
 
 def _prediction_crop(
@@ -166,7 +172,7 @@ def _prediction_crop(
     image_name: str,
     prediction_index: int,
     output_path: Path,
-) -> tuple[Any, float] | None:
+) -> tuple[Any, float, list[float]] | None:
     import cv2
     import numpy as np
 
@@ -191,6 +197,12 @@ def _prediction_crop(
     if image is None or image.size == 0:
         return None
     height, width = image.shape[:2]
+    focus_box = [
+        round(max(0.0, min(1.0, float(x1) / max(width, 1))), 6),
+        round(max(0.0, min(1.0, float(y1) / max(height, 1))), 6),
+        round(max(0.0, min(1.0, float(x2) / max(width, 1))), 6),
+        round(max(0.0, min(1.0, float(y2) / max(height, 1))), 6),
+    ]
     anomaly_center_x = (x1 + x2) / 2.0
     anomaly_center_y = (y1 + y2) / 2.0
     normalized_distance = (
@@ -206,7 +218,7 @@ def _prediction_crop(
     crop = image[y1:y2, x1:x2].copy()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), crop)
-    return crop, image_center_proximity
+    return crop, image_center_proximity, focus_box
 
 
 def _visual_similarity(first: Any, second: Any) -> float:
@@ -373,7 +385,7 @@ def analyze_visual_duplicates(
     neighbors = _neighbor_images(locations, neighbor_image_radius_m)
     pairs: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
-    crop_cache: dict[int, tuple[Any, str, float] | None] = {}
+    crop_cache: dict[int, tuple[Any, str, float, list[float]] | None] = {}
     representative_components: dict[str, dict[str, float]] = {}
     image_ordinals: dict[int, int] = {}
     image_counts: dict[str, int] = {}
@@ -383,7 +395,7 @@ def analyze_visual_duplicates(
         image_ordinals[source_index] = ordinal
         image_counts[image_name] = ordinal + 1
 
-    def crop_for(source_index: int, geometry: Any, properties: dict[str, Any]) -> tuple[Any, str, float] | None:
+    def crop_for(source_index: int, geometry: Any, properties: dict[str, Any]) -> tuple[Any, str, float, list[float]] | None:
         if source_index in crop_cache:
             return crop_cache[source_index]
         image_name = _image_name(properties)
@@ -408,7 +420,9 @@ def analyze_visual_duplicates(
             "model_confidence": round(max(0.0, min(1.0, confidence)), 4),
             "image_center_proximity": image_center_proximity,
         }
-        crop_cache[source_index] = (crop_result[0], relative, image_center_proximity) if crop_result is not None else None
+        crop_cache[source_index] = (
+            crop_result[0], relative, image_center_proximity, crop_result[2]
+        ) if crop_result is not None else None
         return crop_cache[source_index]
 
     total = max(1, len(projected))
@@ -456,6 +470,8 @@ def analyze_visual_duplicates(
                 "second_image": _image_name(candidate_properties),
                 "first_crop_path": first_crop[1] if first_crop else None,
                 "second_crop_path": second_crop[1] if second_crop else None,
+                "first_focus_box": first_crop[3] if first_crop else None,
+                "second_focus_box": second_crop[3] if second_crop else None,
                 "iou": round(iou, 4),
                 "smaller_overlap": round(smaller_overlap, 4),
                 "center_distance_m": round(distance, 4),
