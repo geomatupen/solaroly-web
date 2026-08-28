@@ -19,10 +19,12 @@
     anomalyReviewAllLayer: null,
     anomalyReviewSelectedLayer: null,
     previewLayers: new Map(),
-    previewLoading: new Set(),
+    previewLoading: new Map(),
     previewLayerCache: new Map(),
     previewDataCache: new Map(),
     previewDataPromises: new Map(),
+    workflowStatusCache: new Map(),
+    workflowStatusPromises: new Map(),
     workflows: [],
     scanComplete: false,
     editing: null,
@@ -45,6 +47,7 @@
     modeLoadToken: 0,
     modeAbortController: new AbortController(),
     modeLoadTimer: null,
+    deferredProcessingPromise: Promise.resolve(),
   };
 
   const GENERATED_STAGES = new Set([
@@ -101,6 +104,7 @@
       mode: state.mode,
       jobId: state.currentJobId,
       signal: state.modeAbortController.signal,
+      persistent: Boolean(state.currentJob),
     };
   }
 
@@ -124,9 +128,8 @@
 
   function setStepsLoading(loading, message = "Loading configured GeoJSON data…") {
     state.stepsLoading = Boolean(loading);
-    const lockModeTabs = Boolean(loading && state.currentJob);
-    byId("ppSegmentationTab").disabled = lockModeTabs;
-    byId("ppAnomalyTab").disabled = lockModeTabs;
+    byId("ppSegmentationTab").disabled = false;
+    byId("ppAnomalyTab").disabled = false;
     const indicator = byId("ppStepsLoading");
     if (!indicator) return;
     indicator.hidden = !loading;
@@ -1096,14 +1099,22 @@
       detachLayerCollection(cached.referenceLayers);
     }
     state.modeCache.clear();
+    state.workflowStatusCache.clear();
+    state.workflowStatusPromises.clear();
     document.dispatchEvent(new CustomEvent("postprocess:cache-reset"));
   }
 
   function invalidateCachedMode(mode) {
     const cached = state.modeCache.get(mode);
-    if (!cached) return;
-    detachLayerCollection(cached.previewLayers);
-    state.modeCache.delete(mode);
+    if (cached) {
+      detachLayerCollection(cached.previewLayers);
+      state.modeCache.delete(mode);
+    }
+    const source = state.currentJob?.sources?.[mode];
+    const binding = state.currentJob?.workflows?.[mode];
+    if (source?.workspace_result_id && binding?.workflow_id) {
+      state.workflowStatusCache.delete(workflowStatusKey(source.workspace_result_id, binding.workflow_id));
+    }
   }
 
   function setReferenceOpacity(item, opacity) {
@@ -1999,6 +2010,7 @@
         );
         stopEditing(false);
         state.workflowId = payload.id;
+        await bindCurrentJobWorkflow(payload.id);
         if (!state.workflows.some(item => item.id === payload.id)) state.workflows.unshift(payload);
         const sourcePath = payload.outputs?.source?.path || payload.input_path;
         if (sourcePath && ![...byId("ppGeojson").options].some(option => option.value === sourcePath)) {
@@ -2157,7 +2169,8 @@
         container.appendChild(control);
       }
     }
-    for (const stage of state.previewLoading) {
+    for (const [stage, loadingCount] of state.previewLoading) {
+      if (!loadingCount) continue;
       if (state.previewLayers.has(stage)) continue;
       const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
       const loading = document.createElement("div");
@@ -2171,8 +2184,8 @@
     updateFitButton();
   }
 
-  async function loadPreviewLayer(stage, url, expectedCount = null, label = null, showAlongside = false, version = null, requestedContext = null) {
-    if (!url || state.previewLoading.has(stage)) return;
+  async function loadPreviewLayer(stage, url, expectedCount = null, label = null, showAlongside = false, version = null, requestedContext = null, visible = true) {
+    if (!url) return;
     const context = requestedContext || loadContext();
     if (!isCurrentLoad(context)) return;
     const map = ensurePreviewMap();
@@ -2182,7 +2195,7 @@
     }
     const alreadyLoaded = state.previewLayers.get(stage);
     if (alreadyLoaded?.url === url && alreadyLoaded?.version === version) {
-      if (showAlongside && !map.hasLayer(alreadyLoaded.layer)) alreadyLoaded.layer.addTo(map);
+      if (visible && showAlongside && !map.hasLayer(alreadyLoaded.layer)) alreadyLoaded.layer.addTo(map);
       renderPreviewLayers();
       return;
     }
@@ -2192,29 +2205,33 @@
     if (cachedLayer) {
       const existing = state.previewLayers.get(stage);
       if (existing && existing !== cachedLayer && map.hasLayer(existing.layer)) map.removeLayer(existing.layer);
-      if (!showAlongside) {
+      if (visible && !showAlongside) {
         for (const item of state.previewLayers.values()) {
           if (item !== cachedLayer && map.hasLayer(item.layer)) map.removeLayer(item.layer);
         }
       }
-      if (!map.hasLayer(cachedLayer.layer)) cachedLayer.layer.addTo(map);
+      if (visible && !map.hasLayer(cachedLayer.layer)) cachedLayer.layer.addTo(map);
       state.previewLayers.set(stage, cachedLayer);
       renderPreviewLayers();
-      byId("ppMapStatus").textContent = `${cachedLayer.label} preview reused.`;
+      if (visible) byId("ppMapStatus").textContent = `${cachedLayer.label} preview reused.`;
       return;
     }
-    state.previewLoading.add(stage);
+    state.previewLoading.set(stage, (state.previewLoading.get(stage) || 0) + 1);
     renderPreviewLayers();
-    byId("ppMapStatus").textContent = `Loading ${style.label.toLowerCase()} polygons…`;
+    if (visible) byId("ppMapStatus").textContent = `Loading ${style.label.toLowerCase()} polygons…`;
     try {
       const dataKey = `${url}::${version || ""}`;
       let geojson = state.previewDataCache.get(dataKey);
       if (!geojson) {
         let pending = state.previewDataPromises.get(dataKey);
-        if (!pending || pending.signal.aborted) {
+        if (!pending || pending.signal?.aborted) {
+          const persistentSignal = context.persistent ? null : context.signal;
           pending = {
-            signal: context.signal,
-            promise: requestJson(url, { cache: "no-store", signal: context.signal }),
+            signal: persistentSignal,
+            promise: requestJson(url, {
+              cache: "no-store",
+              ...(persistentSignal ? { signal: persistentSignal } : {}),
+            }),
           };
           state.previewDataPromises.set(dataKey, pending);
         }
@@ -2232,12 +2249,12 @@
       const layer = created.layer;
       // Show the newest stage by itself initially. Users can turn earlier stages
       // back on for comparison using the layer list.
-      if (!showAlongside) {
+      if (visible && !showAlongside) {
         for (const item of state.previewLayers.values()) {
           if (map.hasLayer(item.layer)) map.removeLayer(item.layer);
         }
       }
-      layer.addTo(map);
+      if (visible) layer.addTo(map);
       const item = {
         label: created.label,
         color: style.color,
@@ -2251,22 +2268,25 @@
       state.previewLayers.set(stage, item);
       state.previewLayerCache.set(renderedKey, item);
       renderPreviewLayers();
-      const bounds = layer.getBounds();
-      if (bounds.isValid()) map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
-      byId("ppMapStatus").textContent = `${style.label} preview loaded.`;
+      if (visible) {
+        const bounds = layer.getBounds();
+        if (bounds.isValid()) map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
+        byId("ppMapStatus").textContent = `${style.label} preview loaded.`;
+      }
     } catch (error) {
       if (!isCurrentLoad(context)) return;
-      byId("ppMapStatus").textContent = `Could not load ${style.label.toLowerCase()} preview: ${error.message}`;
+      if (visible) byId("ppMapStatus").textContent = `Could not load ${style.label.toLowerCase()} preview: ${error.message}`;
     } finally {
-      if (!isCurrentLoad(context)) return;
-      state.previewLoading.delete(stage);
-      renderPreviewLayers();
+      const remaining = (state.previewLoading.get(stage) || 1) - 1;
+      if (remaining > 0) state.previewLoading.set(stage, remaining);
+      else state.previewLoading.delete(stage);
+      if (isCurrentLoad(context)) renderPreviewLayers();
     }
   }
 
   async function syncOutputPreviews(status, requestedContext = null) {
     const removableStages = [
-      "combined", "regularized", "solar_rows",
+      "combined", "regularized", "solar_rows", "deduplicated", "associated",
       "panel_hierarchy", "panel_rows", "identified_panels", "edited",
     ];
     for (const stage of removableStages) {
@@ -2284,34 +2304,29 @@
       associated: status.manual_edits?.associated?.feature_count ?? status.association_stats?.output_features,
     };
     const availableStages = [...GENERATED_STAGES].filter(stage => status.outputs?.[stage]?.url);
-    await Promise.allSettled(availableStages.map(async stage => {
-      const output = status.outputs[stage];
-      const version = output.mtime || status.manual_edits?.[stage]?.updated_at || "";
-      const dataKey = `${output.url}::${version}`;
-      if (state.previewDataCache.has(dataKey)) return;
-      let pending = state.previewDataPromises.get(dataKey);
-      if (!pending || pending.signal?.aborted) {
-        pending = {
-          signal: requestedContext?.signal,
-          promise: requestJson(output.url, { cache: "no-store", signal: requestedContext?.signal }),
-        };
-        state.previewDataPromises.set(dataKey, pending);
+    const preferredStage = state.mode === "anomaly"
+      ? (availableStages.includes("associated") ? "associated" : "deduplicated")
+      : (availableStages.includes("regularized") ? "regularized" : availableStages.includes("combined") ? "combined" : "solar_rows");
+    const immediateStages = preferredStage && availableStages.includes(preferredStage) ? [preferredStage] : [];
+    const deferredStages = availableStages.filter(stage => !immediateStages.includes(stage));
+    const loadStages = async (stages, visible) => {
+      for (const stage of stages) {
+        if (!isCurrentLoad(requestedContext)) return;
+        const output = status.outputs[stage];
+        const version = output.mtime
+          || status.manual_edits?.[stage]?.updated_at
+          || (stage === "regularized" && status.hierarchy_stats ? status.updated_at : null);
+        await loadPreviewLayer(stage, output.url, counts[stage], null, false, version, requestedContext, visible);
+        if (!visible) await new Promise(resolve => window.requestAnimationFrame(resolve));
       }
-      try {
-        const geojson = await pending.promise;
-        if (isCurrentLoad(requestedContext)) state.previewDataCache.set(dataKey, geojson);
-      } finally {
-        if (state.previewDataPromises.get(dataKey) === pending) state.previewDataPromises.delete(dataKey);
-      }
-    }));
-    if (!isCurrentLoad(requestedContext)) return;
-    for (const stage of GENERATED_STAGES) {
-      if (!status.outputs?.[stage]?.url) continue;
-      const version = status.outputs[stage].mtime
-        || status.manual_edits?.[stage]?.updated_at
-        || (stage === "regularized" && status.hierarchy_stats ? status.updated_at : null);
-      await loadPreviewLayer(stage, status.outputs[stage].url, counts[stage], null, stage === "solar_rows", version, requestedContext);
-    }
+    };
+    await loadStages(immediateStages, true);
+    state.deferredProcessingPromise = new Promise(resolve => window.setTimeout(resolve, 50))
+      .then(() => loadStages(deferredStages, false));
+  }
+
+  function whenProcessingLayersReady() {
+    return state.deferredProcessingPromise || Promise.resolve();
   }
 
   function workflowDisplayName(workflow) {
@@ -2483,6 +2498,7 @@
           await requestJson(`/api/results/${encodeURIComponent(byId("ppResult").value)}/postprocess/${encodeURIComponent(workflow.id)}`, { method: "DELETE" });
           if (state.workflowId === workflow.id) {
             state.workflowId = null;
+            await bindCurrentJobWorkflow(null);
             clearPreviewLayers();
             byId("ppRegularize").disabled = true;
           }
@@ -2563,6 +2579,26 @@
   async function restoreLatestWorkflow(resultId, inputPath, preferredId = null, requestedContext = loadContext()) {
     if (!resultId) return false;
     try {
+      if (state.currentJob) {
+        const workflowId = preferredId || state.currentJob.workflows?.[state.mode]?.workflow_id;
+        if (!workflowId) {
+          state.workflows = [];
+          state.workflowId = null;
+          renderWorkflowList();
+          return false;
+        }
+        const workflow = await requestJson(
+          `/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(workflowId)}`,
+          { cache: "no-store", signal: requestedContext?.signal },
+        );
+        if (!isCurrentLoad(requestedContext)) return false;
+        state.workflows = [workflow];
+        state.workflowId = workflow.id;
+        await applyWorkflow(workflow, requestedContext);
+        populateRegularizeSources(workflow.id);
+        renderWorkflowList();
+        return true;
+      }
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, {
         cache: "no-store",
         signal: requestedContext?.signal,
@@ -2634,6 +2670,7 @@
 
   async function loadGeojsons() {
     invalidateModeLoad();
+    state.deferredProcessingPromise = Promise.resolve();
     const requestedContext = loadContext();
     if (state.currentJob) setStepsLoading(true);
     resetAnalysis({ showConfiguredStep: true });
@@ -2654,7 +2691,10 @@
     // Both modes use the segmentation run's imagery as their common spatial
     // reference, even when anomaly predictions come from a different run.
     const referenceResultId = state.currentJob?.sources?.segmentation?.result_id || resultId;
-    void loadReferenceSources(referenceResultId);
+    if (state.currentJob) {
+      await loadConfiguredJobMode(requestedContext);
+      return;
+    }
     try {
       const [earlyWorkflow, payload] = await Promise.all([
         loadSavedOutputsFirst(resultId, requestedContext),
@@ -2687,12 +2727,17 @@
       else if (select.options.length > 1) select.selectedIndex = 1;
       select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
       byId("ppAnalyze").disabled = !select.value;
+      let deferredSource = null;
       if (state.currentJob && state.mode === "segmentation") {
-        await initializeConfiguredSegmentation();
+        await initializeConfiguredSegmentation({ loadSource: !earlyWorkflow });
+        if (earlyWorkflow) {
+          const source = state.geojsonFiles.find(file => file.path === select.value);
+          if (source?.url) deferredSource = { source, count: state.currentJob.sources?.segmentation?.summary?.feature_count, label: null };
+        }
       } else if (state.currentJob && state.mode === "anomaly") {
         const configuredAnomaly = state.currentJob.sources?.anomaly;
         const source = state.geojsonFiles.find(file => file.path === select.value);
-        if (source?.url) {
+        if (source?.url && !earlyWorkflow) {
           await loadPreviewLayer(
             "source",
             source.url,
@@ -2701,6 +2746,8 @@
             false,
             source.mtime,
           );
+        } else if (source?.url) {
+          deferredSource = { source, count: configuredAnomaly?.summary?.feature_count, label: "Anomaly predictions" };
         }
       }
       const matchingWorkflow = selectSavedWorkflow(select.value, null, false);
@@ -2710,6 +2757,19 @@
         await applyWorkflow(matchingWorkflow, requestedContext);
         populateRegularizeSources(matchingWorkflow.id);
         renderWorkflowList();
+      }
+      if (deferredSource) {
+        const processingReady = whenProcessingLayersReady();
+        state.deferredProcessingPromise = processingReady.then(() => loadPreviewLayer(
+          "source",
+          deferredSource.source.url,
+          deferredSource.count,
+          deferredSource.label,
+          false,
+          deferredSource.source.mtime,
+          requestedContext,
+          false,
+        ));
       }
       if (!restored) {
         if (!state.currentJob) {
@@ -2726,7 +2786,103 @@
       if (!isCurrentLoad(requestedContext)) return;
       stopIndeterminate();
       setStepsLoading(false);
+      void whenProcessingLayersReady().finally(() => {
+        if (!isCurrentLoad(requestedContext)) return;
+        void loadReferenceSources(referenceResultId);
+      });
     }
+  }
+
+  async function loadConfiguredJobMode(requestedContext) {
+    const sourceConfig = state.currentJob?.sources?.[state.mode] || {};
+    const resultId = String(sourceConfig.workspace_result_id || "");
+    const sourcePath = String(sourceConfig.workspace_path || "source.geojson");
+    const sourceUrl = String(sourceConfig.workspace_url || "");
+    const select = byId("ppGeojson");
+    const referenceResultId = state.currentJob?.sources?.segmentation?.workspace_result_id || resultId;
+    try {
+      if (!resultId || !sourceUrl) {
+        throw new Error("This job has no saved source snapshot. Recreate the job or save its configuration again.");
+      }
+      const sourceFile = {
+        name: sourcePath.split("/").pop() || "source.geojson",
+        path: sourcePath,
+        stage: state.mode === "anomaly" ? "anomalies" : "segmentation",
+        url: sourceUrl,
+        mtime: sourceConfig.workspace_mtime || "",
+      };
+      state.geojsonFiles = [sourceFile];
+      select.replaceChildren();
+      addOption(select, sourcePath, sourceFile.name);
+      select.value = sourcePath;
+      select.disabled = true;
+      byId("ppAnalyze").disabled = false;
+
+      const binding = state.currentJob.workflows?.[state.mode];
+      let workflow = null;
+      if (binding?.workflow_id) {
+        workflow = await loadBoundWorkflowStatus(resultId, binding.workflow_id);
+        if (!isCurrentLoad(requestedContext)) return;
+      }
+      state.workflows = workflow ? [workflow] : [];
+      state.workflowId = workflow?.id || null;
+      if (state.mode === "segmentation") {
+        await initializeConfiguredSegmentation({ loadSource: !workflow });
+      } else if (!workflow) {
+        await loadPreviewLayer(
+          "source", sourceUrl, sourceConfig.summary?.feature_count,
+          "Anomaly predictions", false, sourceConfig.workspace_mtime,
+          requestedContext,
+        );
+      }
+      if (workflow) {
+        await applyWorkflow(workflow, requestedContext);
+        populateRegularizeSources(workflow.id);
+        renderWorkflowList();
+        const processingReady = whenProcessingLayersReady();
+        state.deferredProcessingPromise = processingReady.then(() => loadPreviewLayer(
+          "source", sourceUrl, sourceConfig.summary?.feature_count,
+          state.mode === "anomaly" ? "Anomaly predictions" : null,
+          false, sourceConfig.workspace_mtime, requestedContext, false,
+        ));
+      } else {
+        renderWorkflowList();
+      }
+      document.dispatchEvent(new CustomEvent("postprocess:data", { detail: getContext() }));
+    } catch (error) {
+      if (isCurrentLoad(requestedContext)) setMessage(error.message, "err");
+    } finally {
+      if (!isCurrentLoad(requestedContext)) return;
+      stopIndeterminate();
+      setStepsLoading(false);
+      void whenProcessingLayersReady().finally(() => {
+        if (!isCurrentLoad(requestedContext)) return;
+        void loadReferenceSources(referenceResultId);
+      });
+    }
+  }
+
+  function workflowStatusKey(resultId, workflowId) {
+    return `${resultId}::${workflowId}`;
+  }
+
+  async function loadBoundWorkflowStatus(resultId, workflowId) {
+    const key = workflowStatusKey(resultId, workflowId);
+    if (state.workflowStatusCache.has(key)) return state.workflowStatusCache.get(key);
+    let pending = state.workflowStatusPromises.get(key);
+    if (!pending) {
+      pending = requestJson(
+        `/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(workflowId)}`,
+        { cache: "no-store" },
+      ).then(status => {
+        state.workflowStatusCache.set(key, status);
+        return status;
+      }).finally(() => {
+        state.workflowStatusPromises.delete(key);
+      });
+      state.workflowStatusPromises.set(key, pending);
+    }
+    return pending;
   }
 
   function metric(container, value, label) {
@@ -2746,7 +2902,7 @@
     container.hidden = true;
   }
 
-  async function initializeConfiguredSegmentation() {
+  async function initializeConfiguredSegmentation({ loadSource = true } = {}) {
     const configured = state.currentJob?.sources?.segmentation;
     const summary = configured?.summary;
     const sourcePath = byId("ppGeojson").value;
@@ -2756,7 +2912,7 @@
     renderAnalysis(summary);
     syncSegmentationStepProgress();
     const source = state.geojsonFiles.find(file => file.path === sourcePath);
-    if (source?.url) await loadPreviewLayer("source", source.url, summary.feature_count, null, false, source.mtime);
+    if (loadSource && source?.url) await loadPreviewLayer("source", source.url, summary.feature_count, null, false, source.mtime);
     const canCombine = Boolean(summary.tile_metadata_available && summary.features_on_tile_edges);
     byId("ppCombine").disabled = !canCombine;
     setMessage("");
@@ -2855,6 +3011,7 @@
       if (token !== state.pollToken || !isCurrentLoad(requestedContext)) return;
       try {
         const status = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/${encodeURIComponent(workflowId)}`);
+        state.workflowStatusCache.set(workflowStatusKey(resultId, workflowId), status);
         consecutiveErrors = 0;
         await applyWorkflow(status, requestedContext);
         if (status.status !== "queued" && status.status !== "running") {
@@ -2989,7 +3146,7 @@
     });
     // Keep activation self-contained. This also works if an older cached copy of
     // the shared tab controller is still present in the browser.
-    byId("ppRefresh").addEventListener("click", () => loadResults(true));
+    byId("ppRefresh").addEventListener("click", () => void refreshCurrentJob());
     byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
     byId("ppEditJobConfig")?.addEventListener("click", () => {
       if (state.currentJob) void openJobConfiguration(state.currentJob);
@@ -3096,8 +3253,6 @@
 
   async function activate() {
     init();
-    ensurePreviewMap();
-    setTimeout(() => state.map?.invalidateSize(), 30);
     if (state.currentJobId && state.currentJob) return;
     await loadJobs(false);
   }
@@ -3281,7 +3436,7 @@
     const anomaly = document.createElement("span");
     anomaly.textContent = `Anomalies · ${action.anomalyResultId} · ${action.anomalyPath}`;
     const note = document.createElement("span");
-    note.textContent = "Validating GeoJSON files and saving an isolated job configuration. Original test results remain unchanged.";
+    note.textContent = "Copying only the selected segmentation and anomaly GeoJSONs into the job. Images and tile assets remain linked read-only from their test results, which cannot be deleted while this job uses them.";
     details.append(segmentation, anomaly, note);
     message.append(heading, details);
     byId("ppJobSourceFields").after(message);
@@ -3429,7 +3584,11 @@
       resetModeCache();
       const changedLabels = (updated.changed_sources || []).map(kind => kind === "anomaly" ? "anomaly" : kind).join(" and ");
       setMessage(`${changedLabels || "Job"} source updated. Dependent derived outputs were removed; original test results were not changed.`, "ok");
-      await loadResults(true);
+      const workspaceResultId = state.currentJob.sources?.[state.mode]?.workspace_result_id || "";
+      byId("ppResult").replaceChildren();
+      addOption(byId("ppResult"), workspaceResultId, workspaceResultId);
+      byId("ppResult").value = workspaceResultId;
+      await loadGeojsons();
     } catch (error) {
       setMessage(error.message, "err");
     }
@@ -3842,6 +4001,7 @@
     byId("ppJobLanding").style.display = "none";
     document.querySelector(".postprocessWorkspace").hidden = false;
     document.querySelector(".postprocessWorkspace").style.display = "grid";
+    ensurePreviewMap();
     byId("ppBackToJobs").hidden = false;
     byId("ppHeaderTitle").textContent = job.name || job.id;
     byId("ppHeaderJobId").textContent = `ID: ${job.id}`;
@@ -3852,7 +4012,34 @@
     resetAnalysis({ showConfiguredStep: true });
     setStepsLoading(true);
     window.requestAnimationFrame(() => state.map?.invalidateSize());
-    await loadResults(true);
+    const configuredResultId = job.sources?.[state.mode]?.workspace_result_id || "";
+    const resultSelect = byId("ppResult");
+    resultSelect.replaceChildren();
+    addOption(resultSelect, configuredResultId, configuredResultId || "Job snapshot unavailable");
+    resultSelect.value = configuredResultId;
+    resultSelect.disabled = true;
+    await loadGeojsons();
+  }
+
+  async function refreshCurrentJob() {
+    if (!state.currentJobId) return;
+    try {
+      const payload = await requestJson(
+        `/api/postprocess-jobs/${encodeURIComponent(state.currentJobId)}/config`,
+        { cache: "no-store" },
+      );
+      state.currentJob = payload.job;
+      const index = state.jobs.findIndex(job => job.id === payload.job.id);
+      if (index >= 0) state.jobs[index] = payload.job;
+      resetModeCache();
+      const workspaceResultId = payload.job.sources?.[state.mode]?.workspace_result_id || "";
+      byId("ppResult").replaceChildren();
+      addOption(byId("ppResult"), workspaceResultId, workspaceResultId || "Job snapshot unavailable");
+      byId("ppResult").value = workspaceResultId;
+      await loadGeojsons();
+    } catch (error) {
+      setMessage(error.message, "err");
+    }
   }
 
   function showJobLanding() {
@@ -3865,12 +4052,14 @@
   }
 
   function getContext() {
+    const configuredSource = state.currentJob?.sources?.[state.mode] || {};
     return {
       resultId: byId("ppResult")?.value || "",
       sourcePath: byId("ppGeojson")?.value || "",
-      configuredResultId: state.currentJob?.sources?.[state.mode]?.result_id || "",
-      configuredSourcePath: state.currentJob?.sources?.[state.mode]?.path || "",
-      segmentationResultId: state.currentJob?.sources?.segmentation?.result_id || "",
+      configuredResultId: configuredSource.workspace_result_id || configuredSource.result_id || "",
+      configuredSourcePath: configuredSource.workspace_path || configuredSource.path || "",
+      segmentationResultId: state.currentJob?.sources?.segmentation?.workspace_result_id || state.currentJob?.sources?.segmentation?.result_id || "",
+      job: state.currentJob,
       workflowId: state.workflowId,
       workflows: state.workflows.slice(),
       geojsonFiles: state.geojsonFiles.slice(),
@@ -3880,7 +4069,7 @@
 
   function setMode(mode) {
     const nextMode = mode === "anomaly" ? "anomaly" : "segmentation";
-    if (nextMode === state.mode || state.stepsLoading) return;
+    if (nextMode === state.mode) return;
     if (state.editing) stopEditing(true);
     cacheCurrentModeState();
     state.pollToken += 1;
@@ -3894,11 +4083,13 @@
     state.workflows = [];
     resetAnalysis({ showConfiguredStep: true });
     clearReferenceLayers();
-    const configuredResultId = state.currentJob?.sources?.[state.mode]?.result_id || "";
+    const configuredResultId = state.currentJob?.sources?.[state.mode]?.workspace_result_id || "";
     const resultSelect = byId("ppResult");
-    if (configuredResultId
-      && [...resultSelect.options].some(option => option.value === configuredResultId)) {
+    if (configuredResultId) {
+      resultSelect.replaceChildren();
+      addOption(resultSelect, configuredResultId, configuredResultId);
       resultSelect.value = configuredResultId;
+      resultSelect.disabled = true;
       const scheduledContext = loadContext();
       state.modeLoadTimer = window.setTimeout(() => {
         state.modeLoadTimer = null;
@@ -3918,9 +4109,30 @@
     const requestedContext = loadContext();
     const resultId = byId("ppResult").value;
     state.workflowId = payload.id;
+    state.workflowStatusCache.set(workflowStatusKey(resultId, payload.id), payload);
+    await bindCurrentJobWorkflow(payload.id);
     state.pollToken += 1;
     applyWorkflow(payload, requestedContext);
     await pollWorkflow(state.pollToken, requestedContext, resultId, payload.id);
+  }
+
+  async function bindCurrentJobWorkflow(workflowId) {
+    if (!state.currentJobId || !state.currentJob) return;
+    const payload = await requestJson(
+      `/api/postprocess-jobs/${encodeURIComponent(state.currentJobId)}/workflow`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: state.mode, workflow_id: workflowId || "" }),
+      },
+    );
+    state.currentJob = payload.job;
+    const source = payload.job.sources?.[state.mode];
+    if (source?.workspace_result_id && workflowId) {
+      state.workflowStatusCache.delete(workflowStatusKey(source.workspace_result_id, workflowId));
+    }
+    const index = state.jobs.findIndex(job => job.id === payload.job.id);
+    if (index >= 0) state.jobs[index] = payload.job;
   }
 
   function selectWorkflow(workflowId) {
@@ -3934,12 +4146,14 @@
 
   window.PostprocessWorkspace = {
     getContext,
+    loadBoundWorkflowStatus,
     loadPreviewLayer,
     requestJson,
     runWorkflow,
     selectWorkflow,
     showAnomalyReviewPair,
     updateAnomalyReviewPairs,
+    whenProcessingLayersReady,
     setMessage,
     setMode,
     setStepsLoading,

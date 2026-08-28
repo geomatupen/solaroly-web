@@ -4292,6 +4292,90 @@ def _postprocess_jobs_dir() -> Path:
     return root
 
 
+_POSTPROCESS_WORKSPACE_RE = re.compile(r"^ppjob__(.+)__(segmentation|anomaly)$")
+
+
+def _postprocess_workspace_id(job_id: str, kind: str) -> str:
+    return f"ppjob__{job_id}__{kind}"
+
+
+def _resolve_postprocess_workspace(result_id: str) -> Path | None:
+    match = _POSTPROCESS_WORKSPACE_RE.fullmatch(str(result_id or ""))
+    if not match:
+        return None
+    job_id, kind = match.groups()
+    job_dir = _project_child(_postprocess_jobs_dir(), job_id, "Post-processing job")
+    workspace = (job_dir / "snapshots" / kind).resolve()
+    expected_parent = (job_dir / "snapshots").resolve()
+    if workspace.parent != expected_parent or not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="Post-processing job snapshot not found.")
+    return workspace
+
+
+def _session_output_dir(result_id: str) -> Path:
+    workspace = _resolve_postprocess_workspace(result_id)
+    if workspace is not None:
+        return workspace
+    return _project_child(get_project_sessions_dir(), result_id, "Test result")
+
+
+def _session_asset_dir(result_id: str) -> Path:
+    workspace = _resolve_postprocess_workspace(result_id)
+    if workspace is None:
+        return _project_child(get_project_sessions_dir(), result_id, "Test result")
+    try:
+        snapshot = json.loads((workspace / "snapshot.json").read_text(encoding="utf-8"))
+        original_result_id = str(snapshot.get("original_result_id") or "")
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        raise HTTPException(status_code=409, detail="Job snapshot dependency metadata is unavailable.") from exc
+    return _project_child(get_project_sessions_dir(), original_result_id, "Referenced test result")
+
+
+def _copy_postprocess_snapshot(source_result: Path, source_geojson: Path, destination: Path) -> None:
+    temporary = destination.with_name(f".{destination.name}.tmp_{uuid.uuid4().hex[:8]}")
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True)
+    try:
+        shutil.copy2(source_geojson, temporary / "source.geojson")
+        _atomic_json(temporary / "snapshot.json", {
+            "original_result_id": source_result.name,
+            "original_source_path": source_geojson.relative_to(source_result).as_posix(),
+        })
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            shutil.rmtree(destination)
+        temporary.replace(destination)
+    except Exception:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+
+
+def _job_source_metadata(
+    job_id: str,
+    kind: str,
+    original_result_id: str,
+    original_path: str,
+    fingerprint: dict[str, int],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    workspace_id = _postprocess_workspace_id(job_id, kind)
+    workspace = _resolve_postprocess_workspace(workspace_id)
+    source = workspace / "source.geojson"
+    stat = source.stat()
+    return {
+        "result_id": original_result_id,
+        "path": original_path,
+        "workspace_result_id": workspace_id,
+        "workspace_path": "source.geojson",
+        "workspace_url": _media_url(source),
+        "workspace_mtime": stat.st_mtime_ns,
+        "fingerprint": fingerprint,
+        "summary": summary,
+    }
+
+
 def _resolve_postprocess_job_source(result_id: str, relative_path: str) -> tuple[Path, Path, dict[str, int]]:
     result_dir = _project_child(get_project_sessions_dir(), result_id, "Test result")
     source = (result_dir / str(relative_path or "").strip().replace("\\", "/")).resolve()
@@ -4335,7 +4419,7 @@ async def api_postprocess_jobs():
 async def api_create_postprocess_job(request: Request):
     payload = await request.json()
     name = str(payload.get("name") or "Post-processing job").strip()[:128] or "Post-processing job"
-    configured_sources: dict[str, Any] = {}
+    selected_sources: dict[str, Any] = {}
     for kind in ("segmentation", "anomaly"):
         result_id = str(payload.get(f"{kind}_result_id") or "").strip()
         source_path = str(payload.get(f"{kind}_path") or "").strip()
@@ -4346,7 +4430,14 @@ async def api_create_postprocess_job(request: Request):
             summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        configured_sources[kind] = {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary}
+        selected_sources[kind] = {
+            "result_id": result_id,
+            "path": source_path,
+            "result_dir": result_dir,
+            "source": source,
+            "fingerprint": fingerprint,
+            "summary": summary,
+        }
     existing_names: set[str] = set()
     for directory in _postprocess_jobs_dir().iterdir():
         try:
@@ -4367,14 +4458,36 @@ async def api_create_postprocess_job(request: Request):
     now = datetime.now().isoformat()
     directory = _postprocess_jobs_dir() / job_id
     directory.mkdir(parents=True, exist_ok=False)
-    metadata = {
-        "id": job_id,
-        "name": name,
-        "created_at": now,
-        "updated_at": now,
-        "sources": configured_sources,
-    }
-    _atomic_json(directory / "job.json", metadata)
+    try:
+        configured_sources: dict[str, Any] = {}
+        for kind, selected in selected_sources.items():
+            await asyncio.to_thread(
+                _copy_postprocess_snapshot,
+                selected["result_dir"],
+                selected["source"],
+                directory / "snapshots" / kind,
+            )
+            configured_sources[kind] = _job_source_metadata(
+                job_id,
+                kind,
+                selected["result_id"],
+                selected["path"],
+                selected["fingerprint"],
+                selected["summary"],
+            )
+        metadata = {
+            "id": job_id,
+            "name": name,
+            "created_at": now,
+            "updated_at": now,
+            "sources": configured_sources,
+            "workflows": {},
+        }
+        _atomic_json(directory / "job.json", metadata)
+    except Exception:
+        if directory.exists():
+            shutil.rmtree(directory)
+        raise
     return {"ok": True, "job": metadata}
 
 
@@ -4422,23 +4535,61 @@ async def api_update_postprocess_job_config(job_id: str, request: Request):
             summary = await asyncio.to_thread(analyze_geojson, source, result_dir)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        next_sources[kind] = {"result_id": result_id, "path": source_path, "fingerprint": fingerprint, "summary": summary}
         previous = previous_sources.get(kind) or {}
         if previous.get("result_id") != result_id or previous.get("path") != source_path:
             changed.add(kind)
-    workflows_dir = directory / "workflows"
+        if kind in changed or not previous.get("workspace_result_id"):
+            await asyncio.to_thread(
+                _copy_postprocess_snapshot,
+                result_dir,
+                source,
+                directory / "snapshots" / kind,
+            )
+            next_sources[kind] = _job_source_metadata(
+                job_id, kind, result_id, source_path, fingerprint, summary,
+            )
+        else:
+            next_sources[kind] = previous
+            next_sources[kind]["summary"] = summary
+            next_sources[kind]["fingerprint"] = fingerprint
+    workflows = dict(metadata.get("workflows") or {})
     for kind in changed:
-        target = workflows_dir / kind
-        if target.is_dir():
-            shutil.rmtree(target)
+        workflows.pop(kind, None)
     if "segmentation" in changed:
-        associated = workflows_dir / "anomaly" / "associated.geojson"
-        if associated.is_file():
-            associated.unlink()
+        workflows.pop("anomaly", None)
+        anomaly_workflow_root = directory / "snapshots" / "anomaly" / "postprocess"
+        if anomaly_workflow_root.is_dir():
+            shutil.rmtree(anomaly_workflow_root)
     metadata["sources"] = next_sources
+    metadata["workflows"] = workflows
     metadata["updated_at"] = datetime.now().isoformat()
     _atomic_json(directory / "job.json", metadata)
     return {"ok": True, "job": {**metadata, "id": directory.name}, "changed_sources": sorted(changed)}
+
+
+@app.put("/api/postprocess-jobs/{job_id}/workflow")
+async def api_bind_postprocess_job_workflow(job_id: str, request: Request):
+    directory, metadata = _read_postprocess_job(job_id)
+    payload = await request.json()
+    kind = str(payload.get("kind") or "").strip()
+    workflow_id = str(payload.get("workflow_id") or "").strip()
+    if kind not in {"segmentation", "anomaly"}:
+        raise HTTPException(status_code=400, detail="Workflow kind must be segmentation or anomaly.")
+    workflows = dict(metadata.get("workflows") or {})
+    if not workflow_id:
+        workflows.pop(kind, None)
+    else:
+        source = (metadata.get("sources") or {}).get(kind) or {}
+        workspace_id = str(source.get("workspace_result_id") or "")
+        workspace = _resolve_postprocess_workspace(workspace_id)
+        workflow_dir = (workspace / "postprocess" / re.sub(r"[^A-Za-z0-9._-]+", "_", workflow_id)).resolve()
+        if workflow_dir.parent != (workspace / "postprocess").resolve() or not (workflow_dir / "status.json").is_file():
+            raise HTTPException(status_code=404, detail="The selected job workflow was not found.")
+        workflows[kind] = {"result_id": workspace_id, "workflow_id": workflow_dir.name}
+    metadata["workflows"] = workflows
+    metadata["updated_at"] = datetime.now().isoformat()
+    _atomic_json(directory / "job.json", metadata)
+    return {"ok": True, "job": {**metadata, "id": directory.name}}
 
 
 @app.delete("/api/postprocess-jobs/{job_id}")
@@ -4464,6 +4615,29 @@ async def api_rename_result(session_id: str, name: str = Form(...)):
 @app.delete("/api/results/{session_id}")
 async def api_delete_result(session_id: str):
     session_dir = _project_child(get_project_sessions_dir(), session_id, "Result")
+    dependent_jobs = []
+    for job_dir in _postprocess_jobs_dir().iterdir():
+        if not job_dir.is_dir():
+            continue
+        try:
+            metadata = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+        kinds = [
+            kind for kind, source in (metadata.get("sources") or {}).items()
+            if str((source or {}).get("result_id") or "") == session_id
+        ]
+        if kinds:
+            dependent_jobs.append(f"{metadata.get('name') or job_dir.name} ({', '.join(kinds)})")
+    if dependent_jobs:
+        examples = ", ".join(dependent_jobs[:5])
+        remainder = len(dependent_jobs) - 5
+        if remainder > 0:
+            examples += f", and {remainder} more"
+        raise HTTPException(
+            status_code=409,
+            detail=f"This test result is used by post-processing jobs: {examples}. Delete or reconfigure those jobs first.",
+        )
     try:
         shutil.rmtree(session_dir)
     except OSError as exc:
@@ -4475,10 +4649,8 @@ async def api_delete_result(session_id: str):
 
 @app.get("/api/session_summary")
 async def api_session_summary(session: str):
-    base = get_project_sessions_dir()
-    ses = base / session
-    if not ses.exists():
-        raise HTTPException(status_code=404, detail="Session not found")
+    ses = _session_asset_dir(session)
+    asset_session_id = ses.name
 
     gj = ses / "predictions.geojson"
     if not gj.exists():
@@ -4497,7 +4669,7 @@ async def api_session_summary(session: str):
         except Exception:
             path = value
 
-        marker = f"/{session}/"
+        marker = f"/{asset_session_id}/"
         if marker in path:
             rel = path.split(marker, 1)[1]
             if rel and any(rel.startswith(prefix) for prefix in ("overlays/", "thumbs/", "images/", "rotated_images/", "predictions.geojson", "anomalies.geojson", "images.geojson")):
@@ -4584,7 +4756,10 @@ def _session_tifs(session: str) -> List[Path]:
     retained inside the result. This supports interrupted legacy runs whose
     inference outputs exist but final metrics bookkeeping did not run.
     """
-    ses_dir = get_project_sessions_dir() / session
+    try:
+        ses_dir = _session_asset_dir(session)
+    except HTTPException:
+        return []
     if not ses_dir.exists():
         return []
     tifs: List[Path] = []
@@ -4781,13 +4956,12 @@ def api_list_overlays():
 
         if overlay_metadata.get("reference_kind") == "postprocess":
             try:
-                sessions_root = get_project_sessions_dir().resolve()
                 source_result = str(overlay_metadata.get("source_result") or "").strip()
                 workflow_id = str(overlay_metadata.get("workflow_id") or "").strip()
                 stage = str(overlay_metadata.get("stage") or "").strip()
-                result_dir = (sessions_root / source_result).resolve()
+                result_dir = _session_output_dir(source_result).resolve()
                 workflow_dir = (result_dir / "postprocess" / workflow_id).resolve()
-                if result_dir.parent != sessions_root or workflow_dir.parent != (result_dir / "postprocess").resolve():
+                if workflow_dir.parent != (result_dir / "postprocess").resolve():
                     raise ValueError("Reference escapes the active project.")
                 status = json.loads((workflow_dir / "status.json").read_text(encoding="utf-8"))
                 output = (status.get("outputs") or {}).get(stage) or {}

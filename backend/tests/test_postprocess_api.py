@@ -10,6 +10,41 @@ from pvrt.web.postprocess import EditSourceRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_job_snapshot_workflow_resolves_without_original_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            workflow_dir = (
+                sessions / ".postprocess_jobs" / "self_contained_job"
+                / "snapshots" / "segmentation" / "postprocess" / "panels"
+            )
+            workflow_dir.mkdir(parents=True)
+            overlays.mkdir()
+            source = workflow_dir.parent.parent / "source.geojson"
+            source.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+            output = workflow_dir / "regularized.geojson"
+            output.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+            (workflow_dir / "status.json").write_text(json.dumps({
+                "id": "panels",
+                "status": "complete",
+                "input_path": "source.geojson",
+                "outputs": {"regularized": {"path": "postprocess/panels/regularized.geojson"}},
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}"
+                and "GET" in item.methods
+            )
+            payload = asyncio.run(route.endpoint("ppjob__self_contained_job__segmentation", "panels"))
+            self.assertEqual(payload["id"], "panels")
+            self.assertEqual(payload["outputs"]["regularized"]["url"], "/media/regularized.geojson")
+
     def test_source_edits_create_working_copy_and_preserve_original(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -149,12 +149,44 @@ def create_postprocess_router(
     neighbor_stats_cache: dict[tuple[str, int, int, float], dict[str, Any]] = {}
 
     def resolve_result(result_id: str) -> Path:
+        workspace_match = re.fullmatch(r"ppjob__(.+)__(segmentation|anomaly)", str(result_id or ""))
+        if workspace_match:
+            job_id, kind = workspace_match.groups()
+            jobs_root = (Path(get_sessions_dir()).resolve() / ".postprocess_jobs").resolve()
+            job_dir = (jobs_root / _safe_name(job_id, "")).resolve()
+            result = (job_dir / "snapshots" / kind).resolve()
+            if (
+                not job_id
+                or job_dir.parent != jobs_root
+                or result.parent != (job_dir / "snapshots").resolve()
+                or not result.is_dir()
+            ):
+                raise HTTPException(status_code=404, detail="Post-processing job snapshot not found.")
+            return result
         safe_id = _safe_name(result_id, "")
         root = Path(get_sessions_dir()).resolve()
         result = (root / safe_id).resolve()
         if not safe_id or result.parent != root or not result.is_dir():
             raise HTTPException(status_code=404, detail="Result not found.")
         return result
+
+    def resolve_assets(result_dir: Path) -> Path:
+        snapshot_path = result_dir / "snapshot.json"
+        if not snapshot_path.is_file():
+            return result_dir
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            original_result_id = _safe_name(str(snapshot.get("original_result_id") or ""), "")
+        except (OSError, json.JSONDecodeError, AttributeError) as exc:
+            raise HTTPException(status_code=409, detail="Job snapshot dependency metadata is unavailable.") from exc
+        sessions_root = Path(get_sessions_dir()).resolve()
+        assets = (sessions_root / original_result_id).resolve()
+        if not original_result_id or assets.parent != sessions_root or not assets.is_dir():
+            raise HTTPException(
+                status_code=409,
+                detail="The test result referenced by this post-processing job is unavailable.",
+            )
+        return assets
 
     def resolve_input(result_dir: Path, relative_path: str) -> Path:
         raw = str(relative_path or "").strip().replace("\\", "/")
@@ -344,61 +376,6 @@ def create_postprocess_router(
             ):
                 shutil.rmtree(overlay_dir)
 
-    @router.get("/postprocess/panel-layers")
-    async def list_identified_panel_layers() -> dict[str, Any]:
-        sessions_root = Path(get_sessions_dir()).resolve()
-        items: list[dict[str, Any]] = []
-        if not sessions_root.is_dir():
-            return {"ok": True, "layers": items}
-        for result_dir in (path for path in sessions_root.iterdir() if path.is_dir()):
-            workflow_root = result_dir / "postprocess"
-            if not workflow_root.is_dir():
-                continue
-            for workflow_dir in (path for path in workflow_root.iterdir() if path.is_dir()):
-                try:
-                    status = read_status(workflow_dir)
-                except HTTPException:
-                    continue
-                workflow_outputs = status.get("outputs") or {}
-                # Legacy workflows stored identified panels separately. Keep
-                # those usable for anomaly association until Step 3 is rerun;
-                # current workflows store the same IDs in Regularized.
-                panel_stage = "solar_panels" if workflow_outputs.get("solar_panels") else "regularized"
-                candidates = [(panel_stage, workflow_outputs.get(panel_stage))]
-                if not workflow_outputs.get("solar_rows") and not status.get("hierarchy_stats"):
-                    candidates = []
-                for stage, output in candidates:
-                    if not output or not output.get("path"):
-                        continue
-                    source = (result_dir / output["path"]).resolve()
-                    try:
-                        source.relative_to(result_dir)
-                    except ValueError:
-                        continue
-                    if not source.is_file():
-                        continue
-                    rows_output = workflow_outputs.get("solar_rows") or {}
-                    rows_source = (result_dir / str(rows_output.get("path") or "")).resolve()
-                    try:
-                        rows_source.relative_to(result_dir)
-                    except ValueError:
-                        rows_source = Path()
-                    has_rows = bool(rows_output.get("path") and rows_source.is_file())
-                    items.append({
-                        "result_id": result_dir.name,
-                        "workflow_id": workflow_dir.name,
-                        "workflow_name": status.get("display_name") or workflow_dir.name,
-                        "stage": stage,
-                        "path": source.relative_to(result_dir).as_posix(),
-                        "url": media_url(source),
-                        "mtime": int(source.stat().st_mtime),
-                        "rows_path": rows_source.relative_to(result_dir).as_posix() if has_rows else "",
-                        "rows_url": media_url(rows_source) if has_rows else None,
-                        "rows_mtime": int(rows_source.stat().st_mtime) if has_rows else None,
-                    })
-        items.sort(key=lambda item: item["mtime"], reverse=True)
-        return {"ok": True, "layers": items}
-
     @router.get("/{result_id}/postprocess/geojsons")
     async def list_geojsons(result_id: str) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
@@ -440,12 +417,13 @@ def create_postprocess_router(
     @router.post("/{result_id}/postprocess/analyze")
     async def analyze(result_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
+        assets_dir = resolve_assets(result_dir)
         input_path = resolve_input(result_dir, request.input_path)
         try:
             summary = await asyncio.to_thread(
                 analyze_geojson,
                 input_path,
-                result_dir,
+                assets_dir,
                 edge_tolerance_px=request.edge_tolerance_px,
             )
         except ValueError as exc:
@@ -513,6 +491,7 @@ def create_postprocess_router(
     @router.post("/{result_id}/postprocess/combine")
     async def combine(result_id: str, request: CombineRequest) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
+        assets_dir = resolve_assets(result_dir)
         input_path = resolve_input(result_dir, request.input_path)
         prefix = _safe_name(request.output_name, "panel_postprocess")
         input_relative = input_path.relative_to(result_dir).as_posix()
@@ -560,7 +539,7 @@ def create_postprocess_router(
                 stats = combine_tile_fragments(
                     input_path,
                     output_path,
-                    result_dir,
+                    assets_dir,
                     edge_tolerance_px=request.edge_tolerance_px,
                     gap_tolerance_px=request.gap_tolerance_px,
                     min_boundary_overlap=request.min_boundary_overlap,
@@ -746,6 +725,7 @@ def create_postprocess_router(
     @router.post("/{result_id}/postprocess/anomalies/deduplicate")
     async def deduplicate(result_id: str, request: DeduplicateAnomaliesRequest) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
+        assets_dir = resolve_assets(result_dir)
         input_path = resolve_input(result_dir, request.input_path)
         prefix = _safe_name(request.output_name, "anomaly_postprocess")
         workflow_id = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -777,7 +757,7 @@ def create_postprocess_router(
                     input_path,
                     review_path,
                     workflow_dir / "review_images",
-                    result_dir,
+                    assets_dir,
                     maximum_center_distance_m=request.maximum_center_distance_m,
                     neighbor_image_radius_m=request.neighbor_image_radius_m,
                     callback=progress_callback(workflow_dir, "deduplicate"),
@@ -812,6 +792,7 @@ def create_postprocess_router(
         request: NeighborImageStatsRequest,
     ) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
+        assets_dir = resolve_assets(result_dir)
         input_path = resolve_input(result_dir, request.input_path)
         fingerprint = source_fingerprint(input_path)
         key = (
@@ -825,7 +806,7 @@ def create_postprocess_router(
             cached = await asyncio.to_thread(
                 image_neighbor_statistics,
                 input_path,
-                result_dir,
+                assets_dir,
                 request.neighbor_image_radius_m,
             )
             if len(neighbor_stats_cache) >= 64:
@@ -926,6 +907,7 @@ def create_postprocess_router(
         limit: int = 48,
     ) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
+        assets_dir = resolve_assets(result_dir)
         workflow_dir = resolve_workflow(result_dir, workflow_id)
         review_path = workflow_dir / "visual_review.json"
         if not review_path.is_file():
@@ -948,8 +930,8 @@ def create_postprocess_router(
                 if crop_path and crop_path.is_file() and crop_path.is_relative_to(workflow_dir):
                     item[key.replace("_path", "_url")] = media_url(crop_path)
             for prefix in ("first", "second"):
-                image_path = find_review_image(result_dir, str(item.get(f"{prefix}_image") or ""))
-                if image_path and image_path.is_file() and image_path.is_relative_to(result_dir):
+                image_path = find_review_image(assets_dir, str(item.get(f"{prefix}_image") or ""))
+                if image_path and image_path.is_file() and image_path.is_relative_to(assets_dir):
                     item[f"{prefix}_image_url"] = media_url(image_path)
             pairs.append(item)
         return {

@@ -6,6 +6,7 @@
   let scannedPath = "";
   let panelLayers = [];
   let panelLayersLoaded = false;
+  let panelLayersJobKey = "";
   let loadedPanelReferenceKey = "";
   let loadedScoringWorkflowId = "";
   let neighborStatsTimer = null;
@@ -700,7 +701,11 @@
   }
 
   async function loadPanelLayers() {
-    if (panelLayersLoaded) {
+    const context = api()?.getContext();
+    const binding = context?.job?.workflows?.segmentation;
+    const source = context?.job?.sources?.segmentation;
+    const jobKey = `${context?.job?.id || ""}::${binding?.workflow_id || ""}`;
+    if (panelLayersLoaded && panelLayersJobKey === jobKey) {
       refresh(api()?.getContext());
       return;
     }
@@ -709,11 +714,33 @@
     addOption(select, "", "Loading identified panel layers…");
     select.disabled = true;
     try {
-      const payload = await api().requestJson("/api/results/postprocess/panel-layers", { cache: "no-store" });
-      panelLayers = payload.layers || [];
+      if (!binding?.workflow_id || !source?.workspace_result_id) {
+        panelLayers = [];
+      } else {
+        const status = await api().loadBoundWorkflowStatus(
+          source.workspace_result_id,
+          binding.workflow_id,
+        );
+        const panels = status.outputs?.regularized || status.outputs?.solar_panels;
+        const rows = status.outputs?.solar_rows;
+        panelLayers = panels?.url ? [{
+          result_id: source.workspace_result_id,
+          workflow_id: status.id,
+          workflow_name: status.display_name || status.id,
+          stage: status.outputs?.regularized ? "regularized" : "solar_panels",
+          path: panels.path,
+          url: panels.url,
+          mtime: panels.mtime,
+          rows_path: rows?.path || "",
+          rows_url: rows?.url || null,
+          rows_mtime: rows?.mtime || null,
+        }] : [];
+      }
       panelLayersLoaded = true;
+      panelLayersJobKey = jobKey;
     } catch (error) {
       panelLayers = [];
+      panelLayersJobKey = "";
       api().setMessage(`Could not load panel references: ${error.message}`, "err");
     }
     refresh(api()?.getContext());
@@ -724,28 +751,30 @@
     const referenceKey = `${option.dataset.url}::${option.dataset.mtime || ""}::${option.dataset.rowsUrl || ""}::${option.dataset.rowsMtime || ""}`;
     if (referenceKey === loadedPanelReferenceKey) return;
     loadedPanelReferenceKey = referenceKey;
-    await Promise.all([
-      api()?.loadPreviewLayer(
+    try {
+      await api()?.loadPreviewLayer(
         "segmentation_regularized_reference",
         option.dataset.url,
         null,
         "Final regularized panels (read-only)",
         true,
         option.dataset.mtime,
-      ),
-      option.dataset.rowsUrl
-        ? api()?.loadPreviewLayer(
+      );
+      if (option.dataset.rowsUrl) {
+        await api()?.loadPreviewLayer(
           "segmentation_rows_reference",
           option.dataset.rowsUrl,
           null,
           "Final rows (visual reference)",
-          true,
+          false,
           option.dataset.rowsMtime,
-        )
-        : Promise.resolve(),
-    ]).catch(() => {
+          null,
+          false,
+        );
+      }
+    } catch (_) {
       loadedPanelReferenceKey = "";
-    });
+    }
   }
 
   function refresh(context = api()?.getContext()) {
@@ -822,7 +851,8 @@
     else if (availablePanelLayers.length) panelSelect.selectedIndex = 1;
     panelSelect.disabled = availablePanelLayers.length === 0;
     if (context.mode === "anomaly" && panelSelect.selectedOptions[0]?.dataset.url) {
-      void showSegmentationReferences(panelSelect.selectedOptions[0], context);
+      const selectedOption = panelSelect.selectedOptions[0];
+      void showSegmentationReferences(selectedOption, context);
     }
 
     byId("ppAdjustAnomaliesStep").hidden = false;
@@ -833,7 +863,9 @@
     byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
     if (context.mode === "anomaly" && context.resultId && context.geojsonFiles.length) {
-      scheduleNeighborStats();
+      void api()?.whenProcessingLayersReady().then(() => {
+        if (api()?.getContext()?.mode === "anomaly") scheduleNeighborStats();
+      });
     }
   }
 
@@ -1027,7 +1059,16 @@
       }
     });
     byId("ppAssociate")?.addEventListener("click", associate);
-    document.addEventListener("postprocess:data", event => refresh(event.detail));
+    document.addEventListener("postprocess:data", event => {
+      const context = event.detail;
+      const binding = context?.job?.workflows?.segmentation;
+      const jobKey = `${context?.job?.id || ""}::${binding?.workflow_id || ""}`;
+      if (context?.mode === "anomaly" && (!panelLayersLoaded || panelLayersJobKey !== jobKey)) {
+        void loadPanelLayers();
+      } else {
+        refresh(context);
+      }
+    });
     document.addEventListener("postprocess:workflow", event => {
       refresh(event.detail.context);
       const status = event.detail.status;
@@ -1045,6 +1086,7 @@
       scannedPath = "";
       panelLayers = [];
       panelLayersLoaded = false;
+      panelLayersJobKey = "";
       loadedPanelReferenceKey = "";
       loadedScoringWorkflowId = "";
       lastNeighborStatsKey = "";
