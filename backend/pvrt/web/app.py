@@ -999,6 +999,7 @@ def _build_anomalies_geojson_from_tiles(
                         "class_id": cid,
                         "class_name": cname,
                         "tile": Path(fname).name,
+                        "prediction_index": i,
                         "source": tif_path.name,
                     }
                 })
@@ -2088,6 +2089,7 @@ def _preds_to_geojson(
                     "classname": cname,
                     "score": round(sc * 100.0, 2),
                     "image": srcfile,
+                    "prediction_index": i,
                 }
             })
 

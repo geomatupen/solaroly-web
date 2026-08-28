@@ -11,17 +11,20 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..postprocess import (
     analyze_geojson,
+    analyze_visual_duplicates,
+    apply_visual_deduplication,
     associate_anomalies,
     build_panel_hierarchy,
     combine_tile_fragments,
     deduplicate_anomalies,
+    image_neighbor_statistics,
     regularize_polygons,
 )
 
@@ -63,9 +66,36 @@ class HierarchyRequest(BaseModel):
 class DeduplicateAnomaliesRequest(BaseModel):
     input_path: str
     output_name: str = "anomaly_postprocess"
-    minimum_iou: float = Field(default=0.35, ge=0.0, le=1.0)
-    maximum_center_distance_m: float = Field(default=0.35, ge=0.0, le=100.0)
-    minimum_smaller_overlap: float = Field(default=0.55, ge=0.0, le=1.0)
+    maximum_center_distance_m: float = Field(default=5.0, gt=0.0, le=100.0)
+    neighbor_image_radius_m: float = Field(default=25.0, gt=0.0, le=10_000.0)
+
+
+class NeighborImageStatsRequest(BaseModel):
+    input_path: str
+    neighbor_image_radius_m: float = Field(default=25.0, gt=0.0, le=10_000.0)
+
+
+class ManualDuplicateDecision(BaseModel):
+    first_index: int = Field(ge=0)
+    second_index: int = Field(ge=0)
+    keep_index: int = Field(ge=0)
+
+
+class ApplyVisualDeduplicationRequest(BaseModel):
+    deduplication_mode: Literal["threshold", "manual"] = "threshold"
+    manual_decisions: list[ManualDuplicateDecision] = Field(default_factory=list)
+    duplicate_score_percent: float = Field(default=80.0, ge=0.0, le=100.0)
+    manual_review_percent: float = Field(default=60.0, ge=0.0, le=100.0)
+    minimum_appearance_percent: float = Field(default=75.0, ge=0.0, le=100.0)
+    minimum_context_percent: float = Field(default=60.0, ge=0.0, le=100.0)
+    appearance_weight_percent: float = Field(default=50.0, ge=0.0, le=100.0)
+    context_weight_percent: float = Field(default=20.0, ge=0.0, le=100.0)
+    shape_weight_percent: float = Field(default=15.0, ge=0.0, le=100.0)
+    size_weight_percent: float = Field(default=10.0, ge=0.0, le=100.0)
+    proximity_weight_percent: float = Field(default=5.0, ge=0.0, le=100.0)
+    representative_image_center_weight_percent: float = Field(default=40.0, ge=0.0, le=100.0)
+    representative_spatial_centrality_weight_percent: float = Field(default=35.0, ge=0.0, le=100.0)
+    representative_confidence_weight_percent: float = Field(default=25.0, ge=0.0, le=100.0)
 
 
 class AssociateAnomaliesRequest(BaseModel):
@@ -115,6 +145,7 @@ def create_postprocess_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/results", tags=["postprocess"])
     log = logger or logging.getLogger("pvrt.postprocess")
+    neighbor_stats_cache: dict[tuple[str, int, int, float], dict[str, Any]] = {}
 
     def resolve_result(result_id: str) -> Path:
         safe_id = _safe_name(result_id, "")
@@ -197,6 +228,38 @@ def create_postprocess_router(
                 output_path = (workflow_dir.parent.parent / output["path"]).resolve()
                 if output_path.is_file():
                     output["url"] = media_url(output_path)
+        review_path_value = str(payload.get("visual_review_path") or "")
+        if review_path_value:
+            review_path = (workflow_dir.parent.parent / review_path_value).resolve()
+            try:
+                review_path.relative_to(workflow_dir)
+                stored_preview = payload.get("visual_review_preview")
+                if isinstance(stored_preview, dict):
+                    review_pairs_source = stored_preview.get("pairs") or []
+                    review_total = int(stored_preview.get("total_pairs") or 0)
+                else:
+                    review = json.loads(review_path.read_text(encoding="utf-8"))
+                    review_pairs_source = review.get("pairs") or []
+                    review_total = len(review_pairs_source)
+                review_pairs = []
+                # Keep workflow-list payloads small; the UI intentionally shows
+                # a representative review grid rather than every candidate.
+                for pair in review_pairs_source[:12]:
+                    item = dict(pair)
+                    for key in ("first_crop_path", "second_crop_path"):
+                        relative = str(item.get(key) or "")
+                        crop_path = (workflow_dir / relative).resolve() if relative else None
+                        if crop_path and crop_path.is_file() and crop_path.is_relative_to(workflow_dir):
+                            item[key.replace("_path", "_url")] = media_url(crop_path)
+                    review_pairs.append(item)
+                payload["visual_review"] = {
+                    "pairs": review_pairs,
+                    "total_pairs": review_total,
+                    "displayed_pairs": len(review_pairs),
+                }
+            except (OSError, ValueError, json.JSONDecodeError):
+                payload["visual_review"] = {"pairs": [], "total_pairs": 0, "displayed_pairs": 0}
+            payload.pop("visual_review_preview", None)
         log_path = workflow_dir / "postprocess.log"
         if log_path.is_file():
             try:
@@ -695,7 +758,7 @@ def create_postprocess_router(
             "status": "queued",
             "stage": "deduplicate",
             "progress": 0,
-            "message": "Queued anomaly deduplication.",
+            "message": "Queued visual duplicate analysis.",
             "created_at": datetime.now().isoformat(),
             "input_path": input_path.relative_to(result_dir).as_posix(),
             "source_fingerprint": source_fingerprint(input_path),
@@ -706,26 +769,33 @@ def create_postprocess_router(
         _atomic_json(workflow_dir / "postprocess_meta.json", initial)
 
         def run() -> None:
-            output_path = workflow_dir / "deduplicated.geojson"
+            review_path = workflow_dir / "visual_review.json"
             try:
-                stats = deduplicate_anomalies(
+                stats = analyze_visual_duplicates(
                     input_path,
-                    output_path,
-                    minimum_iou=request.minimum_iou,
+                    review_path,
+                    workflow_dir / "review_images",
+                    result_dir,
                     maximum_center_distance_m=request.maximum_center_distance_m,
-                    minimum_smaller_overlap=request.minimum_smaller_overlap,
+                    neighbor_image_radius_m=request.neighbor_image_radius_m,
                     callback=progress_callback(workflow_dir, "deduplicate"),
                 )
+                review_payload = json.loads(review_path.read_text(encoding="utf-8"))
                 update_status(
                     workflow_dir,
                     status="complete",
                     stage="deduplicate",
                     progress=100,
-                    message="Deduplicated anomaly GeoJSON is ready.",
-                    deduplicate_stats=stats,
-                    outputs={"deduplicated": {"path": output_path.relative_to(result_dir).as_posix()}},
+                    message="Visual duplicate candidates are ready. Choose a similarity threshold to apply.",
+                    visual_analysis_stats=stats,
+                    visual_review_path=review_path.relative_to(result_dir).as_posix(),
+                    visual_review_preview={
+                        "pairs": (review_payload.get("pairs") or [])[:12],
+                        "total_pairs": len(review_payload.get("pairs") or []),
+                    },
+                    outputs={},
                 )
-                log.info("UI:OK:postprocess: Anomaly deduplication ready for %s", result_dir.name)
+                log.info("UI:OK:postprocess: Visual anomaly review ready for %s", result_dir.name)
             except Exception as exc:
                 append_log(workflow_dir, f"ERROR: {exc}")
                 update_status(workflow_dir, status="failed", stage="deduplicate", message=str(exc), error=str(exc))
@@ -733,6 +803,157 @@ def create_postprocess_router(
 
         _EXECUTOR.submit(run)
         return initial
+
+    @router.post("/{result_id}/postprocess/anomalies/neighbor-stats")
+    async def anomaly_neighbor_stats(
+        result_id: str,
+        request: NeighborImageStatsRequest,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        input_path = resolve_input(result_dir, request.input_path)
+        fingerprint = source_fingerprint(input_path)
+        key = (
+            str(input_path),
+            fingerprint["size"],
+            fingerprint["mtime_ns"],
+            round(request.neighbor_image_radius_m, 3),
+        )
+        cached = neighbor_stats_cache.get(key)
+        if cached is None:
+            cached = await asyncio.to_thread(
+                image_neighbor_statistics,
+                input_path,
+                result_dir,
+                request.neighbor_image_radius_m,
+            )
+            if len(neighbor_stats_cache) >= 64:
+                neighbor_stats_cache.pop(next(iter(neighbor_stats_cache)))
+            neighbor_stats_cache[key] = cached
+        return {"ok": True, **cached}
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/deduplicate/apply")
+    async def apply_deduplication(
+        result_id: str,
+        workflow_id: str,
+        request: ApplyVisualDeduplicationRequest,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        status = read_status(workflow_dir)
+        input_path = resolve_input(result_dir, str(status.get("input_path") or ""))
+        review_path = workflow_dir / "visual_review.json"
+        if not review_path.is_file():
+            raise HTTPException(status_code=409, detail="Run visual duplicate analysis before applying a threshold.")
+        if request.deduplication_mode == "manual" and not request.manual_decisions:
+            raise HTTPException(status_code=400, detail="Mark at least one image pair as a duplicate before applying manual review.")
+        weight_values = {
+            "appearance": request.appearance_weight_percent,
+            "context": request.context_weight_percent,
+            "shape": request.shape_weight_percent,
+            "size": request.size_weight_percent,
+            "proximity": request.proximity_weight_percent,
+        }
+        if request.deduplication_mode == "threshold" and abs(sum(weight_values.values()) - 100.0) > 0.01:
+            raise HTTPException(status_code=400, detail="Duplicate score weights must total 100%.")
+        if request.deduplication_mode == "threshold" and request.manual_review_percent > request.duplicate_score_percent:
+            raise HTTPException(status_code=400, detail="Manual-review threshold must not exceed the duplicate threshold.")
+        representative_weight_values = {
+            "image_center": request.representative_image_center_weight_percent,
+            "spatial_centrality": request.representative_spatial_centrality_weight_percent,
+            "model_confidence": request.representative_confidence_weight_percent,
+        }
+        if request.deduplication_mode == "threshold" and abs(sum(representative_weight_values.values()) - 100.0) > 0.01:
+            raise HTTPException(status_code=400, detail="Representative-selection weights must total 100%.")
+        threshold = request.duplicate_score_percent / 100.0
+        normalized_weights = {name: value / 100.0 for name, value in weight_values.items()}
+        normalized_representative_weights = {
+            name: value / 100.0 for name, value in representative_weight_values.items()
+        }
+        update_status(
+            workflow_dir,
+            status="queued",
+            stage="deduplicate_apply",
+            progress=0,
+            message=f"Queued deduplication at {request.duplicate_score_percent:g}% duplicate score.",
+            scoring_parameters=request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+        )
+
+        def run_apply() -> None:
+            output_path = workflow_dir / "deduplicated.geojson"
+            try:
+                stats = apply_visual_deduplication(
+                    input_path,
+                    review_path,
+                    output_path,
+                    duplicate_score_threshold=threshold,
+                    minimum_appearance_similarity=request.minimum_appearance_percent / 100.0,
+                    minimum_context_similarity=request.minimum_context_percent / 100.0,
+                    weights=normalized_weights,
+                    representative_weights=normalized_representative_weights,
+                    manual_decisions=(
+                        [
+                            decision.model_dump() if hasattr(decision, "model_dump") else decision.dict()
+                            for decision in request.manual_decisions
+                        ]
+                        if request.deduplication_mode == "manual" else None
+                    ),
+                    callback=progress_callback(workflow_dir, "deduplicate_apply"),
+                )
+                update_status(
+                    workflow_dir,
+                    status="complete",
+                    stage="deduplicate_apply",
+                    progress=100,
+                    message=f"Deduplicated anomaly GeoJSON is ready at {request.duplicate_score_percent:g}% duplicate score.",
+                    deduplicate_stats=stats,
+                    outputs={"deduplicated": {"path": output_path.relative_to(result_dir).as_posix()}},
+                )
+            except Exception as exc:
+                append_log(workflow_dir, f"ERROR: {exc}")
+                update_status(workflow_dir, status="failed", stage="deduplicate_apply", message=str(exc), error=str(exc))
+                log.exception("Visual anomaly threshold application failed for %s", result_dir.name)
+
+        _EXECUTOR.submit(run_apply)
+        return read_status(workflow_dir)
+
+    @router.get("/{result_id}/postprocess/{workflow_id}/visual-review")
+    async def visual_review_page(
+        result_id: str,
+        workflow_id: str,
+        offset: int = 0,
+        limit: int = 48,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        review_path = workflow_dir / "visual_review.json"
+        if not review_path.is_file():
+            raise HTTPException(status_code=404, detail="Visual review is not available for this workflow.")
+        offset = max(0, offset)
+        limit = max(1, min(100, limit))
+        try:
+            review = await asyncio.to_thread(
+                lambda: json.loads(review_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
+        all_pairs = review.get("pairs") or []
+        pairs = []
+        for pair in all_pairs[offset:offset + limit]:
+            item = dict(pair)
+            for key in ("first_crop_path", "second_crop_path"):
+                relative = str(item.get(key) or "")
+                crop_path = (workflow_dir / relative).resolve() if relative else None
+                if crop_path and crop_path.is_file() and crop_path.is_relative_to(workflow_dir):
+                    item[key.replace("_path", "_url")] = media_url(crop_path)
+            pairs.append(item)
+        return {
+            "ok": True,
+            "pairs": pairs,
+            "offset": offset,
+            "limit": limit,
+            "total_pairs": len(all_pairs),
+            "has_more": offset + len(pairs) < len(all_pairs),
+        }
 
     @router.post("/{result_id}/postprocess/{workflow_id}/associate")
     async def associate(

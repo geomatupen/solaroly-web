@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260827o" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260827zf" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260828e" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -621,27 +621,70 @@
             <article id="ppDeduplicateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">1</div>
               <div class="postprocessStepBody">
-                <h3>Deduplicate overlapping predictions</h3>
-                <p class="muted tiny">Keep the strongest same-class prediction when overlapping source images detect the same anomaly. Geometry is not moved.</p>
+                <h3>Find duplicate predictions across images</h3>
+                <p class="muted tiny">Compare every anomaly with candidates from neighboring images, including shifted polygons that do not overlap. No detection is removed until you review the result and apply a duplicate-score threshold.</p>
                 <div class="postprocessFields">
                   <div>
                     <label for="ppAnomalyOutputName">Output name</label>
                     <input id="ppAnomalyOutputName" type="text" value="anomaly_postprocess" maxlength="80" />
                   </div>
                   <div>
-                    <label for="ppAnomalyIou">Minimum IoU</label>
-                    <input id="ppAnomalyIou" type="number" value="0.35" min="0" max="1" step="0.05" />
+                    <label for="ppAnomalyDistance">Maximum location shift (m)</label>
+                    <input id="ppAnomalyDistance" type="number" value="5" min="0.1" max="100" step="0.5" />
                   </div>
                   <div>
-                    <label for="ppAnomalyDistance">Maximum centre distance (m)</label>
-                    <input id="ppAnomalyDistance" type="number" value="0.35" min="0" max="100" step="0.05" />
-                  </div>
-                  <div>
-                    <label for="ppAnomalyOverlap">Minimum smaller-polygon overlap</label>
-                    <input id="ppAnomalyOverlap" type="number" value="0.55" min="0" max="1" step="0.05" />
+                    <label for="ppAnomalyNeighborRadius">Neighbor image radius (m)</label>
+                    <input id="ppAnomalyNeighborRadius" type="number" value="25" min="0.5" max="10000" step="1" />
+                    <small id="ppAnomalyNeighborEstimate" class="muted postprocessNeighborEstimate">Enter a radius to estimate neighboring images.</small>
                   </div>
                 </div>
-                <button id="ppDeduplicate" type="button" disabled>Deduplicate anomalies</button>
+                <div class="postprocessStepActions">
+                  <button id="ppDeduplicate" type="button" disabled>Analyze visual duplicates</button>
+                  <button id="ppConfigureRepresentativeWeights" class="secondary" type="button">Configure representative weights</button>
+                </div>
+                <section id="ppVisualReview" class="postprocessVisualReview" hidden aria-live="polite">
+                  <div class="postprocessVisualReviewHeader">
+                    <div>
+                      <h4>Visual duplicate review</h4>
+                      <p id="ppVisualReviewSummary" class="muted tiny"></p>
+                    </div>
+                    <div class="postprocessVisualThreshold">
+                      <label for="ppVisualSimilarity">Deduplicate at or above</label>
+                      <div class="postprocessPercentInput">
+                        <input id="ppVisualSimilarity" type="number" value="80" min="0" max="100" step="1" />
+                        <span>%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="postprocessReviewMode">
+                    <label for="ppDeduplicationMode">Deduplication method</label>
+                    <select id="ppDeduplicationMode">
+                      <option value="threshold">Automatic threshold</option>
+                      <option value="manual">Manual image review</option>
+                    </select>
+                  </div>
+                  <details id="ppDuplicateScoringAdvanced" class="postprocessScoringAdvanced">
+                    <summary>Advanced scoring</summary>
+                    <div class="postprocessFields postprocessScoringFields">
+                      <div><label for="ppAppearanceWeight">Appearance weight (%)</label><input id="ppAppearanceWeight" type="number" value="50" min="0" max="100" step="1" /></div>
+                      <div><label for="ppContextWeight">Context weight (%)</label><input id="ppContextWeight" type="number" value="20" min="0" max="100" step="1" /></div>
+                      <div><label for="ppShapeWeight">Shape weight (%)</label><input id="ppShapeWeight" type="number" value="15" min="0" max="100" step="1" /></div>
+                      <div><label for="ppSizeWeight">Size weight (%)</label><input id="ppSizeWeight" type="number" value="10" min="0" max="100" step="1" /></div>
+                      <div><label for="ppProximityWeight">Proximity weight (%)</label><input id="ppProximityWeight" type="number" value="5" min="0" max="100" step="1" /></div>
+                      <div><label for="ppMinimumAppearance">Minimum appearance (%)</label><input id="ppMinimumAppearance" type="number" value="75" min="0" max="100" step="1" /></div>
+                      <div><label for="ppMinimumContext">Minimum context (%)</label><input id="ppMinimumContext" type="number" value="60" min="0" max="100" step="1" /></div>
+                      <div><label for="ppManualReviewThreshold">Manual review from (%)</label><input id="ppManualReviewThreshold" type="number" value="60" min="0" max="100" step="1" /></div>
+                    </div>
+                    <div class="postprocessScoringFooter">
+                      <span id="ppScoringValidation" class="muted tiny"></span>
+                      <button id="ppResetScoringDefaults" class="secondary tiny" type="button">Reset defaults</button>
+                    </div>
+                  </details>
+                  <button id="ppViewVisualComparisons" class="secondary" type="button" hidden>View image comparisons</button>
+                  <p id="ppVisualThresholdEffect" class="muted tiny"></p>
+                  <p id="ppVisualThresholdWarning" class="statusLine warn" hidden></p>
+                  <button id="ppApplyVisualDeduplication" type="button">Apply visual deduplication</button>
+                </section>
               </div>
             </article>
             <article id="ppAdjustAnomaliesStep" class="postprocessStep" hidden>
@@ -996,6 +1039,48 @@
       <div class="modalFooter">
         <button id="ppReplacementCancel" class="secondary" type="button">Cancel</button>
         <button id="ppReplacementConfirm" type="button">Replace output</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ppRepresentativeWeightsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppRepresentativeWeightsTitle">
+    <div class="modalContent postprocessWeightsModalContent">
+      <div class="modalHeader">
+        <h3 id="ppRepresentativeWeightsTitle">Configure representative weights</h3>
+        <button id="ppRepresentativeWeightsClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p class="muted tiny">These weights choose which original polygon is retained after a duplicate group is confirmed. They do not change the duplicate-match score.</p>
+        <div class="postprocessFields">
+          <div><label for="ppRepresentativeImageCenterWeight">Image-centre proximity (%)</label><input id="ppRepresentativeImageCenterWeight" type="number" value="40" min="0" max="100" step="1" /></div>
+          <div><label for="ppRepresentativeSpatialWeight">Group spatial centrality (%)</label><input id="ppRepresentativeSpatialWeight" type="number" value="35" min="0" max="100" step="1" /></div>
+          <div><label for="ppRepresentativeConfidenceWeight">Model confidence (%)</label><input id="ppRepresentativeConfidenceWeight" type="number" value="25" min="0" max="100" step="1" /></div>
+        </div>
+        <p id="ppRepresentativeWeightsValidation" class="muted tiny">Weights total 100%.</p>
+      </div>
+      <div class="modalFooter">
+        <button id="ppRepresentativeWeightsReset" class="secondary" type="button">Reset defaults</button>
+        <button id="ppRepresentativeWeightsCancel" class="secondary" type="button">Cancel</button>
+        <button id="ppRepresentativeWeightsSave" type="button">Save weights</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ppVisualComparisonsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppVisualComparisonsTitle">
+    <div class="modalContent postprocessVisualComparisonsModalContent">
+      <div class="modalHeader">
+        <div>
+          <h3 id="ppVisualComparisonsTitle">Image comparisons</h3>
+          <p id="ppVisualComparisonsSummary" class="muted tiny"></p>
+        </div>
+        <button id="ppVisualComparisonsClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody postprocessVisualComparisonsBody">
+        <div id="ppVisualReviewPairs" class="postprocessVisualReviewPairs"></div>
+      </div>
+      <div class="modalFooter">
+        <button id="ppVisualComparisonsLoadMore" class="secondary" type="button" hidden>Load more</button>
+        <button id="ppVisualComparisonsDone" class="secondary" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -1493,7 +1578,7 @@
   <script src="js/main.js?v=20260825q"></script>
   <script src="js/postprocess.js?v=20260827zzv"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260827q"></script>
+  <script src="js/postprocess_anomaly.js?v=20260828f"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

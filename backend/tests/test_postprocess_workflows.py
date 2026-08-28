@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -7,7 +8,14 @@ from pyproj import Transformer
 from shapely.geometry import box, mapping
 from shapely.ops import transform as transform_geometry
 
-from pvrt.postprocess import associate_anomalies, build_panel_hierarchy, deduplicate_anomalies
+from pvrt.postprocess import (
+    analyze_visual_duplicates,
+    apply_visual_deduplication,
+    associate_anomalies,
+    build_panel_hierarchy,
+    deduplicate_anomalies,
+    image_neighbor_statistics,
+)
 
 
 TO_WGS84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True).transform
@@ -26,6 +34,197 @@ def _write(path: Path, features):
 
 
 class PostprocessWorkflowTests(unittest.TestCase):
+    def test_representative_weights_choose_which_duplicate_polygon_is_kept(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "predictions.geojson"
+            _write(source, [
+                _feature(box(500000, 5500000, 500000.4, 5500000.4), class_name="hotspot", score=0.95, image="edge.jpg"),
+                _feature(box(500001, 5500000, 500001.4, 5500000.4), class_name="hotspot", score=0.50, image="center.jpg"),
+            ])
+            review = root / "visual_review.json"
+            review.write_text(json.dumps({
+                "pairs": [{
+                    "first_index": 0,
+                    "second_index": 1,
+                    "first_image": "edge.jpg",
+                    "second_image": "center.jpg",
+                    "appearance_similarity": 0.95,
+                    "context_similarity": 0.95,
+                    "shape_similarity": 1.0,
+                    "size_similarity": 1.0,
+                    "proximity_similarity": 0.80,
+                }],
+                "representative_components": {
+                    "0": {"image_center_proximity": 0.10, "model_confidence": 0.95},
+                    "1": {"image_center_proximity": 0.90, "model_confidence": 0.50},
+                },
+            }), encoding="utf-8")
+            center_output = root / "center-weighted.geojson"
+            apply_visual_deduplication(
+                source,
+                review,
+                center_output,
+                representative_weights={"image_center": 1.0, "spatial_centrality": 0.0, "model_confidence": 0.0},
+            )
+            center_kept = json.loads(center_output.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(center_kept[0]["properties"]["source_anomaly_index"], 1)
+
+            confidence_output = root / "confidence-weighted.geojson"
+            apply_visual_deduplication(
+                source,
+                review,
+                confidence_output,
+                representative_weights={"image_center": 0.0, "spatial_centrality": 0.0, "model_confidence": 1.0},
+            )
+            confidence_kept = json.loads(confidence_output.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(confidence_kept[0]["properties"]["source_anomaly_index"], 0)
+
+            manual_output = root / "manual.geojson"
+            apply_visual_deduplication(
+                source,
+                review,
+                manual_output,
+                manual_decisions=[{"first_index": 0, "second_index": 1, "keep_index": 1}],
+            )
+            manual_kept = json.loads(manual_output.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(manual_kept[0]["properties"]["source_anomaly_index"], 1)
+            self.assertEqual(manual_kept[0]["properties"]["deduplication_method"], "manual")
+
+    def test_image_neighbor_statistics_use_center_radius(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "predictions.geojson"
+            _write(source, [
+                _feature(box(500000, 5500000, 500000.4, 5500000.4), image="first.jpg"),
+                _feature(box(500010, 5500000, 500010.4, 5500000.4), image="second.jpg"),
+                _feature(box(500030, 5500000, 500030.4, 5500000.4), image="third.jpg"),
+            ])
+            stats = image_neighbor_statistics(source, root, 15.0)
+            self.assertEqual(stats["image_count"], 3)
+            self.assertAlmostEqual(stats["average_neighbors"], 0.67, places=2)
+            self.assertEqual(stats["minimum_neighbors"], 0)
+            self.assertEqual(stats["maximum_neighbors"], 1)
+            self.assertEqual(stats["isolated_images"], 1)
+
+    def test_visual_deduplication_applies_configurable_component_weights(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "predictions.geojson"
+            _write(source, [
+                _feature(box(500000, 5500000, 500000.4, 5500000.4), class_name="hotspot", score=0.95, image="first.jpg"),
+                _feature(box(500001, 5500000, 500001.4, 5500000.4), class_name="hotspot", score=0.85, image="second.jpg"),
+            ])
+            review = root / "visual_review.json"
+            review.write_text(json.dumps({"pairs": [{
+                "first_index": 0,
+                "second_index": 1,
+                "first_image": "first.jpg",
+                "second_image": "second.jpg",
+                "appearance_similarity": 0.90,
+                "context_similarity": 0.90,
+                "shape_similarity": 0.10,
+                "size_similarity": 0.10,
+                "proximity_similarity": 0.10,
+            }]}), encoding="utf-8")
+            appearance_output = root / "appearance.geojson"
+            appearance_result = apply_visual_deduplication(
+                source,
+                review,
+                appearance_output,
+                weights={"appearance": 1.0, "context": 0.0, "shape": 0.0, "size": 0.0, "proximity": 0.0},
+            )
+            self.assertEqual(appearance_result["duplicates_removed"], 1)
+            shape_output = root / "shape.geojson"
+            shape_result = apply_visual_deduplication(
+                source,
+                review,
+                shape_output,
+                weights={"appearance": 0.0, "context": 0.0, "shape": 1.0, "size": 0.0, "proximity": 0.0},
+            )
+            self.assertEqual(shape_result["duplicates_removed"], 0)
+
+    def test_visual_deduplication_keeps_candidates_when_images_are_unavailable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "predictions.geojson"
+            _write(source, [
+                _feature(box(500000.4, 5500000.2, 500000.8, 5500000.6), class_name="hotspot", score=0.95, image="first.jpg"),
+                _feature(box(500002.0, 5500000.2, 500002.4, 5500000.6), class_name="hotspot", score=0.85, image="second.jpg"),
+            ])
+            workflow_dir = root / "postprocess" / "visual"
+            review_path = workflow_dir / "visual_review.json"
+            stats = analyze_visual_duplicates(source, review_path, workflow_dir / "review_images", root)
+            self.assertEqual(stats["spatial_candidate_pairs"], 1)
+            self.assertEqual(stats["missing_image_pairs"], 1)
+            pair = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][0]
+            self.assertEqual(pair["iou"], 0.0)
+            self.assertGreater(pair["center_distance_m"], 1.0)
+            output = workflow_dir / "deduplicated.geojson"
+            applied = apply_visual_deduplication(source, review_path, output)
+            self.assertEqual(applied["duplicates_removed"], 0)
+            self.assertEqual(applied["output_features"], 2)
+
+    @unittest.skipUnless(importlib.util.find_spec("cv2"), "OpenCV is not installed in this test environment")
+    def test_visual_duplicate_review_precedes_threshold_application(self):
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result_dir = root / "result"
+            overlays = result_dir / "overlays"
+            overlays.mkdir(parents=True)
+            first_geometry = box(500000.4, 5500000.2, 500000.8, 5500000.6)
+            second_geometry = box(500000.42, 5500000.22, 500000.82, 5500000.62)
+            anomaly_source = result_dir / "predictions.geojson"
+            _write(anomaly_source, [
+                _feature(first_geometry, class_name="hotspot", score=0.95, image="first.jpg"),
+                _feature(second_geometry, class_name="hotspot", score=0.85, image="second.jpg"),
+            ])
+            footprint = transform_geometry(TO_WGS84, box(499998, 5499998, 500003, 5500003))
+            min_x, min_y, max_x, max_y = footprint.bounds
+            corners = [[min_x, max_y], [max_x, max_y], [max_x, min_y], [min_x, min_y]]
+            images_payload = {
+                "type": "FeatureCollection",
+                "features": [
+                    {"type": "Feature", "geometry": None, "properties": {"image": name, "corners": corners}}
+                    for name in ("first.jpg", "second.jpg")
+                ],
+            }
+            (result_dir / "images.geojson").write_text(json.dumps(images_payload), encoding="utf-8")
+            image = np.zeros((240, 240, 3), dtype=np.uint8)
+            cv2.rectangle(image, (75, 75), (165, 165), (180, 180, 180), -1)
+            cv2.circle(image, (120, 120), 18, (245, 245, 245), -1)
+            cv2.imwrite(str(overlays / "first.png"), image)
+            cv2.imwrite(str(overlays / "second.png"), image)
+
+            workflow_dir = result_dir / "postprocess" / "visual"
+            review_path = workflow_dir / "visual_review.json"
+            stats = analyze_visual_duplicates(
+                anomaly_source,
+                review_path,
+                workflow_dir / "review_images",
+                result_dir,
+            )
+            self.assertEqual(stats["spatial_candidate_pairs"], 1)
+            self.assertEqual(stats["visually_compared_pairs"], 1)
+            pair = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][0]
+            self.assertGreaterEqual(pair["visual_similarity"], 0.80)
+            self.assertGreaterEqual(pair["duplicate_score"], 0.80)
+            self.assertIn("context_similarity", pair)
+            self.assertIn("shape_similarity", pair)
+
+            output = workflow_dir / "deduplicated.geojson"
+            applied = apply_visual_deduplication(
+                anomaly_source,
+                review_path,
+                output,
+                duplicate_score_threshold=0.80,
+            )
+            self.assertEqual(applied["duplicates_removed"], 1)
+            self.assertEqual(applied["output_features"], 1)
+
     def test_builds_deterministic_panel_and_row_ids(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
