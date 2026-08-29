@@ -151,21 +151,30 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _visual_review_decision_summary(pairs: list[dict[str, Any]]) -> tuple[dict[str, int], list[int]]:
+def _visual_review_decision_summary(
+    pairs: list[dict[str, Any]],
+) -> tuple[dict[str, int], list[int], list[str]]:
     counts = {"accepted": 0, "rejected": 0, "unreviewed": 0}
     kept_indices: set[int] = set()
     removed_indices: set[int] = set()
+    labels_by_index: dict[int, str] = {}
     for pair in pairs:
+        first_index = int(pair["first_index"])
+        second_index = int(pair["second_index"])
+        labels_by_index[first_index] = str(pair.get("first_anomaly_id") or first_index + 1)
+        labels_by_index[second_index] = str(pair.get("second_anomaly_id") or second_index + 1)
         status = pair.get("manual_review_status")
         key = status if status in {"accepted", "rejected"} else "unreviewed"
         counts[key] += 1
         if status != "accepted":
             continue
-        edge = (int(pair["first_index"]), int(pair["second_index"]))
+        edge = (first_index, second_index)
         keep_index = int(pair.get("manual_keep_index", edge[0]))
         kept_indices.add(keep_index)
         removed_indices.update(index for index in edge if index != keep_index)
-    return counts, sorted(kept_indices & removed_indices)
+    conflict_indices = sorted(kept_indices & removed_indices)
+    conflict_ids = [labels_by_index.get(index, str(index + 1)) for index in conflict_indices]
+    return counts, conflict_indices, conflict_ids
 
 
 def create_postprocess_router(
@@ -309,9 +318,10 @@ def create_postprocess_router(
                 else:
                     review_pairs_source = all_review_pairs
                     review_total = len(review_pairs_source)
-                decision_counts, conflict_indices = _visual_review_decision_summary(all_review_pairs)
+                decision_counts, conflict_indices, conflict_ids = _visual_review_decision_summary(all_review_pairs)
                 payload["visual_review_decision_counts"] = decision_counts
                 payload["visual_review_conflict_indices"] = conflict_indices
+                payload["visual_review_conflict_ids"] = conflict_ids
                 review_pairs = []
                 # Keep workflow-list payloads small; the UI intentionally shows
                 # a representative review grid rather than every candidate.
@@ -1188,7 +1198,7 @@ def create_postprocess_router(
         except (OSError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
         all_pairs = review.get("pairs") or []
-        decision_counts, conflict_indices = _visual_review_decision_summary(all_pairs)
+        decision_counts, conflict_indices, conflict_ids = _visual_review_decision_summary(all_pairs)
         pairs = []
         for pair in all_pairs[offset:offset + limit]:
             item = dict(pair)
@@ -1210,6 +1220,7 @@ def create_postprocess_router(
             "total_pairs": len(all_pairs),
             "decision_counts": decision_counts,
             "conflict_indices": conflict_indices,
+            "conflict_ids": conflict_ids,
             "has_more": offset + len(pairs) < len(all_pairs),
         }
 
@@ -1232,6 +1243,16 @@ def create_postprocess_router(
         try:
             with _STATUS_LOCK:
                 review = json.loads(review_path.read_text(encoding="utf-8"))
+                labels_by_index: dict[int, str] = {}
+                for review_pair in review.get("pairs") or []:
+                    first_index = int(review_pair["first_index"])
+                    second_index = int(review_pair["second_index"])
+                    labels_by_index[first_index] = str(review_pair.get("first_anomaly_id") or first_index + 1)
+                    labels_by_index[second_index] = str(review_pair.get("second_anomaly_id") or second_index + 1)
+
+                def anomaly_label(index: int) -> str:
+                    return labels_by_index.get(index, str(index + 1))
+
                 matched = None
                 for pair in review.get("pairs") or []:
                     pair_edge = tuple(sorted((int(pair["first_index"]), int(pair["second_index"]))))
@@ -1250,13 +1271,13 @@ def create_postprocess_router(
                             continue
                         existing_keep = int(pair.get("manual_keep_index", pair_edge[0]))
                         existing_remove = next(index for index in pair_edge if index != existing_keep)
-                        existing_label = f"{pair_edge[0] + 1}–{pair_edge[1] + 1}"
+                        existing_label = f"{anomaly_label(pair_edge[0])}–{anomaly_label(pair_edge[1])}"
                         if existing_keep == requested_remove:
                             raise HTTPException(
                                 status_code=409,
                                 detail=(
-                                    f"Cannot accept pair {edge[0] + 1}–{edge[1] + 1} while keeping anomaly "
-                                    f"{requested_keep + 1}. Anomaly {requested_remove + 1} is already kept by "
+                                    f"Cannot accept pair {anomaly_label(edge[0])}–{anomaly_label(edge[1])} while keeping anomaly "
+                                    f"{anomaly_label(requested_keep)}. Anomaly {anomaly_label(requested_remove)} is already kept by "
                                     f"accepted pair {existing_label}. Reject this pair or undo that accepted pair first."
                                 ),
                             )
@@ -1264,8 +1285,8 @@ def create_postprocess_router(
                             raise HTTPException(
                                 status_code=409,
                                 detail=(
-                                    f"Cannot keep anomaly {requested_keep + 1}. Accepted pair {existing_label} "
-                                    f"already removes it and keeps anomaly {existing_keep + 1}. Reject this pair "
+                                    f"Cannot keep anomaly {anomaly_label(requested_keep)}. Accepted pair {existing_label} "
+                                    f"already removes it and keeps anomaly {anomaly_label(existing_keep)}. Reject this pair "
                                     "or undo that accepted pair first."
                                 ),
                             )
@@ -1283,7 +1304,7 @@ def create_postprocess_router(
             raise
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=500, detail="Visual review decision could not be saved.") from exc
-        decision_counts, conflict_indices = _visual_review_decision_summary(review.get("pairs") or [])
+        decision_counts, conflict_indices, conflict_ids = _visual_review_decision_summary(review.get("pairs") or [])
         return {
             "ok": True,
             "first_index": request.first_index,
@@ -1292,6 +1313,7 @@ def create_postprocess_router(
             "keep_index": request.keep_index if request.status == "accepted" else None,
             "decision_counts": decision_counts,
             "conflict_indices": conflict_indices,
+            "conflict_ids": conflict_ids,
         }
 
     @router.post("/{result_id}/postprocess/{workflow_id}/associate")

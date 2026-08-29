@@ -633,8 +633,18 @@ def apply_visual_deduplication(
         }
         conflicts = kept_indices & removed_indices
         if conflicts:
-            labels = ", ".join(str(source_index + 1) for source_index in sorted(conflicts))
-            raise ValueError(f"Manual selections conflict for anomaly {labels}. Choose one consistent representative per linked group.")
+            properties_by_index = {
+                source_index: properties
+                for source_index, _, properties in records
+            }
+            labels = ", ".join(
+                _anomaly_id(properties_by_index.get(source_index, {}), source_index)
+                for source_index in sorted(conflicts)
+            )
+            raise ValueError(
+                f"Manual selections conflict for anomaly ID {labels}. "
+                "Choose one consistent representative per linked group."
+            )
         removed.update(removed_indices)
         for decision in manual_decisions:
             keep_index = int(decision["keep_index"])

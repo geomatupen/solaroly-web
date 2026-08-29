@@ -94,8 +94,18 @@ class PostprocessApiTests(unittest.TestCase):
             review_path = workflow_dir / "visual_review.json"
             review_path.write_text(json.dumps({
                 "pairs": [
-                    {"first_index": 2, "second_index": 5},
-                    {"first_index": 5, "second_index": 8},
+                    {
+                        "first_index": 2,
+                        "second_index": 5,
+                        "first_anomaly_id": "A-203",
+                        "second_anomaly_id": "A-506",
+                    },
+                    {
+                        "first_index": 5,
+                        "second_index": 8,
+                        "first_anomaly_id": "A-506",
+                        "second_anomaly_id": "A-809",
+                    },
                 ],
             }), encoding="utf-8")
             router = create_postprocess_router(
@@ -146,7 +156,7 @@ class PostprocessApiTests(unittest.TestCase):
                     ),
                 ))
             self.assertEqual(conflict.exception.status_code, 409)
-            self.assertIn("Anomaly 6 is already kept by accepted pair 3–6", conflict.exception.detail)
+            self.assertIn("Anomaly A-506 is already kept by accepted pair A-203–A-506", conflict.exception.detail)
             conflicting_pair = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][1]
             self.assertNotIn("manual_review_status", conflicting_pair)
 

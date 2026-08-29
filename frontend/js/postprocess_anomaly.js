@@ -276,7 +276,8 @@
         };
     return {
       accepted: Math.max(Number(counts.accepted || 0), manualDuplicateDecisions.size),
-      conflicts: (workflow?.visual_review_conflict_indices || []).map(Number),
+      conflicts: workflow?.visual_review_conflict_ids
+        || (workflow?.visual_review_conflict_indices || []).map(anomalyNumber),
     };
   }
 
@@ -317,7 +318,7 @@
     applyButton.textContent = manualMode ? "Apply manual selections" : "Apply visual deduplication";
     let disabledReason = "";
     if (manualMode && manualState.conflicts.length) {
-      const labels = manualState.conflicts.map(anomalyNumber).join(", ");
+      const labels = manualState.conflicts.join(", ");
       disabledReason = `Cannot apply yet: saved manual selections conflict for anomaly ${labels}. Open image comparisons and undo one of the conflicting accepted choices.`;
     } else if (manualMode && manualState.accepted === 0) {
       disabledReason = "Apply manual selections is disabled until at least one comparison pair is accepted as a duplicate.";
@@ -390,6 +391,15 @@
     return Number(index) + 1;
   }
 
+  function anomalyDisplayId(index) {
+    const sourceIndex = Number(index);
+    for (const pair of comparisonPairs(currentAnomalyWorkflow())) {
+      if (Number(pair.first_index) === sourceIndex) return pair.first_anomaly_id ?? anomalyNumber(sourceIndex);
+      if (Number(pair.second_index) === sourceIndex) return pair.second_anomaly_id ?? anomalyNumber(sourceIndex);
+    }
+    return anomalyNumber(sourceIndex);
+  }
+
   function manualSelectionConflict(pair, keepIndex) {
     const currentEdge = comparisonEdgeKey(pair);
     const keep = Number(keepIndex);
@@ -401,12 +411,12 @@
       const existingPair = [Number(decision.first_index), Number(decision.second_index)];
       const existingKeep = Number(decision.keep_index);
       const existingRemove = existingPair.find(index => index !== existingKeep);
-      const existingPairLabel = existingPair.map(anomalyNumber).join("–");
+      const existingPairLabel = existingPair.map(anomalyDisplayId).join("–");
       if (existingKeep === remove) {
-        return `Cannot accept pair ${pairIndices.map(anomalyNumber).join("–")} while keeping anomaly ${anomalyNumber(keep)}. Anomaly ${anomalyNumber(remove)} is already kept by accepted pair ${existingPairLabel}. Reject this pair or undo that accepted pair first.`;
+        return `Cannot accept pair ${pairIndices.map(anomalyDisplayId).join("–")} while keeping anomaly ${anomalyDisplayId(keep)}. Anomaly ${anomalyDisplayId(remove)} is already kept by accepted pair ${existingPairLabel}. Reject this pair or undo that accepted pair first.`;
       }
       if (existingRemove === keep) {
-        return `Cannot keep anomaly ${anomalyNumber(keep)}. Accepted pair ${existingPairLabel} already removes it and keeps anomaly ${anomalyNumber(existingKeep)}. Reject this pair or undo that accepted pair first.`;
+        return `Cannot keep anomaly ${anomalyDisplayId(keep)}. Accepted pair ${existingPairLabel} already removes it and keeps anomaly ${anomalyDisplayId(existingKeep)}. Reject this pair or undo that accepted pair first.`;
       }
     }
     return null;
@@ -472,6 +482,7 @@
         if (workflow) {
           workflow.visual_review_decision_counts = { ...loadedComparisonDecisionCounts };
           workflow.visual_review_conflict_indices = savedDecision.conflict_indices || [];
+          workflow.visual_review_conflict_ids = savedDecision.conflict_ids || [];
         }
         renderComparisonDecisionCounts();
       } else {
@@ -956,10 +967,6 @@
         if (field && value != null) field.value = String(value);
       }
       manualDuplicateDecisions.clear();
-      for (const decision of saved.manual_decisions || []) {
-        const key = `${Math.min(decision.first_index, decision.second_index)}:${Math.max(decision.first_index, decision.second_index)}`;
-        manualDuplicateDecisions.set(key, decision);
-      }
     }
     review.hidden = false;
     const candidateCount = Number(stats?.spatial_candidate_pairs ?? workflow.visual_review.total_pairs ?? 0);
@@ -1172,6 +1179,7 @@
       if (workflow) {
         workflow.visual_review_decision_counts = { ...loadedComparisonDecisionCounts };
         workflow.visual_review_conflict_indices = payload.conflict_indices || [];
+        workflow.visual_review_conflict_ids = payload.conflict_ids || [];
         workflow.visual_review = {
           ...(workflow.visual_review || {}),
           pairs: loadedComparisonPairs.slice(0, 12),
