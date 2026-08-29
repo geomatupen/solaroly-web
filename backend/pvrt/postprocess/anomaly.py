@@ -576,6 +576,10 @@ def apply_visual_deduplication(
     _notify(callback, 5, "Applying the selected visual similarity threshold…")
     payload, records, invalid = load_polygon_features(input_path)
     review = json.loads(review_path.read_text(encoding="utf-8"))
+    anomaly_ids_by_index = {
+        source_index: _anomaly_id(properties, source_index)
+        for source_index, _, properties in records
+    }
     qualifying_pairs = {}
     available_pairs = {}
     for pair in review.get("pairs") or []:
@@ -594,7 +598,8 @@ def apply_visual_deduplication(
         for decision in manual_decisions:
             edge = tuple(sorted((int(decision["first_index"]), int(decision["second_index"]))))
             if edge not in available_pairs:
-                raise ValueError(f"Manual duplicate pair {edge[0] + 1}/{edge[1] + 1} is not part of this review.")
+                pair_label = "/".join(anomaly_ids_by_index.get(index, str(index + 1)) for index in edge)
+                raise ValueError(f"Manual duplicate pair with anomaly IDs {pair_label} is not part of this review.")
             keep_index = int(decision["keep_index"])
             if keep_index not in edge:
                 raise ValueError("Manual keep selection must belong to its duplicate pair.")
@@ -633,12 +638,8 @@ def apply_visual_deduplication(
         }
         conflicts = kept_indices & removed_indices
         if conflicts:
-            properties_by_index = {
-                source_index: properties
-                for source_index, _, properties in records
-            }
             labels = ", ".join(
-                _anomaly_id(properties_by_index.get(source_index, {}), source_index)
+                anomaly_ids_by_index.get(source_index, str(source_index + 1))
                 for source_index in sorted(conflicts)
             )
             raise ValueError(
@@ -730,12 +731,16 @@ def apply_visual_deduplication(
             for pair in details
         )
         output_properties = dict(properties)
+        output_properties.pop("source_anomaly_index", None)
+        output_properties.pop("duplicate_source_indices", None)
         output_properties.update({
             "anomaly_id": _anomaly_id(output_properties, source_index),
             "postprocess_stage": "deduplicated_anomalies",
-            "source_anomaly_index": source_index,
             "duplicate_count": len(duplicates),
-            "duplicate_source_indices": duplicates,
+            "duplicate_anomaly_ids": [
+                anomaly_ids_by_index.get(index, str(index + 1))
+                for index in duplicates
+            ],
             "duplicate_scores": [pair.get("duplicate_score") for pair in details],
             "duplicate_appearance_similarities": [pair.get("appearance_similarity") for pair in details],
             "source_images": [name for name in source_images if name],
@@ -781,6 +786,10 @@ def deduplicate_anomalies(
     """Keep the strongest of same-class predictions representing one anomaly."""
     _notify(callback, 2, "Reading anomaly predictions…")
     payload, records, invalid = load_polygon_features(input_path)
+    anomaly_ids_by_index = {
+        source_index: _anomaly_id(properties, source_index)
+        for source_index, _, properties in records
+    }
     metric_crs = infer_metric_crs(record[1] for record in records)
     to_wgs84 = transformer(metric_crs, "EPSG:4326")
     projected = [
@@ -826,12 +835,16 @@ def deduplicate_anomalies(
     output_features = []
     for source_index, geometry, properties, duplicates in kept:
         output_properties = dict(properties)
+        output_properties.pop("source_anomaly_index", None)
+        output_properties.pop("duplicate_source_indices", None)
         output_properties.update({
             "anomaly_id": _anomaly_id(output_properties, source_index),
             "postprocess_stage": "deduplicated_anomalies",
-            "source_anomaly_index": source_index,
             "duplicate_count": len(duplicates),
-            "duplicate_source_indices": duplicates,
+            "duplicate_anomaly_ids": [
+                anomaly_ids_by_index.get(index, str(index + 1))
+                for index in duplicates
+            ],
         })
         output_features.append(feature(geometry, output_properties, to_wgs84))
     write_feature_collection(output_path, output_features, source=str(input_path), metric_crs=metric_crs.to_string())
@@ -903,11 +916,12 @@ def associate_anomalies(
             best_panel = None
             unassigned += 1
         output_properties = dict(properties)
+        output_properties.pop("source_anomaly_index", None)
+        output_properties.pop("duplicate_source_indices", None)
         anomaly_id = _anomaly_id(output_properties, source_index)
         output_properties.update({
             "anomaly_id": anomaly_id,
             "postprocess_stage": "associated_anomalies",
-            "source_anomaly_index": source_index,
             "association_method": method,
             "panel_overlap_fraction": round(best_overlap, 6),
             "panel_distance_m": round(best_distance, 4) if best_distance != float("inf") else None,

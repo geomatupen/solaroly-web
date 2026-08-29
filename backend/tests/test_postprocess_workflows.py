@@ -47,8 +47,8 @@ class PostprocessWorkflowTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "predictions.geojson"
             _write(source, [
-                _feature(box(500000, 5500000, 500000.4, 5500000.4), class_name="hotspot", score=0.95, image="edge.jpg"),
-                _feature(box(500001, 5500000, 500001.4, 5500000.4), class_name="hotspot", score=0.50, image="center.jpg"),
+                _feature(box(500000, 5500000, 500000.4, 5500000.4), anomaly_id="hot-edge", class_name="hotspot", score=0.95, image="edge.jpg"),
+                _feature(box(500001, 5500000, 500001.4, 5500000.4), anomaly_id="hot-center", class_name="hotspot", score=0.50, image="center.jpg"),
             ])
             review = root / "visual_review.json"
             review.write_text(json.dumps({
@@ -76,7 +76,8 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 representative_weights={"image_center": 1.0, "spatial_centrality": 0.0, "model_confidence": 0.0},
             )
             center_kept = json.loads(center_output.read_text(encoding="utf-8"))["features"]
-            self.assertEqual(center_kept[0]["properties"]["source_anomaly_index"], 1)
+            self.assertEqual(center_kept[0]["properties"]["anomaly_id"], "hot-center")
+            self.assertNotIn("source_anomaly_index", center_kept[0]["properties"])
 
             confidence_output = root / "confidence-weighted.geojson"
             apply_visual_deduplication(
@@ -86,7 +87,7 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 representative_weights={"image_center": 0.0, "spatial_centrality": 0.0, "model_confidence": 1.0},
             )
             confidence_kept = json.loads(confidence_output.read_text(encoding="utf-8"))["features"]
-            self.assertEqual(confidence_kept[0]["properties"]["source_anomaly_index"], 0)
+            self.assertEqual(confidence_kept[0]["properties"]["anomaly_id"], "hot-edge")
 
             manual_output = root / "manual.geojson"
             apply_visual_deduplication(
@@ -96,7 +97,7 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 manual_decisions=[{"first_index": 0, "second_index": 1, "keep_index": 1}],
             )
             manual_kept = json.loads(manual_output.read_text(encoding="utf-8"))["features"]
-            self.assertEqual(manual_kept[0]["properties"]["source_anomaly_index"], 1)
+            self.assertEqual(manual_kept[0]["properties"]["anomaly_id"], "hot-center")
             self.assertEqual(manual_kept[0]["properties"]["deduplication_method"], "manual")
 
     def test_image_neighbor_statistics_use_center_radius(self):

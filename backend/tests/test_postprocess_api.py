@@ -219,6 +219,7 @@ class PostprocessApiTests(unittest.TestCase):
             self.assertEqual(payload["visual_review_total_pairs"], 1)
             self.assertEqual(payload["visual_review_decision_counts"]["accepted"], 1)
             self.assertEqual(payload["visual_review_conflict_indices"], [])
+            self.assertEqual(payload["visual_review_conflict_ids"], [])
             self.assertEqual(payload["visual_analysis_stats"]["visually_compared_pairs"], 1)
             self.assertTrue(payload["visual_analysis_stats"]["recovered_from_saved_review"])
 

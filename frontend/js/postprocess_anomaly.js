@@ -636,8 +636,8 @@
     buttons.className = "postprocessPairDecisionButtons";
     const keep = document.createElement("select");
     keep.dataset.role = "manual-keep";
-    addOption(keep, String(pair.first_index), `Keep left · ${pair.first_image || Number(pair.first_index) + 1}`);
-    addOption(keep, String(pair.second_index), `Keep right · ${pair.second_image || Number(pair.second_index) + 1}`);
+    addOption(keep, String(pair.first_index), `Keep left · ID ${pair.first_anomaly_id ?? anomalyNumber(pair.first_index)}`);
+    addOption(keep, String(pair.second_index), `Keep right · ID ${pair.second_anomaly_id ?? anomalyNumber(pair.second_index)}`);
     keep.value = String(pair.manual_keep_index ?? pair.first_index);
     keep.disabled = false;
     keep.title = "Choose which prediction to keep. Changing this accepts the duplicate pair.";
