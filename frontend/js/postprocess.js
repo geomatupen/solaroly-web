@@ -883,9 +883,12 @@
     state.anomalyReviewSelectedIndex = null;
     byId("ppAnomalyMapReview").hidden = true;
     byId("ppShowAllAnomalyPairs").checked = false;
+    byId("ppAnomalyMapPairFilter").value = "active";
   }
 
   function anomalyPairColor(pair) {
+    if (pair.review_status === "accepted") return "#22c55e";
+    if (pair.review_status === "rejected") return "#ef6b73";
     if (pair.review_status === "duplicate") return "#ef4444";
     if (pair.review_status === "review") return "#f59e0b";
     return "#64748b";
@@ -901,7 +904,13 @@
     const features = anomalySourceFeatures();
     const group = window.L.layerGroup();
     const featureStyles = new Map();
-    for (const pair of state.anomalyReviewPairs) {
+    const filter = byId("ppAnomalyMapPairFilter")?.value || "active";
+    const pairs = state.anomalyReviewPairs.filter(pair => {
+      if (filter === "all") return true;
+      if (filter === "active") return pair.review_status !== "rejected";
+      return pair.review_status === filter;
+    });
+    for (const pair of pairs) {
       const first = anomalyReviewFeature(pair, "first", features);
       const second = anomalyReviewFeature(pair, "second", features);
       const firstCenter = geoJsonFeatureCenter(first);
@@ -920,7 +929,9 @@
         [Number(pair.first_index), first],
         [Number(pair.second_index), second],
       ]) {
-        const priority = pair.review_status === "duplicate" ? 3 : pair.review_status === "review" ? 2 : 1;
+        const priority = pair.review_status === "accepted" ? 4
+          : pair.review_status === "duplicate" ? 3
+            : pair.review_status === "review" || pair.review_status === "rejected" ? 2 : 1;
         if (!featureStyles.has(index) || featureStyles.get(index).priority < priority) {
           featureStyles.set(index, { color, priority, feature });
         }
@@ -986,6 +997,15 @@
 
   function updateAnomalyReviewPairs(pairs) {
     state.anomalyReviewPairs = Array.isArray(pairs) ? pairs.slice() : [];
+    renderAllAnomalyReviewPairs();
+  }
+
+  function updateAnomalyReviewPairDecision(firstIndex, secondIndex, reviewStatus) {
+    const edge = [Number(firstIndex), Number(secondIndex)].sort((first, second) => first - second).join(":");
+    for (const pair of state.anomalyReviewPairs) {
+      const pairEdge = [Number(pair.first_index), Number(pair.second_index)].sort((first, second) => first - second).join(":");
+      if (pairEdge === edge) pair.review_status = reviewStatus || "below";
+    }
     renderAllAnomalyReviewPairs();
   }
 
@@ -3320,6 +3340,7 @@
         document.dispatchEvent(new CustomEvent("postprocess:request-all-anomaly-pairs"));
       }
     });
+    byId("ppAnomalyMapPairFilter").addEventListener("change", renderAllAnomalyReviewPairs);
     byId("ppReturnToComparison").addEventListener("click", () => {
       document.dispatchEvent(new CustomEvent("postprocess:return-comparisons", {
         detail: { pairIndex: state.anomalyReviewSelectedIndex },
@@ -4293,6 +4314,7 @@
     selectWorkflow,
     showAnomalyReviewPair,
     updateAnomalyReviewPairs,
+    updateAnomalyReviewPairDecision,
     whenProcessingLayersReady,
     setMessage,
     setMode,

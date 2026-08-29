@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260829a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260829d" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260829e" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -731,6 +731,15 @@
                 <h3 id="ppVisualComparisonsTitle">Image comparisons</h3>
                 <p id="ppVisualComparisonsSummary" class="muted tiny"></p>
               </div>
+              <div id="ppVisualComparisonFilterWrap" class="postprocessComparisonFilter">
+                <label for="ppVisualComparisonFilter">Filter by</label>
+                <select id="ppVisualComparisonFilter">
+                  <option value="active">Active</option>
+                  <option value="all">All</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
             </div>
             <div id="ppVisualReviewPairs" class="postprocessVisualReviewPairs"></div>
             <section id="ppVisualComparisonDetail" class="postprocessVisualComparisonDetail" hidden>
@@ -786,6 +795,14 @@
                   <span id="ppAnomalyMapReviewDetails" class="muted tiny"></span>
                 </div>
                 <label class="postprocessMapPairToggle"><input id="ppShowAllAnomalyPairs" type="checkbox" /> Show all candidate pairs</label>
+                <label class="postprocessMapPairFilter" for="ppAnomalyMapPairFilter">Filter
+                  <select id="ppAnomalyMapPairFilter">
+                    <option value="active">Active</option>
+                    <option value="all">All</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </label>
                 <button id="ppReturnToComparison" class="secondary tiny" type="button">Return to images</button>
                 <button id="ppClearAnomalyPair" class="secondary tiny" type="button">Clear</button>
               </div>
@@ -1619,9 +1636,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260829a"></script>
-  <script src="js/postprocess.js?v=20260829d"></script>
+  <script src="js/postprocess.js?v=20260829f"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260829g"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829i"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

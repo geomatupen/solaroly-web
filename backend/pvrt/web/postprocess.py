@@ -89,6 +89,13 @@ class ManualDuplicateDecision(BaseModel):
     keep_index: int = Field(ge=0)
 
 
+class VisualReviewDecisionRequest(BaseModel):
+    first_index: int = Field(ge=0)
+    second_index: int = Field(ge=0)
+    status: Literal["accepted", "rejected", "unreviewed"]
+    keep_index: int | None = Field(default=None, ge=0)
+
+
 class ApplyVisualDeduplicationRequest(BaseModel):
     deduplication_mode: Literal["threshold", "manual"] = "threshold"
     manual_decisions: list[ManualDuplicateDecision] = Field(default_factory=list)
@@ -951,7 +958,30 @@ def create_postprocess_router(
         review_path = workflow_dir / "visual_review.json"
         if not review_path.is_file():
             raise HTTPException(status_code=409, detail="Run visual duplicate analysis before applying a threshold.")
-        if request.deduplication_mode == "manual" and not request.manual_decisions:
+        manual_decisions = [
+            decision.model_dump() if hasattr(decision, "model_dump") else decision.dict()
+            for decision in request.manual_decisions
+        ]
+        if request.deduplication_mode == "manual":
+            try:
+                review = json.loads(review_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
+            saved_by_edge = {
+                tuple(sorted((int(pair["first_index"]), int(pair["second_index"])))): {
+                    "first_index": int(pair["first_index"]),
+                    "second_index": int(pair["second_index"]),
+                    "keep_index": int(pair.get("manual_keep_index", pair["first_index"])),
+                }
+                for pair in (review.get("pairs") or [])
+                if pair.get("manual_review_status") == "accepted"
+            }
+            saved_by_edge.update({
+                tuple(sorted((int(decision["first_index"]), int(decision["second_index"])))): decision
+                for decision in manual_decisions
+            })
+            manual_decisions = list(saved_by_edge.values())
+        if request.deduplication_mode == "manual" and not manual_decisions:
             raise HTTPException(status_code=400, detail="Mark at least one image pair as a duplicate before applying manual review.")
         weight_values = {
             "appearance": request.appearance_weight_percent,
@@ -980,7 +1010,10 @@ def create_postprocess_router(
             stage="deduplicate_apply",
             progress=0,
             message=f"Queued deduplication at {request.duplicate_score_percent:g}% duplicate score.",
-            scoring_parameters=request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+            scoring_parameters={
+                **(request.model_dump() if hasattr(request, "model_dump") else request.dict()),
+                "manual_decisions": manual_decisions if request.deduplication_mode == "manual" else [],
+            },
         )
 
         def run_apply() -> None:
@@ -994,10 +1027,7 @@ def create_postprocess_router(
                     weights=normalized_weights,
                     representative_weights=normalized_representative_weights,
                     manual_decisions=(
-                        [
-                            decision.model_dump() if hasattr(decision, "model_dump") else decision.dict()
-                            for decision in request.manual_decisions
-                        ]
+                        manual_decisions
                         if request.deduplication_mode == "manual" else None
                     ),
                     callback=progress_callback(workflow_dir, "deduplicate_apply"),
@@ -1065,6 +1095,56 @@ def create_postprocess_router(
             "has_more": offset + len(pairs) < len(all_pairs),
         }
 
+    @router.patch("/{result_id}/postprocess/{workflow_id}/visual-review/decision")
+    async def update_visual_review_decision(
+        result_id: str,
+        workflow_id: str,
+        request: VisualReviewDecisionRequest,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        review_path = workflow_dir / "visual_review.json"
+        if not review_path.is_file():
+            raise HTTPException(status_code=404, detail="Visual review is not available for this workflow.")
+        edge = tuple(sorted((request.first_index, request.second_index)))
+        if edge[0] == edge[1]:
+            raise HTTPException(status_code=400, detail="A comparison must contain two different anomalies.")
+        if request.status == "accepted" and request.keep_index not in edge:
+            raise HTTPException(status_code=400, detail="Choose one anomaly from the accepted pair to keep.")
+        try:
+            with _STATUS_LOCK:
+                review = json.loads(review_path.read_text(encoding="utf-8"))
+                matched = None
+                for pair in review.get("pairs") or []:
+                    pair_edge = tuple(sorted((int(pair["first_index"]), int(pair["second_index"]))))
+                    if pair_edge != edge:
+                        continue
+                    matched = pair
+                    if request.status == "unreviewed":
+                        pair.pop("manual_review_status", None)
+                        pair.pop("manual_keep_index", None)
+                    else:
+                        pair["manual_review_status"] = request.status
+                        if request.status == "accepted":
+                            pair["manual_keep_index"] = request.keep_index
+                        else:
+                            pair.pop("manual_keep_index", None)
+                    break
+                if matched is None:
+                    raise HTTPException(status_code=404, detail="The comparison pair is not part of this review.")
+                _atomic_json(review_path, review)
+        except HTTPException:
+            raise
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail="Visual review decision could not be saved.") from exc
+        return {
+            "ok": True,
+            "first_index": request.first_index,
+            "second_index": request.second_index,
+            "status": request.status,
+            "keep_index": request.keep_index if request.status == "accepted" else None,
+        }
+
     @router.get("/{result_id}/postprocess/{workflow_id}/visual-review-map")
     async def visual_review_map_pairs(result_id: str, workflow_id: str) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
@@ -1080,6 +1160,7 @@ def create_postprocess_router(
             "first_index", "second_index", "center_distance_m", "appearance_similarity",
             "context_similarity", "shape_similarity", "size_similarity", "proximity_similarity",
             "first_anomaly_id", "second_anomaly_id", "first_geometry", "second_geometry",
+            "manual_review_status", "manual_keep_index",
         }
         return {
             "ok": True,

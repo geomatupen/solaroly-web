@@ -233,7 +233,6 @@
       const qualifies = score != null && score >= config.threshold;
       const edgeKey = `${Math.min(pair.first_index, pair.second_index)}:${Math.max(pair.first_index, pair.second_index)}`;
       card.classList.toggle("isDuplicate", manualMode ? manualDuplicateDecisions.has(edgeKey) : qualifies);
-      card.querySelector(".postprocessManualPairControls")?.toggleAttribute("hidden", !manualMode);
       const scoreLabel = card.querySelector(".postprocessVisualSimilarity");
       if (scoreLabel) scoreLabel.textContent = score == null ? "Not compared" : `${Math.round(score)}% duplicate`;
     }
@@ -255,27 +254,139 @@
     const card = byId("ppVisualReviewPairs").querySelector(`[data-pair-index="${pairIndex}"]`);
     if (!card) return;
     const decision = manualDuplicateDecisions.get(comparisonEdgeKey(pair));
-    const mark = card.querySelector('[data-role="manual-duplicate"]');
     const keep = card.querySelector('[data-role="manual-keep"]');
-    if (mark) mark.checked = Boolean(decision);
     if (keep) {
       keep.value = String(decision?.keep_index ?? pair.first_index);
       keep.disabled = !decision;
     }
+    const status = pair.manual_review_status || "unreviewed";
+    card.classList.toggle("isRejected", status === "rejected");
+    for (const button of card.querySelectorAll("[data-decision]")) {
+      button.classList.toggle("isActive", button.dataset.decision === status);
+      button.setAttribute("aria-pressed", String(button.dataset.decision === status));
+    }
+    applyComparisonFilter();
   }
 
-  function saveManualPairDecision(pair, pairIndex, marked, keepIndex) {
+  function setLocalPairDecision(pair, status, keepIndex) {
     const edgeKey = comparisonEdgeKey(pair);
-    if (marked) {
+    pair.manual_review_status = status === "unreviewed" ? undefined : status;
+    if (status === "accepted") {
+      pair.manual_keep_index = Number(keepIndex);
       manualDuplicateDecisions.set(edgeKey, {
         first_index: Number(pair.first_index),
         second_index: Number(pair.second_index),
         keep_index: Number(keepIndex),
       });
-    } else manualDuplicateDecisions.delete(edgeKey);
+    } else {
+      delete pair.manual_keep_index;
+      manualDuplicateDecisions.delete(edgeKey);
+    }
+  }
+
+  function switchToManualReview() {
+    const mode = byId("ppDeduplicationMode");
+    if (mode.value !== "manual") mode.value = "manual";
+  }
+
+  async function saveManualPairDecision(pair, pairIndex, status, keepIndex) {
+    const previousStatus = pair.manual_review_status || "unreviewed";
+    const previousKeep = pair.manual_keep_index;
+    switchToManualReview();
+    setLocalPairDecision(pair, status, keepIndex);
+    api()?.updateAnomalyReviewPairDecision(
+      pair.first_index,
+      pair.second_index,
+      mapReviewPair(pair).review_status,
+    );
     syncPairCardDecision(pair, pairIndex);
     const workflow = currentAnomalyWorkflow();
     if (workflow) updateThresholdEffect(workflow);
+    try {
+      const context = api()?.getContext();
+      await api()?.requestJson(
+        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/visual-review/decision`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            first_index: Number(pair.first_index),
+            second_index: Number(pair.second_index),
+            status,
+            keep_index: status === "accepted" ? Number(keepIndex) : null,
+          }),
+        },
+      );
+    } catch (error) {
+      setLocalPairDecision(pair, previousStatus, previousKeep ?? pair.first_index);
+      api()?.updateAnomalyReviewPairDecision(
+        pair.first_index,
+        pair.second_index,
+        mapReviewPair(pair).review_status,
+      );
+      syncPairCardDecision(pair, pairIndex);
+      if (workflow) updateThresholdEffect(workflow);
+      api()?.setMessage(`Could not save the comparison decision: ${error.message}`, "err");
+    }
+  }
+
+  function pairMatchesFilter(pair, filter = byId("ppVisualComparisonFilter")?.value || "active") {
+    const status = pair.manual_review_status || "unreviewed";
+    if (filter === "all") return true;
+    if (filter === "active") return status !== "rejected";
+    return status === filter;
+  }
+
+  function applyComparisonFilter() {
+    const pairs = comparisonPairs(currentAnomalyWorkflow());
+    const filter = byId("ppVisualComparisonFilter")?.value || "active";
+    let visible = 0;
+    for (const card of byId("ppVisualReviewPairs")?.querySelectorAll(".postprocessVisualPair") || []) {
+      const show = pairMatchesFilter(pairs[Number(card.dataset.pairIndex)], filter);
+      card.classList.toggle("isFilteredOut", !show);
+      if (show) visible += 1;
+    }
+    const empty = byId("ppVisualReviewPairs")?.querySelector(".postprocessComparisonFilterEmpty");
+    if (empty) empty.hidden = visible > 0;
+  }
+
+  function buildPairDecisionControls(pair, pairIndex, detailed = false) {
+    const controls = document.createElement("div");
+    controls.className = `postprocessManualPairControls${detailed ? " postprocessComparisonManualControls" : ""}`;
+    const buttons = document.createElement("div");
+    buttons.className = "postprocessPairDecisionButtons";
+    const keep = document.createElement("select");
+    keep.dataset.role = "manual-keep";
+    addOption(keep, String(pair.first_index), `Keep left · ${pair.first_image || Number(pair.first_index) + 1}`);
+    addOption(keep, String(pair.second_index), `Keep right · ${pair.second_image || Number(pair.second_index) + 1}`);
+    keep.value = String(pair.manual_keep_index ?? pair.first_index);
+    keep.disabled = pair.manual_review_status !== "accepted";
+    for (const [status, symbol, title] of [
+      ["accepted", "✓", "Accept duplicate"],
+      ["rejected", "×", "Reject duplicate"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary postprocessPairDecisionButton";
+      button.dataset.decision = status;
+      button.textContent = symbol;
+      button.title = pair.manual_review_status === status ? `Undo ${title.toLowerCase()}` : title;
+      button.setAttribute("aria-label", button.title);
+      button.setAttribute("aria-pressed", String(pair.manual_review_status === status));
+      button.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const nextStatus = pair.manual_review_status === status ? "unreviewed" : status;
+        void saveManualPairDecision(pair, pairIndex, nextStatus, keep.value);
+      };
+      buttons.appendChild(button);
+    }
+    keep.onchange = event => {
+      event.stopPropagation();
+      void saveManualPairDecision(pair, pairIndex, "accepted", keep.value);
+    };
+    controls.append(buttons, keep);
+    return controls;
   }
 
   function mapReviewPair(pair) {
@@ -285,7 +396,7 @@
     return {
       ...pair,
       display_score: score,
-      review_status: qualifies ? "duplicate" : "below",
+      review_status: pair.manual_review_status || (qualifies ? "duplicate" : "below"),
     };
   }
 
@@ -317,6 +428,8 @@
     byId("ppVisualComparisonsTitle").textContent = "Image comparisons";
     const loadMore = byId("ppVisualComparisonsLoadMore");
     loadMore.hidden = loadedComparisonPairs.length >= loadedComparisonTotal;
+    byId("ppVisualComparisonFilterWrap").hidden = false;
+    applyComparisonFilter();
   }
 
   function focusBoxScale(box) {
@@ -389,6 +502,7 @@
     byId("ppVisualReviewPairs").hidden = true;
     byId("ppVisualComparisonDetail").hidden = false;
     byId("ppVisualComparisonsLoadMore").hidden = true;
+    byId("ppVisualComparisonFilterWrap").hidden = true;
     byId("ppVisualComparisonsTitle").textContent = "Full-image comparison";
     byId("ppVisualComparisonPosition").textContent = `Comparison ${(pairIndex + 1).toLocaleString()} of ${loadedComparisonTotal.toLocaleString()}`;
     byId("ppVisualComparisonPrevious").disabled = pairIndex <= 0;
@@ -458,29 +572,7 @@
       : `${score == null ? "No duplicate score" : `${Math.round(score)}% duplicate`} · Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
     details.appendChild(metrics);
 
-    const manualControls = document.createElement("div");
-    manualControls.className = "postprocessManualPairControls postprocessComparisonManualControls";
-    manualControls.hidden = byId("ppDeduplicationMode").value !== "manual";
-    const decision = manualDuplicateDecisions.get(comparisonEdgeKey(pair));
-    const markLabel = document.createElement("label");
-    const mark = document.createElement("input");
-    mark.type = "checkbox";
-    mark.checked = Boolean(decision);
-    mark.disabled = !(pair.first_image_url || pair.first_crop_url) || !(pair.second_image_url || pair.second_crop_url);
-    markLabel.append(mark, document.createTextNode("Mark as duplicate"));
-    const keep = document.createElement("select");
-    addOption(keep, String(pair.first_index), `Keep left · ${pair.first_image || Number(pair.first_index) + 1}`);
-    addOption(keep, String(pair.second_index), `Keep right · ${pair.second_image || Number(pair.second_index) + 1}`);
-    keep.value = String(decision?.keep_index ?? pair.first_index);
-    keep.disabled = !mark.checked || mark.disabled;
-    const persist = () => {
-      keep.disabled = !mark.checked || mark.disabled;
-      saveManualPairDecision(pair, pairIndex, mark.checked, keep.value);
-    };
-    mark.onchange = persist;
-    keep.onchange = persist;
-    manualControls.append(markLabel, keep);
-    details.appendChild(manualControls);
+    details.appendChild(buildPairDecisionControls(pair, pairIndex, true));
     viewComparisonOnMap(pairIndex);
   }
 
@@ -567,6 +659,11 @@
     pairsHost.replaceChildren();
     const pairs = comparisonPairs(workflow);
     for (const [pairIndex, pair] of pairs.entries()) {
+      if (pair.manual_review_status === "accepted") {
+        setLocalPairDecision(pair, "accepted", pair.manual_keep_index ?? pair.first_index);
+      } else if (pair.manual_review_status === "rejected") {
+        setLocalPairDecision(pair, "rejected", pair.first_index);
+      }
       const card = document.createElement("article");
       card.className = "postprocessVisualPair";
       card.dataset.pairIndex = String(pairIndex);
@@ -614,31 +711,7 @@
       components.textContent = pair.appearance_similarity == null
         ? "Component scores unavailable"
         : `Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
-      const manualControls = document.createElement("div");
-      manualControls.className = "postprocessManualPairControls";
-      const edgeKey = `${Math.min(pair.first_index, pair.second_index)}:${Math.max(pair.first_index, pair.second_index)}`;
-      const existingDecision = manualDuplicateDecisions.get(edgeKey);
-      const markLabel = document.createElement("label");
-      const mark = document.createElement("input");
-      mark.type = "checkbox";
-      mark.dataset.role = "manual-duplicate";
-      mark.checked = Boolean(existingDecision);
-      mark.disabled = !(pair.first_image_url || pair.first_crop_url) || !(pair.second_image_url || pair.second_crop_url);
-      if (mark.disabled) mark.title = "Both source images are required for manual duplicate selection.";
-      markLabel.append(mark, document.createTextNode("Duplicate"));
-      const keep = document.createElement("select");
-      keep.dataset.role = "manual-keep";
-      addOption(keep, String(pair.first_index), `Keep left · ${Number(pair.first_index) + 1}`);
-      addOption(keep, String(pair.second_index), `Keep right · ${Number(pair.second_index) + 1}`);
-      keep.value = String(existingDecision?.keep_index ?? pair.first_index);
-      keep.disabled = !mark.checked || mark.disabled;
-      const saveManualDecision = () => {
-        keep.disabled = !mark.checked || mark.disabled;
-        saveManualPairDecision(pair, pairIndex, mark.checked, keep.value);
-      };
-      mark.addEventListener("change", saveManualDecision);
-      keep.addEventListener("change", saveManualDecision);
-      manualControls.append(markLabel, keep);
+      const manualControls = buildPairDecisionControls(pair, pairIndex);
       card.append(images, meta, components, manualControls);
       card.onclick = event => {
         if (!manualControls.contains(event.target)) renderComparisonDetail(pairIndex);
@@ -650,7 +723,13 @@
         }
       };
       pairsHost.appendChild(card);
+      syncPairCardDecision(pair, pairIndex);
     }
+    const filterEmpty = document.createElement("p");
+    filterEmpty.className = "muted tiny postprocessComparisonFilterEmpty";
+    filterEmpty.textContent = "No comparisons match this filter.";
+    filterEmpty.hidden = true;
+    pairsHost.appendChild(filterEmpty);
     const totalPairs = loadedComparisonTotal || Number(review.total_pairs || 0);
     if (totalPairs > pairs.length) {
       const note = document.createElement("p");
@@ -665,6 +744,7 @@
     loadMore.hidden = pairs.length >= totalPairs;
     loadMore.disabled = false;
     updateThresholdEffect(workflow);
+    applyComparisonFilter();
     if (activeComparisonIndex != null) renderComparisonDetail(activeComparisonIndex);
   }
 
@@ -743,6 +823,15 @@
       loadedComparisonPairs = offset === 0
         ? (payload.pairs || [])
         : [...loadedComparisonPairs, ...(payload.pairs || [])];
+      for (const pair of payload.pairs || []) {
+        if (pair.manual_review_status === "accepted") {
+          switchToManualReview();
+          setLocalPairDecision(pair, "accepted", pair.manual_keep_index ?? pair.first_index);
+        } else if (pair.manual_review_status === "rejected") {
+          switchToManualReview();
+          setLocalPairDecision(pair, "rejected", pair.first_index);
+        }
+      }
       loadedComparisonTotal = Number(payload.total_pairs || loadedComparisonPairs.length);
       const workflow = current.workflows.find(item => item.id === workflowId && item.workflow_kind === "anomaly");
       if (workflow) {
@@ -1174,6 +1263,7 @@
     });
     byId("ppVisualComparisonsBackToSteps")?.addEventListener("click", closeComparisonsWorkspace);
     byId("ppVisualComparisonsLoadMore")?.addEventListener("click", () => void loadComparisonPage(false));
+    byId("ppVisualComparisonFilter")?.addEventListener("change", applyComparisonFilter);
     byId("ppVisualComparisonBack").onclick = showComparisonGrid;
     byId("ppVisualComparisonPrevious").onclick = () => void navigateComparison(-1);
     byId("ppVisualComparisonNext").onclick = () => void navigateComparison(1);

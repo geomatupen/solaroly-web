@@ -7,9 +7,71 @@ from pathlib import Path
 from pvrt.web.postprocess import create_postprocess_router
 from pvrt.web.postprocess import EditLayerRequest
 from pvrt.web.postprocess import EditSourceRequest
+from pvrt.web.postprocess import VisualReviewDecisionRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_visual_review_decisions_are_persisted_and_restorable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            workflow_dir = sessions / "test-result" / "postprocess" / "anomaly-review"
+            workflow_dir.mkdir(parents=True)
+            overlays.mkdir()
+            review_path = workflow_dir / "visual_review.json"
+            review_path.write_text(json.dumps({
+                "pairs": [{"first_index": 2, "second_index": 5}],
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}/visual-review/decision"
+                and "PATCH" in item.methods
+            )
+            asyncio.run(route.endpoint(
+                "test-result",
+                "anomaly-review",
+                VisualReviewDecisionRequest(
+                    first_index=2,
+                    second_index=5,
+                    status="rejected",
+                ),
+            ))
+            rejected = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][0]
+            self.assertEqual(rejected["manual_review_status"], "rejected")
+
+            asyncio.run(route.endpoint(
+                "test-result",
+                "anomaly-review",
+                VisualReviewDecisionRequest(
+                    first_index=2,
+                    second_index=5,
+                    status="accepted",
+                    keep_index=5,
+                ),
+            ))
+            accepted = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][0]
+            self.assertEqual(accepted["manual_review_status"], "accepted")
+            self.assertEqual(accepted["manual_keep_index"], 5)
+
+            asyncio.run(route.endpoint(
+                "test-result",
+                "anomaly-review",
+                VisualReviewDecisionRequest(
+                    first_index=2,
+                    second_index=5,
+                    status="unreviewed",
+                ),
+            ))
+            restored = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][0]
+            self.assertNotIn("manual_review_status", restored)
+            self.assertNotIn("manual_keep_index", restored)
+
     def test_saved_visual_review_is_recovered_after_status_reload(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
