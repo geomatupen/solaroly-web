@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260829a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260829i" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260829j" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -724,10 +724,12 @@
               <div>
                 <h3 id="ppVisualComparisonsTitle">Image comparisons</h3>
                 <p id="ppVisualComparisonsSummary" class="muted tiny"></p>
+                <p id="ppVisualComparisonDecisionCounts" class="muted tiny postprocessComparisonDecisionCounts">Loading decision counts…</p>
               </div>
               <div id="ppVisualComparisonFilterWrap" class="postprocessComparisonFilter">
                 <button id="ppVisualComparisonFilterButton" class="secondary tiny postprocessIconButton" type="button" title="Filter comparisons: Active" aria-label="Filter image comparisons" aria-expanded="false" aria-controls="ppVisualComparisonFilterMenu">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+                  <span id="ppVisualComparisonFilterBadge" class="postprocessComparisonFilterBadge" hidden></span>
                 </button>
                 <select id="ppVisualComparisonFilter" hidden aria-hidden="true" tabindex="-1">
                   <option value="active">Active</option>
@@ -1643,7 +1645,7 @@
   <script src="js/main.js?v=20260829a"></script>
   <script src="js/postprocess.js?v=20260829s"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260829v"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829w"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

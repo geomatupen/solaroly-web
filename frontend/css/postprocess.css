@@ -1419,6 +1419,14 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   margin-left: auto;
 }
 .postprocessComparisonFilter > select[hidden] { display: none; }
+.postprocessComparisonFilter > .postprocessIconButton {
+  position: relative;
+}
+.postprocessComparisonFilter > .postprocessIconButton.isFiltered {
+  color: var(--accent, #2b87ff);
+  border-color: currentColor;
+  background: rgba(43, 135, 255, .14);
+}
 .postprocessComparisonFilter > .postprocessIconButton svg {
   width: 16px;
   height: 16px;
@@ -1427,6 +1435,26 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   stroke-width: 2;
   stroke-linecap: round;
 }
+.postprocessComparisonFilterBadge {
+  position: absolute;
+  top: -7px;
+  right: -8px;
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--surface, #0b1117);
+  border-radius: 999px;
+  color: #fff;
+  background: var(--accent, #2b87ff);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+.postprocessComparisonFilterBadge[hidden] { display: none; }
 .postprocessComparisonFilterMenu {
   position: absolute;
   z-index: 1200;
@@ -1467,6 +1495,9 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessComparisonWorkspaceHeader h3,
 .postprocessComparisonWorkspaceHeader p { margin: 0; }
 .postprocessComparisonWorkspaceHeader p { margin-top: 4px; }
+.postprocessComparisonWorkspaceHeader .postprocessComparisonDecisionCounts {
+  color: var(--text, #e8eef5);
+}
 .postprocessVisualComparisonDetail[hidden] { display: none; }
 .postprocessComparisonDetailToolbar {
   display: flex;

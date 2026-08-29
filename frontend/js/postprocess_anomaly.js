@@ -35,6 +35,8 @@
   const manualDuplicateDecisions = new Map();
   let loadedComparisonPairs = [];
   let loadedComparisonTotal = 0;
+  let loadedComparisonDecisionCounts = { accepted: 0, rejected: 0, unreviewed: 0 };
+  let loadedComparisonDecisionCountsReady = false;
   let loadedComparisonWorkflowId = "";
   let activeComparisonIndex = null;
   let comparisonImageZoom = 1;
@@ -379,6 +381,7 @@
           }),
         },
       );
+      adjustComparisonDecisionCounts(previousStatus, status);
       return true;
     } catch (error) {
       setLocalPairDecision(pair, previousStatus, previousKeep ?? pair.first_index);
@@ -400,6 +403,54 @@
     if (filter === "all") return true;
     if (filter === "active") return status !== "rejected";
     return status === filter;
+  }
+
+  function decisionCountKey(status) {
+    return status === "accepted" || status === "rejected" ? status : "unreviewed";
+  }
+
+  function renderComparisonDecisionCounts() {
+    const summary = byId("ppVisualComparisonDecisionCounts");
+    const button = byId("ppVisualComparisonFilterButton");
+    const badge = byId("ppVisualComparisonFilterBadge");
+    const select = byId("ppVisualComparisonFilter");
+    if (!summary || !button || !badge || !select) return;
+    if (!loadedComparisonDecisionCountsReady) {
+      summary.textContent = "Loading accepted, rejected, and unreviewed counts…";
+      button.classList.remove("isFiltered");
+      badge.hidden = true;
+      return;
+    }
+    const counts = loadedComparisonDecisionCounts;
+    summary.textContent = `Accepted ${counts.accepted.toLocaleString()} · Rejected ${counts.rejected.toLocaleString()} · Unreviewed ${counts.unreviewed.toLocaleString()}`;
+    const filter = select.value || "active";
+    const visibleCount = filter === "all"
+      ? counts.accepted + counts.rejected + counts.unreviewed
+      : filter === "active"
+        ? counts.accepted + counts.unreviewed
+        : counts[filter] || 0;
+    const label = select.selectedOptions[0]?.textContent || "Active";
+    const filtered = filter !== "all";
+    button.classList.toggle("isFiltered", filtered);
+    badge.hidden = !filtered;
+    badge.textContent = visibleCount > 999 ? "999+" : String(visibleCount);
+    button.title = filtered
+      ? `Filter applied: ${label} (${visibleCount.toLocaleString()})`
+      : `Filter comparisons: ${label}`;
+    button.setAttribute("aria-label", button.title);
+  }
+
+  function adjustComparisonDecisionCounts(previousStatus, nextStatus) {
+    if (!loadedComparisonDecisionCountsReady) return;
+    const previousKey = decisionCountKey(previousStatus);
+    const nextKey = decisionCountKey(nextStatus);
+    if (previousKey === nextKey) return;
+    loadedComparisonDecisionCounts[previousKey] = Math.max(
+      0,
+      loadedComparisonDecisionCounts[previousKey] - 1,
+    );
+    loadedComparisonDecisionCounts[nextKey] += 1;
+    renderComparisonDecisionCounts();
   }
 
   function previousComparisonIndex(pairIndex) {
@@ -436,6 +487,7 @@
     }
     const empty = byId("ppVisualReviewPairs")?.querySelector(".postprocessComparisonFilterEmpty");
     if (empty) empty.hidden = visible > 0;
+    renderComparisonDecisionCounts();
   }
 
   function setComparisonFilter(value) {
@@ -444,8 +496,6 @@
     const button = byId("ppVisualComparisonFilterButton");
     if (!select || !menu || !button) return;
     select.value = value;
-    const label = select.selectedOptions[0]?.textContent || "Active";
-    button.title = `Filter comparisons: ${label}`;
     for (const option of menu.querySelectorAll("[data-comparison-filter]")) {
       const active = option.dataset.comparisonFilter === value;
       option.classList.toggle("isActive", active);
@@ -777,6 +827,8 @@
       loadedScoringWorkflowId = workflow.id;
       loadedComparisonPairs = [];
       loadedComparisonTotal = Math.max(savedTotal, workflow.visual_review?.pairs?.length || 0);
+      loadedComparisonDecisionCounts = { accepted: 0, rejected: 0, unreviewed: 0 };
+      loadedComparisonDecisionCountsReady = false;
       loadedComparisonWorkflowId = workflow.id;
       const saved = workflow.scoring_parameters || {};
       const fields = {
@@ -992,6 +1044,13 @@
       byId("ppVisualReviewPairs").removeAttribute("aria-busy");
       byId("ppComparisonDecisionsLoading").hidden = true;
       loadedComparisonTotal = Number(payload.total_pairs || loadedComparisonPairs.length);
+      const payloadCounts = payload.decision_counts || {};
+      loadedComparisonDecisionCounts = {
+        accepted: Number(payloadCounts.accepted || 0),
+        rejected: Number(payloadCounts.rejected || 0),
+        unreviewed: Number(payloadCounts.unreviewed || 0),
+      };
+      loadedComparisonDecisionCountsReady = true;
       const workflow = current.workflows.find(item => item.id === workflowId && item.workflow_kind === "anomaly");
       if (workflow) {
         workflow.visual_review = {
@@ -1284,6 +1343,8 @@
     workspace.setMessage("Starting anomaly deduplication…");
     loadedComparisonPairs = [];
     loadedComparisonTotal = 0;
+    loadedComparisonDecisionCounts = { accepted: 0, rejected: 0, unreviewed: 0 };
+    loadedComparisonDecisionCountsReady = false;
     loadedComparisonWorkflowId = context.workflowId || "";
     activeComparisonIndex = null;
     manualDuplicateDecisions.clear();
@@ -1554,6 +1615,8 @@
       manualDuplicateDecisions.clear();
       loadedComparisonPairs = [];
       loadedComparisonTotal = 0;
+      loadedComparisonDecisionCounts = { accepted: 0, rejected: 0, unreviewed: 0 };
+      loadedComparisonDecisionCountsReady = false;
       loadedComparisonWorkflowId = "";
       activeComparisonIndex = null;
       anomalyStepPhase = null;

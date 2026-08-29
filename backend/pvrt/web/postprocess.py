@@ -1167,6 +1167,11 @@ def create_postprocess_router(
         except (OSError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
         all_pairs = review.get("pairs") or []
+        decision_counts = {"accepted": 0, "rejected": 0, "unreviewed": 0}
+        for pair in all_pairs:
+            status = pair.get("manual_review_status")
+            key = status if status in {"accepted", "rejected"} else "unreviewed"
+            decision_counts[key] += 1
         pairs = []
         for pair in all_pairs[offset:offset + limit]:
             item = dict(pair)
@@ -1186,6 +1191,7 @@ def create_postprocess_router(
             "offset": offset,
             "limit": limit,
             "total_pairs": len(all_pairs),
+            "decision_counts": decision_counts,
             "has_more": offset + len(pairs) < len(all_pairs),
         }
 
