@@ -868,15 +868,20 @@
   }
 
   function anomalyReviewFeature(pair, side, sourceFeatures = anomalySourceFeatures()) {
+    const source = sourceFeatures[Number(pair?.[`${side}_index`])];
     const geometry = pair?.[`${side}_geometry`];
     if (geometry) {
       return {
         type: "Feature",
         geometry,
-        properties: { anomaly_id: pair?.[`${side}_anomaly_id`] },
+        properties: {
+          ...(source?.properties || {}),
+          anomaly_id: pair?.[`${side}_anomaly_id`],
+          ...(pair?.[`${side}_image`] ? { image: pair[`${side}_image`] } : {}),
+        },
       };
     }
-    return sourceFeatures[Number(pair?.[`${side}_index`])];
+    return source;
   }
 
   function clearAnomalyReviewMap() {
@@ -890,7 +895,6 @@
     state.anomalyReviewPairs = [];
     state.anomalyReviewSelectedIndex = null;
     byId("ppAnomalyMapReview").hidden = true;
-    byId("ppShowAllAnomalyPairs").checked = false;
     byId("ppAnomalyMapPairFilter").value = "active";
   }
 
@@ -908,7 +912,6 @@
       state.map.removeLayer(state.anomalyReviewAllLayer);
     }
     state.anomalyReviewAllLayer = null;
-    if (!byId("ppShowAllAnomalyPairs").checked) return;
     const features = anomalySourceFeatures();
     const group = window.L.layerGroup();
     const featureStyles = new Map();
@@ -961,7 +964,7 @@
     state.anomalyReviewSelectedLayer?.bringToFront?.();
   }
 
-  function showAnomalyReviewPair(pairs, selectedIndex = 0, showAll = false) {
+  function showAnomalyReviewPair(pairs, selectedIndex = 0) {
     const map = ensurePreviewMap();
     const features = anomalySourceFeatures();
     const pair = pairs?.[selectedIndex];
@@ -972,7 +975,9 @@
     if (state.anomalyReviewSelectedLayer && map.hasLayer(state.anomalyReviewSelectedLayer)) {
       map.removeLayer(state.anomalyReviewSelectedLayer);
     }
-    state.anomalyReviewPairs = pairs.slice();
+    if (!state.anomalyReviewPairs.length || pairs.length >= state.anomalyReviewPairs.length) {
+      state.anomalyReviewPairs = pairs.slice();
+    }
     state.anomalyReviewSelectedIndex = selectedIndex;
     const first = anomalyReviewFeature(pair, "first", features);
     const second = anomalyReviewFeature(pair, "second", features);
@@ -980,24 +985,39 @@
       setMessage("This comparison no longer matches the loaded anomaly source ordering.", "err");
       return false;
     }
-    byId("ppShowAllAnomalyPairs").checked = Boolean(showAll);
     renderAllAnomalyReviewPairs();
     const selected = window.L.featureGroup();
     const firstLayer = window.L.geoJSON(first, {
       pane: "ppAnomalyReviewPane",
       renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
       style: { color: "#22d3ee", weight: 4, opacity: 1, fillColor: "#22d3ee", fillOpacity: 0.22 },
+      onEachFeature: (feature, layer) => {
+        layer.on("click", event => {
+          window.L.popup({ className: "postprocessPolygonPopup", maxWidth: 340, maxHeight: 210 })
+            .setLatLng(event.latlng)
+            .setContent(polygonPopupContent(feature, "Left anomaly"))
+            .openOn(state.map);
+        });
+      },
     }).bindTooltip(`Left anomaly · ID ${pair.first_anomaly_id ?? Number(pair.first_index) + 1}`, { sticky: true });
     const secondLayer = window.L.geoJSON(second, {
       pane: "ppAnomalyReviewPane",
       renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
       style: { color: "#e879f9", weight: 4, opacity: 1, fillColor: "#e879f9", fillOpacity: 0.22 },
+      onEachFeature: (feature, layer) => {
+        layer.on("click", event => {
+          window.L.popup({ className: "postprocessPolygonPopup", maxWidth: 340, maxHeight: 210 })
+            .setLatLng(event.latlng)
+            .setContent(polygonPopupContent(feature, "Right anomaly"))
+            .openOn(state.map);
+        });
+      },
     }).bindTooltip(`Right anomaly · ID ${pair.second_anomaly_id ?? Number(pair.second_index) + 1}`, { sticky: true });
     firstLayer.addTo(selected);
     secondLayer.addTo(selected);
     const centers = [geoJsonFeatureCenter(first), geoJsonFeatureCenter(second)].filter(Boolean);
     if (centers.length === 2) {
-      window.L.polyline(centers, { pane: "ppAnomalyReviewPane", color: "#ffffff", weight: 2.5, dashArray: "7 6", opacity: 0.95 }).addTo(selected);
+      window.L.polyline(centers, { pane: "ppAnomalyReviewPane", interactive: false, color: "#ffffff", weight: 2.5, dashArray: "7 6", opacity: 0.95 }).addTo(selected);
     }
     selected.addTo(map);
     state.anomalyReviewSelectedLayer = selected;
@@ -1351,21 +1371,25 @@
     return null;
   }
 
-  async function ensureLinkedImagesLoaded() {
-    const item = [...state.referenceLayers.values()].find(candidate => candidate.loader && candidate.imageLayers);
-    if (!item) return;
-    if (item.loaded) return;
-    if (!item.loadingPromise) {
-      item.loadingPromise = Promise.resolve(item.loader(item)).then(() => {
-        item.loaded = true;
-        renderReferenceLayers();
-      }).finally(() => {
-        item.loading = false;
-        item.loadingPromise = null;
-      });
+  async function ensureLinkedImagesLoaded(feature) {
+    if (linkedImageRecordForFeature(feature)) return;
+    for (const item of state.referenceLayers.values()) {
+      if (!item.loader || !item.imageLayers) continue;
+      if (!item.loaded) {
+        if (!item.loadingPromise) {
+          item.loadingPromise = Promise.resolve(item.loader(item)).then(() => {
+            item.loaded = true;
+            renderReferenceLayers();
+          }).finally(() => {
+            item.loading = false;
+            item.loadingPromise = null;
+          });
+        }
+        item.loading = true;
+        await item.loadingPromise;
+      }
+      if (linkedImageRecordForFeature(feature)) return;
     }
-    item.loading = true;
-    await item.loadingPromise;
   }
 
   function linkedImageIsVisible(match) {
@@ -1377,7 +1401,7 @@
     button.disabled = true;
     button.textContent = "Loading image…";
     try {
-      await ensureLinkedImagesLoaded();
+      await ensureLinkedImagesLoaded(feature);
       const match = linkedImageRecordForFeature(feature);
       if (!match) throw new Error("No linked source image was found for this anomaly.");
       let image = match.item.imageLayers.get(match.record.imageUrl);
@@ -1494,8 +1518,9 @@
     };
     if (item.loader) {
       labeled.loader = async () => {
-        await item.loader();
-        labeled.loaded = item.loaded;
+        if (!item.loaded) await item.loader();
+        item.loaded = true;
+        labeled.loaded = true;
         labeled.loading = item.loading;
         labeled.detail = item.detail;
         labeled.bounds = item.bounds;
@@ -3412,12 +3437,6 @@
     });
     byId("ppFitLayers").addEventListener("click", fitVisibleLayers);
     byId("ppFullscreen").addEventListener("click", togglePreviewFullscreen);
-    byId("ppShowAllAnomalyPairs").addEventListener("change", event => {
-      renderAllAnomalyReviewPairs();
-      if (event.target.checked) {
-        document.dispatchEvent(new CustomEvent("postprocess:request-all-anomaly-pairs"));
-      }
-    });
     byId("ppAnomalyMapPairFilter").addEventListener("change", renderAllAnomalyReviewPairs);
     byId("ppReturnToComparison").addEventListener("click", () => {
       document.dispatchEvent(new CustomEvent("postprocess:return-comparisons", {
@@ -4393,6 +4412,7 @@
     showAnomalyReviewPair,
     updateAnomalyReviewPairs,
     updateAnomalyReviewPairDecision,
+    clearAnomalyReviewMap,
     whenProcessingLayersReady,
     setMessage,
     setMode,

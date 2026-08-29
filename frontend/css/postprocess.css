@@ -472,7 +472,7 @@
   right: 12px;
   display: grid;
   width: min(360px, calc(100% - 84px));
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 10px;
@@ -493,14 +493,6 @@
   margin-top: 2px;
   line-height: 1.35;
 }
-.postprocessMapPairToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
 .postprocessPreview.postprocessFullscreen,
 .postprocessPreview:fullscreen {
   position: fixed;

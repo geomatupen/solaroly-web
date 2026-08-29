@@ -35,6 +35,8 @@
   let loadedComparisonPairs = [];
   let loadedComparisonTotal = 0;
   let loadedComparisonWorkflowId = "";
+  let loadedComparisonMapPairs = [];
+  let loadedComparisonMapWorkflowId = "";
   let activeComparisonIndex = null;
   let comparisonImageZoom = 1;
   let anomalyStepPhase = null;
@@ -135,6 +137,7 @@
     byId("ppVisualComparisonsWorkspace").hidden = true;
     byId("ppAnomalyControls").querySelector(".postprocessSteps").hidden = false;
     showComparisonGrid();
+    api()?.clearAnomalyReviewMap();
   }
 
   function openComparisonsWorkspaceLoading() {
@@ -292,6 +295,16 @@
     }
   }
 
+  function syncCachedMapPairDecision(pair) {
+    const edgeKey = comparisonEdgeKey(pair);
+    const cached = loadedComparisonMapPairs.find(candidate => comparisonEdgeKey(candidate) === edgeKey);
+    if (!cached) return;
+    if (pair.manual_review_status) cached.manual_review_status = pair.manual_review_status;
+    else delete cached.manual_review_status;
+    if (pair.manual_keep_index != null) cached.manual_keep_index = pair.manual_keep_index;
+    else delete cached.manual_keep_index;
+  }
+
   function switchToManualReview() {
     const mode = byId("ppDeduplicationMode");
     if (mode.value !== "manual") mode.value = "manual";
@@ -302,6 +315,7 @@
     const previousKeep = pair.manual_keep_index;
     switchToManualReview();
     setLocalPairDecision(pair, status, keepIndex);
+    syncCachedMapPairDecision(pair);
     api()?.updateAnomalyReviewPairDecision(
       pair.first_index,
       pair.second_index,
@@ -328,6 +342,7 @@
       return true;
     } catch (error) {
       setLocalPairDecision(pair, previousStatus, previousKeep ?? pair.first_index);
+      syncCachedMapPairDecision(pair);
       api()?.updateAnomalyReviewPairDecision(
         pair.first_index,
         pair.second_index,
@@ -449,19 +464,26 @@
   function viewComparisonOnMap(pairIndex) {
     const workflow = currentAnomalyWorkflow();
     const pairs = comparisonPairs(workflow).map(mapReviewPair);
-    api()?.showAnomalyReviewPair(pairs, pairIndex, false);
+    api()?.showAnomalyReviewPair(pairs, pairIndex);
+    void loadAllComparisonMapPairs();
   }
 
   async function loadAllComparisonMapPairs() {
     const workspace = api();
     const context = workspace?.getContext();
     if (!context?.resultId || !context.workflowId) return;
+    if (loadedComparisonMapWorkflowId === context.workflowId && loadedComparisonMapPairs.length) {
+      workspace.updateAnomalyReviewPairs(loadedComparisonMapPairs.map(mapReviewPair));
+      return;
+    }
     try {
       const payload = await workspace.requestJson(
         `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/visual-review-map`,
         { cache: "no-store" },
       );
-      workspace.updateAnomalyReviewPairs((payload.pairs || []).map(mapReviewPair));
+      loadedComparisonMapWorkflowId = context.workflowId;
+      loadedComparisonMapPairs = payload.pairs || [];
+      workspace.updateAnomalyReviewPairs(loadedComparisonMapPairs.map(mapReviewPair));
     } catch (error) {
       workspace.setMessage(`Could not show all duplicate candidates on the map: ${error.message}`, "err");
     }
@@ -1336,7 +1358,10 @@
       button?.setAttribute("aria-expanded", "false");
     });
     setComparisonFilter("active");
-    byId("ppVisualComparisonBack").onclick = showComparisonGrid;
+    byId("ppVisualComparisonBack").onclick = () => {
+      showComparisonGrid();
+      api()?.clearAnomalyReviewMap();
+    };
     byId("ppVisualComparisonPrevious").onclick = () => void navigateComparison(-1);
     byId("ppVisualComparisonNext").onclick = () => void navigateComparison(1);
     byId("ppVisualComparisonZoomOut").onclick = () => setComparisonImageZoom(comparisonImageZoom - 0.5);
@@ -1425,10 +1450,11 @@
       loadedComparisonPairs = [];
       loadedComparisonTotal = 0;
       loadedComparisonWorkflowId = "";
+      loadedComparisonMapPairs = [];
+      loadedComparisonMapWorkflowId = "";
       activeComparisonIndex = null;
       anomalyStepPhase = null;
     });
-    document.addEventListener("postprocess:request-all-anomaly-pairs", () => void loadAllComparisonMapPairs());
     document.addEventListener("postprocess:return-comparisons", event => {
       const pairIndex = Number(event.detail?.pairIndex);
       showComparisonsWorkspace();
