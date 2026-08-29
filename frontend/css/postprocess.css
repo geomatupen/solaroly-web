@@ -1231,6 +1231,20 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   font-size: 11px;
   color: var(--muted);
 }
+.postprocessVisualPairIds {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.postprocessVisualPairIds span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .postprocessVisualPairMeta {
   display: flex;
   justify-content: space-between;
@@ -1249,6 +1263,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessManualPairControls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
   padding-top: 9px;
@@ -1293,6 +1308,14 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   min-width: 0;
   flex: 1;
 }
+.postprocessManualSelectionConflict {
+  flex: 0 0 100%;
+  margin: 2px 0 0;
+  color: var(--warning, #f3c969);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.postprocessManualSelectionConflict[hidden] { display: none; }
 .postprocessStepActions {
   display: flex;
   align-items: center;

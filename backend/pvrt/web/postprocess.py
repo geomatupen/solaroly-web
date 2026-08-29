@@ -1220,18 +1220,46 @@ def create_postprocess_router(
                     if pair_edge != edge:
                         continue
                     matched = pair
-                    if request.status == "unreviewed":
-                        pair.pop("manual_review_status", None)
-                        pair.pop("manual_keep_index", None)
-                    else:
-                        pair["manual_review_status"] = request.status
-                        if request.status == "accepted":
-                            pair["manual_keep_index"] = request.keep_index
-                        else:
-                            pair.pop("manual_keep_index", None)
                     break
                 if matched is None:
                     raise HTTPException(status_code=404, detail="The comparison pair is not part of this review.")
+                if request.status == "accepted":
+                    requested_keep = int(request.keep_index)
+                    requested_remove = next(index for index in edge if index != requested_keep)
+                    for pair in review.get("pairs") or []:
+                        pair_edge = tuple(sorted((int(pair["first_index"]), int(pair["second_index"]))))
+                        if pair_edge == edge or pair.get("manual_review_status") != "accepted":
+                            continue
+                        existing_keep = int(pair.get("manual_keep_index", pair_edge[0]))
+                        existing_remove = next(index for index in pair_edge if index != existing_keep)
+                        existing_label = f"{pair_edge[0] + 1}–{pair_edge[1] + 1}"
+                        if existing_keep == requested_remove:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    f"Cannot accept pair {edge[0] + 1}–{edge[1] + 1} while keeping anomaly "
+                                    f"{requested_keep + 1}. Anomaly {requested_remove + 1} is already kept by "
+                                    f"accepted pair {existing_label}. Reject this pair or undo that accepted pair first."
+                                ),
+                            )
+                        if existing_remove == requested_keep:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    f"Cannot keep anomaly {requested_keep + 1}. Accepted pair {existing_label} "
+                                    f"already removes it and keeps anomaly {existing_keep + 1}. Reject this pair "
+                                    "or undo that accepted pair first."
+                                ),
+                            )
+                if request.status == "unreviewed":
+                    matched.pop("manual_review_status", None)
+                    matched.pop("manual_keep_index", None)
+                else:
+                    matched["manual_review_status"] = request.status
+                    if request.status == "accepted":
+                        matched["manual_keep_index"] = request.keep_index
+                    else:
+                        matched.pop("manual_keep_index", None)
                 _atomic_json(review_path, review)
         except HTTPException:
             raise

@@ -5,6 +5,8 @@ import time
 import unittest
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from pvrt.web.postprocess import create_postprocess_router
 from pvrt.web.postprocess import EditLayerRequest
 from pvrt.web.postprocess import EditSourceRequest
@@ -91,7 +93,10 @@ class PostprocessApiTests(unittest.TestCase):
             overlays.mkdir()
             review_path = workflow_dir / "visual_review.json"
             review_path.write_text(json.dumps({
-                "pairs": [{"first_index": 2, "second_index": 5}],
+                "pairs": [
+                    {"first_index": 2, "second_index": 5},
+                    {"first_index": 5, "second_index": 8},
+                ],
             }), encoding="utf-8")
             router = create_postprocess_router(
                 lambda: sessions,
@@ -128,6 +133,22 @@ class PostprocessApiTests(unittest.TestCase):
             accepted = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][0]
             self.assertEqual(accepted["manual_review_status"], "accepted")
             self.assertEqual(accepted["manual_keep_index"], 5)
+
+            with self.assertRaises(HTTPException) as conflict:
+                asyncio.run(route.endpoint(
+                    "test-result",
+                    "anomaly-review",
+                    VisualReviewDecisionRequest(
+                        first_index=5,
+                        second_index=8,
+                        status="accepted",
+                        keep_index=8,
+                    ),
+                ))
+            self.assertEqual(conflict.exception.status_code, 409)
+            self.assertIn("Anomaly 6 is already kept by accepted pair 3–6", conflict.exception.detail)
+            conflicting_pair = json.loads(review_path.read_text(encoding="utf-8"))["pairs"][1]
+            self.assertNotIn("manual_review_status", conflicting_pair)
 
             asyncio.run(route.endpoint(
                 "test-result",

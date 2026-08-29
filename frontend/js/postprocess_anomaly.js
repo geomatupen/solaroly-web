@@ -353,9 +353,57 @@
     if (mode.value !== "manual") mode.value = "manual";
   }
 
+  function anomalyNumber(index) {
+    return Number(index) + 1;
+  }
+
+  function manualSelectionConflict(pair, keepIndex) {
+    const currentEdge = comparisonEdgeKey(pair);
+    const keep = Number(keepIndex);
+    const pairIndices = [Number(pair.first_index), Number(pair.second_index)];
+    const remove = pairIndices.find(index => index !== keep);
+    if (remove == null) return null;
+    for (const [edgeKey, decision] of manualDuplicateDecisions) {
+      if (edgeKey === currentEdge) continue;
+      const existingPair = [Number(decision.first_index), Number(decision.second_index)];
+      const existingKeep = Number(decision.keep_index);
+      const existingRemove = existingPair.find(index => index !== existingKeep);
+      const existingPairLabel = existingPair.map(anomalyNumber).join("–");
+      if (existingKeep === remove) {
+        return `Cannot accept pair ${pairIndices.map(anomalyNumber).join("–")} while keeping anomaly ${anomalyNumber(keep)}. Anomaly ${anomalyNumber(remove)} is already kept by accepted pair ${existingPairLabel}. Reject this pair or undo that accepted pair first.`;
+      }
+      if (existingRemove === keep) {
+        return `Cannot keep anomaly ${anomalyNumber(keep)}. Accepted pair ${existingPairLabel} already removes it and keeps anomaly ${anomalyNumber(existingKeep)}. Reject this pair or undo that accepted pair first.`;
+      }
+    }
+    return null;
+  }
+
+  function showManualSelectionWarning(pair, pairIndex, message = "") {
+    const card = byId("ppVisualReviewPairs")?.querySelector(`[data-pair-index="${pairIndex}"]`);
+    const detailControls = activeComparisonIndex === pairIndex
+      ? byId("ppVisualComparisonDetails")?.querySelector(".postprocessComparisonManualControls")
+      : null;
+    for (const controls of [card?.querySelector(".postprocessManualPairControls"), detailControls].filter(Boolean)) {
+      const warning = controls.querySelector('[data-role="manual-conflict"]');
+      if (!warning) continue;
+      warning.textContent = message;
+      warning.hidden = !message;
+    }
+    if (message) api()?.setMessage(message, "warn");
+  }
+
   async function saveManualPairDecision(pair, pairIndex, status, keepIndex) {
     const previousStatus = pair.manual_review_status || "unreviewed";
     const previousKeep = pair.manual_keep_index;
+    if (status === "accepted") {
+      const conflict = manualSelectionConflict(pair, keepIndex);
+      if (conflict) {
+        showManualSelectionWarning(pair, pairIndex, conflict);
+        return false;
+      }
+    }
+    showManualSelectionWarning(pair, pairIndex);
     switchToManualReview();
     setLocalPairDecision(pair, status, keepIndex);
     api()?.updateAnomalyReviewPairDecision(
@@ -392,6 +440,7 @@
       );
       syncPairCardDecision(pair, pairIndex);
       if (workflow) updateThresholdEffect(workflow);
+      showManualSelectionWarning(pair, pairIndex, error.message);
       api()?.setMessage(`Could not save the comparison decision: ${error.message}`, "err");
       return false;
     }
@@ -559,7 +608,12 @@
       const saved = await saveManualPairDecision(pair, pairIndex, "accepted", keep.value);
       if (saved && detailed && !pairMatchesFilter(pair)) leaveFilteredComparison(pairIndex);
     };
-    controls.append(buttons, keep);
+    const conflict = document.createElement("p");
+    conflict.className = "postprocessManualSelectionConflict";
+    conflict.dataset.role = "manual-conflict";
+    conflict.hidden = true;
+    conflict.setAttribute("role", "alert");
+    controls.append(buttons, keep, conflict);
     return controls;
   }
 
@@ -893,6 +947,16 @@
           images.appendChild(missing);
         }
       }
+      const identifiers = document.createElement("div");
+      identifiers.className = "postprocessVisualPairIds";
+      for (const [side, anomalyId] of [
+        ["Left", pair.first_anomaly_id ?? anomalyNumber(pair.first_index)],
+        ["Right", pair.second_anomaly_id ?? anomalyNumber(pair.second_index)],
+      ]) {
+        const identifier = document.createElement("span");
+        identifier.textContent = `${side} · Anomaly ID: ${anomalyId}`;
+        identifiers.appendChild(identifier);
+      }
       const meta = document.createElement("div");
       meta.className = "postprocessVisualPairMeta";
       const spatial = document.createElement("span");
@@ -918,7 +982,7 @@
         ? "Component scores unavailable"
         : `Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Orientation ${Math.round(orientationSimilarity(pair) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
       const manualControls = buildPairDecisionControls(pair, pairIndex);
-      card.append(images, meta, components, manualControls);
+      card.append(images, identifiers, meta, components, manualControls);
       card.onclick = event => {
         if (!manualControls.contains(event.target)) renderComparisonDetail(pairIndex);
       };
