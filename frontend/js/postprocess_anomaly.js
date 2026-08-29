@@ -395,10 +395,34 @@
   }
 
   function pairMatchesFilter(pair, filter = byId("ppVisualComparisonFilter")?.value || "active") {
+    if (!pair) return false;
     const status = pair.manual_review_status || "unreviewed";
     if (filter === "all") return true;
     if (filter === "active") return status !== "rejected";
     return status === filter;
+  }
+
+  function previousComparisonIndex(pairIndex) {
+    const pairs = comparisonPairs(currentAnomalyWorkflow());
+    for (let index = pairIndex - 1; index >= 0; index -= 1) {
+      if (pairMatchesFilter(pairs[index])) return index;
+    }
+    return -1;
+  }
+
+  function nextLoadedComparisonIndex(pairIndex) {
+    const pairs = comparisonPairs(currentAnomalyWorkflow());
+    for (let index = pairIndex + 1; index < pairs.length; index += 1) {
+      if (pairMatchesFilter(pairs[index])) return index;
+    }
+    return -1;
+  }
+
+  function updateComparisonNavigation(pairIndex) {
+    const loadedCount = comparisonPairs(currentAnomalyWorkflow()).length;
+    byId("ppVisualComparisonPrevious").disabled = previousComparisonIndex(pairIndex) < 0;
+    byId("ppVisualComparisonNext").disabled = nextLoadedComparisonIndex(pairIndex) < 0
+      && loadedCount >= loadedComparisonTotal;
   }
 
   function applyComparisonFilter() {
@@ -610,9 +634,9 @@
     byId("ppVisualComparisonsLoadMore").hidden = true;
     byId("ppVisualComparisonFilterWrap").hidden = true;
     byId("ppVisualComparisonsTitle").textContent = "Full-image comparison";
-    byId("ppVisualComparisonPosition").textContent = `Comparison ${(pairIndex + 1).toLocaleString()} of ${loadedComparisonTotal.toLocaleString()}`;
-    byId("ppVisualComparisonPrevious").disabled = pairIndex <= 0;
-    byId("ppVisualComparisonNext").disabled = pairIndex + 1 >= loadedComparisonTotal;
+    const knownTotal = Math.max(loadedComparisonTotal, pairs.length);
+    byId("ppVisualComparisonPosition").textContent = `Comparison ${(pairIndex + 1).toLocaleString()} of ${knownTotal.toLocaleString()}`;
+    updateComparisonNavigation(pairIndex);
     const focusScales = [
       pair.first_image_url ? focusBoxScale(pair.first_focus_box) : null,
       pair.second_image_url ? focusBoxScale(pair.second_focus_box) : null,
@@ -699,10 +723,25 @@
 
   async function navigateComparison(direction) {
     if (activeComparisonIndex == null) return;
-    const target = activeComparisonIndex + direction;
-    if (target < 0 || target >= loadedComparisonTotal) return;
-    if (target >= loadedComparisonPairs.length) await loadComparisonPage(false);
-    if (comparisonPairs(currentAnomalyWorkflow())[target]) renderComparisonDetail(target);
+    const currentIndex = activeComparisonIndex;
+    if (direction < 0) {
+      const target = previousComparisonIndex(currentIndex);
+      if (target >= 0) renderComparisonDetail(target);
+      return;
+    }
+    const previousButton = byId("ppVisualComparisonPrevious");
+    const nextButton = byId("ppVisualComparisonNext");
+    previousButton.disabled = true;
+    nextButton.disabled = true;
+    let target = nextLoadedComparisonIndex(currentIndex);
+    while (target < 0 && loadedComparisonPairs.length < loadedComparisonTotal) {
+      const previousLength = loadedComparisonPairs.length;
+      await loadComparisonPage(false);
+      if (loadedComparisonPairs.length <= previousLength) break;
+      target = nextLoadedComparisonIndex(currentIndex);
+    }
+    if (target >= 0) renderComparisonDetail(target);
+    else if (activeComparisonIndex != null) updateComparisonNavigation(activeComparisonIndex);
   }
 
   function renderVisualReview(workflow) {
@@ -737,7 +776,7 @@
     if (loadedScoringWorkflowId !== workflow.id) {
       loadedScoringWorkflowId = workflow.id;
       loadedComparisonPairs = [];
-      loadedComparisonTotal = 0;
+      loadedComparisonTotal = Math.max(savedTotal, workflow.visual_review?.pairs?.length || 0);
       loadedComparisonWorkflowId = workflow.id;
       const saved = workflow.scoring_parameters || {};
       const fields = {

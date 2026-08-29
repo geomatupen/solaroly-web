@@ -18,6 +18,7 @@
     anomalyReviewSelectedIndex: null,
     anomalyReviewAllLayer: null,
     anomalyReviewSelectedLayer: null,
+    anomalyReviewRenderer: null,
     previewLayers: new Map(),
     previewLoading: new Map(),
     previewLayerCache: new Map(),
@@ -807,6 +808,7 @@
     anomaliesPane.style.zIndex = "430";
     const anomalyReviewPane = state.map.createPane("ppAnomalyReviewPane");
     anomalyReviewPane.style.zIndex = "440";
+    anomalyReviewPane.style.pointerEvents = "none";
     window.L.control.layers({ Street: street, Satellite: satellite }, {}, { position: "topleft" }).addTo(state.map);
     addMeasureControl(state.map);
     return state.map;
@@ -855,6 +857,7 @@
           ...(source?.properties || {}),
           anomaly_id: pair?.[`${side}_anomaly_id`],
           ...(pair?.[`${side}_image`] ? { image: pair[`${side}_image`] } : {}),
+          ...(pair?.[`${side}_image_url`] ? { review_image_url: pair[`${side}_image_url`] } : {}),
         },
       };
     }
@@ -871,6 +874,9 @@
     state.anomalyReviewSelectedLayer = null;
     state.anomalyReviewPairs = [];
     state.anomalyReviewSelectedIndex = null;
+    state.map?.closePopup();
+    const reviewPane = state.map?.getPane("ppAnomalyReviewPane");
+    if (reviewPane) reviewPane.style.pointerEvents = "none";
     byId("ppAnomalyMapReview").hidden = true;
     byId("ppAnomalyMapPairFilter").value = "active";
   }
@@ -881,6 +887,13 @@
     if (pair.review_status === "duplicate") return "#ef4444";
     if (pair.review_status === "review") return "#f59e0b";
     return "#64748b";
+  }
+
+  function anomalyReviewRenderer() {
+    if (!state.anomalyReviewRenderer) {
+      state.anomalyReviewRenderer = window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 });
+    }
+    return state.anomalyReviewRenderer;
   }
 
   function renderAllAnomalyReviewPairs() {
@@ -931,7 +944,7 @@
       if (!feature) continue;
       window.L.geoJSON(feature, {
         pane: "ppAnomalyReviewPane",
-        renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
+        renderer: anomalyReviewRenderer(),
         interactive: false,
         style: { color: style.color, weight: 1.5, opacity: 0.6, fillColor: style.color, fillOpacity: 0.08 },
       }).addTo(group);
@@ -948,6 +961,8 @@
       setMessage("The configured anomaly source layer must be loaded before a pair can be shown on the map.", "err");
       return false;
     }
+    const reviewPane = map.getPane("ppAnomalyReviewPane");
+    if (reviewPane) reviewPane.style.pointerEvents = "";
     if (state.anomalyReviewSelectedLayer && map.hasLayer(state.anomalyReviewSelectedLayer)) {
       map.removeLayer(state.anomalyReviewSelectedLayer);
     }
@@ -963,7 +978,7 @@
     const selected = window.L.featureGroup();
     const firstLayer = window.L.geoJSON(first, {
       pane: "ppAnomalyReviewPane",
-      renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
+      renderer: anomalyReviewRenderer(),
       style: { color: "#22d3ee", weight: 4, opacity: 1, fillColor: "#22d3ee", fillOpacity: 0.22 },
       onEachFeature: (feature, layer) => {
         layer.on("click", event => {
@@ -976,7 +991,7 @@
     }).bindTooltip(`Left anomaly · ID ${pair.first_anomaly_id ?? Number(pair.first_index) + 1}`, { sticky: true });
     const secondLayer = window.L.geoJSON(second, {
       pane: "ppAnomalyReviewPane",
-      renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
+      renderer: anomalyReviewRenderer(),
       style: { color: "#e879f9", weight: 4, opacity: 1, fillColor: "#e879f9", fillOpacity: 0.22 },
       onEachFeature: (feature, layer) => {
         layer.on("click", event => {
@@ -1321,6 +1336,7 @@
 
   function linkedImageRecordForFeature(feature) {
     const properties = feature?.properties || {};
+    const reviewImageUrl = String(properties.review_image_url || "").trim();
     const primaryTargets = imageMatchTokens(
       properties.image,
       properties.file,
@@ -1332,7 +1348,9 @@
       if (!targets.size) continue;
       for (const item of state.referenceLayers.values()) {
         for (const record of item.imageRecords || []) {
-          if ([...record.matchTokens].some(token => targets.has(token))) return { item, record };
+          if ([...record.matchTokens].some(token => targets.has(token))) {
+            return { item, record, imageUrl: reviewImageUrl || record.imageUrl };
+          }
         }
       }
     }
@@ -1361,7 +1379,7 @@
   }
 
   function linkedImageIsVisible(match) {
-    const image = match?.item?.imageLayers?.get(match.record.imageUrl);
+    const image = match?.item?.imageLayers?.get(match?.imageUrl);
     return Boolean(image && match.item.layer.hasLayer(image) && state.map?.hasLayer(match.item.layer));
   }
 
@@ -1371,15 +1389,15 @@
     try {
       await ensureLinkedImagesLoaded(feature);
       const match = linkedImageRecordForFeature(feature);
-      if (!match) throw new Error("No linked source image was found for this anomaly.");
-      let image = match.item.imageLayers.get(match.record.imageUrl);
+      if (!match?.imageUrl) throw new Error("No linked source image was found for this anomaly.");
+      let image = match.item.imageLayers.get(match.imageUrl);
       if (!image) {
-        image = window.L.imageOverlay(match.record.imageUrl, match.record.bounds, {
+        image = window.L.imageOverlay(match.imageUrl, match.record.bounds, {
           pane: "ppRasterPane",
           opacity: match.item.opacity,
           interactive: false,
         });
-        match.item.imageLayers.set(match.record.imageUrl, image);
+        match.item.imageLayers.set(match.imageUrl, image);
       }
       if (linkedImageIsVisible(match)) {
         match.item.layer.removeLayer(image);
@@ -1464,13 +1482,11 @@
           byId("ppReferenceStatus").textContent = "Linked image loaded. Click its footprint again to hide it.";
         }
       });
-      if (imageUrl) {
-        item.imageRecords.push({
-          imageUrl,
-          bounds,
-          matchTokens: imageMatchTokens(properties.image, properties.file, properties.src, properties.name),
-        });
-      }
+      item.imageRecords.push({
+        imageUrl,
+        bounds,
+        matchTokens: imageMatchTokens(properties.image, properties.file, properties.src, properties.name),
+      });
       item.layer.addLayer(footprint);
       count += 1;
     }
@@ -1493,6 +1509,8 @@
         labeled.detail = item.detail;
         labeled.bounds = item.bounds;
         labeled.geojson = item.geojson;
+        labeled.imageLayers = item.imageLayers;
+        labeled.imageRecords = item.imageRecords;
       };
     }
     return labeled;
