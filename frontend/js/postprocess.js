@@ -964,10 +964,9 @@
     state.anomalyReviewSelectedLayer?.bringToFront?.();
   }
 
-  function showAnomalyReviewPair(pairs, selectedIndex = 0) {
+  function showAnomalyReviewPair(pair, comparisonIndex = 0) {
     const map = ensurePreviewMap();
     const features = anomalySourceFeatures();
-    const pair = pairs?.[selectedIndex];
     if (!map || !pair || (!features.length && !pair.first_geometry && !pair.second_geometry)) {
       setMessage("The configured anomaly source layer must be loaded before a pair can be shown on the map.", "err");
       return false;
@@ -975,10 +974,8 @@
     if (state.anomalyReviewSelectedLayer && map.hasLayer(state.anomalyReviewSelectedLayer)) {
       map.removeLayer(state.anomalyReviewSelectedLayer);
     }
-    if (!state.anomalyReviewPairs.length || pairs.length >= state.anomalyReviewPairs.length) {
-      state.anomalyReviewPairs = pairs.slice();
-    }
-    state.anomalyReviewSelectedIndex = selectedIndex;
+    state.anomalyReviewPairs = [pair];
+    state.anomalyReviewSelectedIndex = comparisonIndex;
     const first = anomalyReviewFeature(pair, "first", features);
     const second = anomalyReviewFeature(pair, "second", features);
     if (!first || !second) {
@@ -1024,15 +1021,10 @@
     const bounds = selected.getBounds();
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 21 });
     byId("ppAnomalyMapReview").hidden = false;
-    byId("ppAnomalyMapReviewTitle").textContent = `Comparison ${selectedIndex + 1}`;
+    byId("ppAnomalyMapReviewTitle").textContent = `Comparison ${comparisonIndex + 1}`;
     byId("ppAnomalyMapReviewDetails").textContent = `IDs ${pair.first_anomaly_id ?? Number(pair.first_index) + 1} / ${pair.second_anomaly_id ?? Number(pair.second_index) + 1} · ${pair.display_score == null ? "Score unavailable" : `${Math.round(pair.display_score)}% duplicate`} · ${Number(pair.center_distance_m || 0).toFixed(2)} m apart`;
     window.requestAnimationFrame(() => map.invalidateSize());
     return true;
-  }
-
-  function updateAnomalyReviewPairs(pairs) {
-    state.anomalyReviewPairs = Array.isArray(pairs) ? pairs.slice() : [];
-    renderAllAnomalyReviewPairs();
   }
 
   function updateAnomalyReviewPairDecision(firstIndex, secondIndex, reviewStatus) {
@@ -4410,7 +4402,6 @@
     runWorkflow,
     selectWorkflow,
     showAnomalyReviewPair,
-    updateAnomalyReviewPairs,
     updateAnomalyReviewPairDecision,
     clearAnomalyReviewMap,
     whenProcessingLayersReady,

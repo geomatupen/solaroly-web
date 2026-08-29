@@ -35,8 +35,6 @@
   let loadedComparisonPairs = [];
   let loadedComparisonTotal = 0;
   let loadedComparisonWorkflowId = "";
-  let loadedComparisonMapPairs = [];
-  let loadedComparisonMapWorkflowId = "";
   let activeComparisonIndex = null;
   let comparisonImageZoom = 1;
   let anomalyStepPhase = null;
@@ -159,6 +157,19 @@
     pairs.replaceChildren(loading);
     summary.textContent = "Comparing anomaly crops from neighboring images. This may take a moment.";
     loadMore.hidden = true;
+    showComparisonsWorkspace();
+  }
+
+  function openSavedComparisonsLoading() {
+    const pairs = byId("ppVisualReviewPairs");
+    activeComparisonIndex = null;
+    byId("ppVisualComparisonsHeader").hidden = false;
+    byId("ppVisualComparisonDetail").hidden = true;
+    pairs.hidden = false;
+    pairs.classList.add("isRestoringDecisions");
+    pairs.setAttribute("aria-busy", "true");
+    byId("ppComparisonDecisionsLoading").hidden = false;
+    showComparisonGrid();
     showComparisonsWorkspace();
   }
 
@@ -295,16 +306,6 @@
     }
   }
 
-  function syncCachedMapPairDecision(pair) {
-    const edgeKey = comparisonEdgeKey(pair);
-    const cached = loadedComparisonMapPairs.find(candidate => comparisonEdgeKey(candidate) === edgeKey);
-    if (!cached) return;
-    if (pair.manual_review_status) cached.manual_review_status = pair.manual_review_status;
-    else delete cached.manual_review_status;
-    if (pair.manual_keep_index != null) cached.manual_keep_index = pair.manual_keep_index;
-    else delete cached.manual_keep_index;
-  }
-
   function switchToManualReview() {
     const mode = byId("ppDeduplicationMode");
     if (mode.value !== "manual") mode.value = "manual";
@@ -315,7 +316,6 @@
     const previousKeep = pair.manual_keep_index;
     switchToManualReview();
     setLocalPairDecision(pair, status, keepIndex);
-    syncCachedMapPairDecision(pair);
     api()?.updateAnomalyReviewPairDecision(
       pair.first_index,
       pair.second_index,
@@ -342,7 +342,6 @@
       return true;
     } catch (error) {
       setLocalPairDecision(pair, previousStatus, previousKeep ?? pair.first_index);
-      syncCachedMapPairDecision(pair);
       api()?.updateAnomalyReviewPairDecision(
         pair.first_index,
         pair.second_index,
@@ -463,30 +462,8 @@
 
   function viewComparisonOnMap(pairIndex) {
     const workflow = currentAnomalyWorkflow();
-    const pairs = comparisonPairs(workflow).map(mapReviewPair);
-    api()?.showAnomalyReviewPair(pairs, pairIndex);
-    void loadAllComparisonMapPairs();
-  }
-
-  async function loadAllComparisonMapPairs() {
-    const workspace = api();
-    const context = workspace?.getContext();
-    if (!context?.resultId || !context.workflowId) return;
-    if (loadedComparisonMapWorkflowId === context.workflowId && loadedComparisonMapPairs.length) {
-      workspace.updateAnomalyReviewPairs(loadedComparisonMapPairs.map(mapReviewPair));
-      return;
-    }
-    try {
-      const payload = await workspace.requestJson(
-        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/visual-review-map`,
-        { cache: "no-store" },
-      );
-      loadedComparisonMapWorkflowId = context.workflowId;
-      loadedComparisonMapPairs = payload.pairs || [];
-      workspace.updateAnomalyReviewPairs(loadedComparisonMapPairs.map(mapReviewPair));
-    } catch (error) {
-      workspace.setMessage(`Could not show all duplicate candidates on the map: ${error.message}`, "err");
-    }
+    const pair = comparisonPairs(workflow)[pairIndex];
+    if (pair) api()?.showAnomalyReviewPair(mapReviewPair(pair), pairIndex);
   }
 
   function showComparisonGrid() {
@@ -924,8 +901,13 @@
         } else if (pair.manual_review_status === "rejected") {
           switchToManualReview();
           setLocalPairDecision(pair, "rejected", pair.first_index);
+        } else {
+          setLocalPairDecision(pair, "unreviewed", pair.first_index);
         }
       }
+      byId("ppVisualReviewPairs").classList.remove("isRestoringDecisions");
+      byId("ppVisualReviewPairs").removeAttribute("aria-busy");
+      byId("ppComparisonDecisionsLoading").hidden = true;
       loadedComparisonTotal = Number(payload.total_pairs || loadedComparisonPairs.length);
       const workflow = current.workflows.find(item => item.id === workflowId && item.workflow_kind === "anomaly");
       if (workflow) {
@@ -938,6 +920,9 @@
         renderVisualReview(workflow);
       }
     } catch (error) {
+      byId("ppVisualReviewPairs").classList.remove("isRestoringDecisions");
+      byId("ppVisualReviewPairs").removeAttribute("aria-busy");
+      byId("ppComparisonDecisionsLoading").hidden = true;
       api()?.setMessage(`Could not load image comparisons: ${error.message}`, "err");
       const errorMessage = document.createElement("p");
       errorMessage.className = "statusLine err";
@@ -1327,14 +1312,7 @@
       if (activeComparisonIndex != null) renderComparisonDetail(activeComparisonIndex);
     });
     byId("ppViewVisualComparisons")?.addEventListener("click", () => {
-      showComparisonGrid();
-      showComparisonsWorkspace();
-      if (!comparisonPairs(currentAnomalyWorkflow()).length) {
-        const loading = document.createElement("div");
-        loading.className = "postprocessComparisonsLoading";
-        loading.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Loading saved image comparisons…</span>';
-        byId("ppVisualReviewPairs").replaceChildren(loading);
-      }
+      openSavedComparisonsLoading();
       void loadComparisonPage(true);
     });
     byId("ppVisualComparisonsBackToSteps")?.addEventListener("click", closeComparisonsWorkspace);
@@ -1450,8 +1428,6 @@
       loadedComparisonPairs = [];
       loadedComparisonTotal = 0;
       loadedComparisonWorkflowId = "";
-      loadedComparisonMapPairs = [];
-      loadedComparisonMapWorkflowId = "";
       activeComparisonIndex = null;
       anomalyStepPhase = null;
     });

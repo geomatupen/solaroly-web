@@ -1399,6 +1399,38 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessWeightValidation { margin: 10px 0 0; }
 .postprocessWeightValidation.err { color: var(--danger, #ef6b73); }
 .postprocessVisualComparisonsWorkspace { margin-top: 16px; }
+.postprocessComparisonDecisionsLoading {
+  position: relative;
+  height: 24px;
+  margin: 0 0 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+}
+.postprocessComparisonDecisionsLoading[hidden] { display: none; }
+.postprocessComparisonDecisionsLoading::before {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: rgba(100, 116, 139, .28);
+  content: "";
+}
+.postprocessComparisonDecisionsLoading::after {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  height: 2px;
+  background: var(--accent);
+  content: "";
+  animation: ppIndeterminate 1.2s ease-in-out infinite;
+}
+.postprocessVisualReviewPairs.isRestoringDecisions .postprocessManualPairControls {
+  opacity: .55;
+  pointer-events: none;
+}
 .postprocessVisualComparisonsWorkspace[hidden] { display: none; }
 .postprocessVisualComparisonsWorkspace:fullscreen {
   padding: 20px;

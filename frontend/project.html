@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260829a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260829g" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260829h" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -743,6 +743,9 @@
                   <button type="button" data-comparison-filter="rejected">Rejected <span aria-hidden="true"></span></button>
                 </div>
               </div>
+            </div>
+            <div id="ppComparisonDecisionsLoading" class="postprocessComparisonDecisionsLoading" hidden>
+              <span>Restoring saved decisions…</span>
             </div>
             <div id="ppVisualReviewPairs" class="postprocessVisualReviewPairs"></div>
             <section id="ppVisualComparisonDetail" class="postprocessVisualComparisonDetail" hidden>
@@ -1638,9 +1641,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260829a"></script>
-  <script src="js/postprocess.js?v=20260829n"></script>
+  <script src="js/postprocess.js?v=20260829o"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260829p"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829r"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {
