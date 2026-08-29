@@ -822,6 +822,14 @@
     rasterPane.style.zIndex = "250";
     const referencePane = state.map.createPane("ppReferencePane");
     referencePane.style.zIndex = "350";
+    const rowsPane = state.map.createPane("ppRowsPane");
+    rowsPane.style.zIndex = "410";
+    const panelsPane = state.map.createPane("ppPanelsPane");
+    panelsPane.style.zIndex = "420";
+    const anomaliesPane = state.map.createPane("ppAnomaliesPane");
+    anomaliesPane.style.zIndex = "430";
+    const anomalyReviewPane = state.map.createPane("ppAnomalyReviewPane");
+    anomalyReviewPane.style.zIndex = "440";
     window.L.control.layers({ Street: street, Satellite: satellite }, {}, { position: "topleft" }).addTo(state.map);
     addMeasureControl(state.map);
     return state.map;
@@ -918,6 +926,7 @@
       const color = anomalyPairColor(pair);
       if (firstCenter && secondCenter) {
         window.L.polyline([firstCenter, secondCenter], {
+          pane: "ppAnomalyReviewPane",
           color,
           weight: 1.5,
           opacity: 0.5,
@@ -941,6 +950,8 @@
       const feature = style.feature;
       if (!feature) continue;
       window.L.geoJSON(feature, {
+        pane: "ppAnomalyReviewPane",
+        renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
         interactive: false,
         style: { color: style.color, weight: 1.5, opacity: 0.6, fillColor: style.color, fillOpacity: 0.08 },
       }).addTo(group);
@@ -973,16 +984,20 @@
     renderAllAnomalyReviewPairs();
     const selected = window.L.featureGroup();
     const firstLayer = window.L.geoJSON(first, {
+      pane: "ppAnomalyReviewPane",
+      renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
       style: { color: "#22d3ee", weight: 4, opacity: 1, fillColor: "#22d3ee", fillOpacity: 0.22 },
     }).bindTooltip(`Left anomaly · ID ${pair.first_anomaly_id ?? Number(pair.first_index) + 1}`, { sticky: true });
     const secondLayer = window.L.geoJSON(second, {
+      pane: "ppAnomalyReviewPane",
+      renderer: window.L.svg({ pane: "ppAnomalyReviewPane", padding: 0.5 }),
       style: { color: "#e879f9", weight: 4, opacity: 1, fillColor: "#e879f9", fillOpacity: 0.22 },
     }).bindTooltip(`Right anomaly · ID ${pair.second_anomaly_id ?? Number(pair.second_index) + 1}`, { sticky: true });
     firstLayer.addTo(selected);
     secondLayer.addTo(selected);
     const centers = [geoJsonFeatureCenter(first), geoJsonFeatureCenter(second)].filter(Boolean);
     if (centers.length === 2) {
-      window.L.polyline(centers, { color: "#ffffff", weight: 2.5, dashArray: "7 6", opacity: 0.95 }).addTo(selected);
+      window.L.polyline(centers, { pane: "ppAnomalyReviewPane", color: "#ffffff", weight: 2.5, dashArray: "7 6", opacity: 0.95 }).addTo(selected);
     }
     selected.addTo(map);
     state.anomalyReviewSelectedLayer = selected;
@@ -1591,6 +1606,14 @@
     byId("ppReferenceStatus").textContent = "Temporary GeoJSON added in browser memory only.";
   }
 
+  function previewPane(stage) {
+    if (stage === "solar_rows" || stage === "segmentation_rows_reference") return "ppRowsPane";
+    if (state.mode === "anomaly" && (stage === "source" || stage === "deduplicated" || stage === "associated")) {
+      return "ppAnomaliesPane";
+    }
+    return "ppPanelsPane";
+  }
+
   function createPreviewGeoJsonLayer(stage, geojson, label = null) {
     const style = { ...(PREVIEW_STYLES[stage] || PREVIEW_STYLES.source) };
     if (label) style.label = label;
@@ -1615,8 +1638,10 @@
       }
       return baseStyle;
     };
+    const pane = previewPane(stage);
     const layer = window.L.geoJSON(geojson, {
-      renderer: window.L.svg({ padding: 0.5 }),
+      pane,
+      renderer: window.L.svg({ pane, padding: 0.5 }),
       pmIgnore: !editableStage,
       style: featureStyle,
       onEachFeature: (feature, polygonLayer) => {
