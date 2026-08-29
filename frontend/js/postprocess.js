@@ -604,7 +604,7 @@
   function showConfiguredInitialStep() {
     if (!state.currentJob?.sources?.[state.mode]?.path) return;
     if (state.mode === "anomaly") {
-      const steps = [byId("ppDeduplicateStep"), byId("ppAdjustAnomaliesStep"), byId("ppAssociateStep")];
+      const steps = [byId("ppOverlapDeduplicateStep"), byId("ppDeduplicateStep"), byId("ppAdjustAnomaliesStep"), byId("ppAssociateStep")];
       steps.forEach((step, index) => {
         step.hidden = false;
         step.classList.add("locked");
@@ -636,10 +636,13 @@
     byId("ppCombineStep").hidden = true;
     byId("ppRegularizeStep").hidden = true;
     byId("ppHierarchyStep").hidden = true;
+    byId("ppOverlapDeduplicateStep").hidden = true;
     byId("ppDeduplicateStep").hidden = true;
     byId("ppAdjustAnomaliesStep").hidden = true;
     byId("ppAssociateStep").hidden = true;
     byId("ppDeduplicate").disabled = true;
+    byId("ppRemoveOverlappingAnomalies").disabled = true;
+    byId("ppSkipVisualDeduplication").disabled = true;
     byId("ppAssociate").disabled = true;
     byId("ppProgressWrap").hidden = true;
     byId("ppLogWrap").hidden = true;
@@ -856,6 +859,18 @@
     return state.previewLayers.get("source")?.geojson?.features || [];
   }
 
+  function anomalyReviewFeature(pair, side, sourceFeatures = anomalySourceFeatures()) {
+    const geometry = pair?.[`${side}_geometry`];
+    if (geometry) {
+      return {
+        type: "Feature",
+        geometry,
+        properties: { anomaly_id: pair?.[`${side}_anomaly_id`] },
+      };
+    }
+    return sourceFeatures[Number(pair?.[`${side}_index`])];
+  }
+
   function clearAnomalyReviewMap() {
     if (state.map) {
       for (const layer of [state.anomalyReviewAllLayer, state.anomalyReviewSelectedLayer]) {
@@ -887,8 +902,8 @@
     const group = window.L.layerGroup();
     const featureStyles = new Map();
     for (const pair of state.anomalyReviewPairs) {
-      const first = features[Number(pair.first_index)];
-      const second = features[Number(pair.second_index)];
+      const first = anomalyReviewFeature(pair, "first", features);
+      const second = anomalyReviewFeature(pair, "second", features);
       const firstCenter = geoJsonFeatureCenter(first);
       const secondCenter = geoJsonFeatureCenter(second);
       const color = anomalyPairColor(pair);
@@ -901,15 +916,18 @@
           interactive: false,
         }).addTo(group);
       }
-      for (const index of [Number(pair.first_index), Number(pair.second_index)]) {
+      for (const [index, feature] of [
+        [Number(pair.first_index), first],
+        [Number(pair.second_index), second],
+      ]) {
         const priority = pair.review_status === "duplicate" ? 3 : pair.review_status === "review" ? 2 : 1;
         if (!featureStyles.has(index) || featureStyles.get(index).priority < priority) {
-          featureStyles.set(index, { color, priority });
+          featureStyles.set(index, { color, priority, feature });
         }
       }
     }
-    for (const [index, style] of featureStyles) {
-      const feature = features[index];
+    for (const style of featureStyles.values()) {
+      const feature = style.feature;
       if (!feature) continue;
       window.L.geoJSON(feature, {
         interactive: false,
@@ -925,7 +943,7 @@
     const map = ensurePreviewMap();
     const features = anomalySourceFeatures();
     const pair = pairs?.[selectedIndex];
-    if (!map || !pair || !features.length) {
+    if (!map || !pair || (!features.length && !pair.first_geometry && !pair.second_geometry)) {
       setMessage("The configured anomaly source layer must be loaded before a pair can be shown on the map.", "err");
       return false;
     }
@@ -934,8 +952,8 @@
     }
     state.anomalyReviewPairs = pairs.slice();
     state.anomalyReviewSelectedIndex = selectedIndex;
-    const first = features[Number(pair.first_index)];
-    const second = features[Number(pair.second_index)];
+    const first = anomalyReviewFeature(pair, "first", features);
+    const second = anomalyReviewFeature(pair, "second", features);
     if (!first || !second) {
       setMessage("This comparison no longer matches the loaded anomaly source ordering.", "err");
       return false;
@@ -945,10 +963,10 @@
     const selected = window.L.featureGroup();
     const firstLayer = window.L.geoJSON(first, {
       style: { color: "#22d3ee", weight: 4, opacity: 1, fillColor: "#22d3ee", fillOpacity: 0.22 },
-    }).bindTooltip("Left image anomaly", { sticky: true });
+    }).bindTooltip(`Left anomaly · ID ${pair.first_anomaly_id ?? Number(pair.first_index) + 1}`, { sticky: true });
     const secondLayer = window.L.geoJSON(second, {
       style: { color: "#e879f9", weight: 4, opacity: 1, fillColor: "#e879f9", fillOpacity: 0.22 },
-    }).bindTooltip("Right image anomaly", { sticky: true });
+    }).bindTooltip(`Right anomaly · ID ${pair.second_anomaly_id ?? Number(pair.second_index) + 1}`, { sticky: true });
     firstLayer.addTo(selected);
     secondLayer.addTo(selected);
     const centers = [geoJsonFeatureCenter(first), geoJsonFeatureCenter(second)].filter(Boolean);
@@ -961,7 +979,7 @@
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 21 });
     byId("ppAnomalyMapReview").hidden = false;
     byId("ppAnomalyMapReviewTitle").textContent = `Duplicate comparison ${selectedIndex + 1}`;
-    byId("ppAnomalyMapReviewDetails").textContent = `${pair.display_score == null ? "Score unavailable" : `${Math.round(pair.display_score)}% duplicate`} · ${Number(pair.center_distance_m || 0).toFixed(2)} m apart`;
+    byId("ppAnomalyMapReviewDetails").textContent = `IDs ${pair.first_anomaly_id ?? Number(pair.first_index) + 1} / ${pair.second_anomaly_id ?? Number(pair.second_index) + 1} · ${pair.display_score == null ? "Score unavailable" : `${Math.round(pair.display_score)}% duplicate`} · ${Number(pair.center_distance_m || 0).toFixed(2)} m apart`;
     window.requestAnimationFrame(() => map.invalidateSize());
     return true;
   }
@@ -1266,6 +1284,116 @@
     return overlayByName.get(`${basename.replace(/\.[^.]+$/, "")}.png`) || null;
   }
 
+  function imageMatchTokens(...values) {
+    const tokens = new Set();
+    const add = value => {
+      const basename = String(value || "").split(/[\\/]/).pop().toLowerCase();
+      if (!basename) return;
+      tokens.add(basename);
+      tokens.add(basename.replace(/\.[^.]+$/, ""));
+    };
+    for (const value of values.flat(Infinity)) add(value);
+    return tokens;
+  }
+
+  function linkedImageRecordForFeature(feature) {
+    const properties = feature?.properties || {};
+    const primaryTargets = imageMatchTokens(
+      properties.image,
+      properties.file,
+      properties.src,
+      properties.name,
+    );
+    const fallbackTargets = imageMatchTokens(properties.source_images || []);
+    for (const targets of [primaryTargets, fallbackTargets]) {
+      if (!targets.size) continue;
+      for (const item of state.referenceLayers.values()) {
+        for (const record of item.imageRecords || []) {
+          if ([...record.matchTokens].some(token => targets.has(token))) return { item, record };
+        }
+      }
+    }
+    return null;
+  }
+
+  async function ensureLinkedImagesLoaded() {
+    const item = [...state.referenceLayers.values()].find(candidate => candidate.loader && candidate.imageLayers);
+    if (!item) return;
+    if (item.loaded) return;
+    if (!item.loadingPromise) {
+      item.loadingPromise = Promise.resolve(item.loader(item)).then(() => {
+        item.loaded = true;
+        renderReferenceLayers();
+      }).finally(() => {
+        item.loading = false;
+        item.loadingPromise = null;
+      });
+    }
+    item.loading = true;
+    await item.loadingPromise;
+  }
+
+  function linkedImageIsVisible(match) {
+    const image = match?.item?.imageLayers?.get(match.record.imageUrl);
+    return Boolean(image && match.item.layer.hasLayer(image) && state.map?.hasLayer(match.item.layer));
+  }
+
+  async function toggleLinkedImageForFeature(feature, button) {
+    button.disabled = true;
+    button.textContent = "Loading image…";
+    try {
+      await ensureLinkedImagesLoaded();
+      const match = linkedImageRecordForFeature(feature);
+      if (!match) throw new Error("No linked source image was found for this anomaly.");
+      let image = match.item.imageLayers.get(match.record.imageUrl);
+      if (!image) {
+        image = window.L.imageOverlay(match.record.imageUrl, match.record.bounds, {
+          pane: "ppRasterPane",
+          opacity: match.item.opacity,
+          interactive: false,
+        });
+        match.item.imageLayers.set(match.record.imageUrl, image);
+      }
+      if (linkedImageIsVisible(match)) {
+        match.item.layer.removeLayer(image);
+        button.textContent = "View image";
+        byId("ppReferenceStatus").textContent = "Linked anomaly image removed from the map.";
+      } else {
+        match.item.layer.addLayer(image);
+        if (!state.map.hasLayer(match.item.layer)) match.item.layer.addTo(state.map);
+        button.textContent = "Remove image";
+        byId("ppReferenceStatus").textContent = "Linked anomaly image is visible on the map.";
+      }
+      renderReferenceLayers();
+    } catch (error) {
+      button.textContent = "View image";
+      byId("ppReferenceStatus").textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function polygonPopupContent(feature, label) {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = polygonPopupHtml(feature, label);
+    const properties = feature?.properties || {};
+    if (!imageMatchTokens(properties.image, properties.file, properties.src, properties.name, properties.source_images || []).size) {
+      return wrapper;
+    }
+    const actions = document.createElement("div");
+    actions.className = "postprocessPolygonPopupActions";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary tiny";
+    const match = linkedImageRecordForFeature(feature);
+    button.textContent = linkedImageIsVisible(match) ? "Remove image" : "View image";
+    button.addEventListener("click", () => void toggleLinkedImageForFeature(feature, button));
+    actions.appendChild(button);
+    const content = wrapper.firstElementChild || wrapper;
+    content.insertBefore(actions, content.querySelector("table"));
+    return wrapper;
+  }
+
   async function loadLinkedImages(item, summary, imagesUrl) {
     const geojson = await requestJson(imagesUrl, { cache: "no-store" });
     const overlayByName = new Map();
@@ -1274,6 +1402,7 @@
       if (basename) overlayByName.set(basename, url);
     }
     let count = 0;
+    item.imageRecords = [];
     for (const feature of geojson.features || []) {
       if (feature?.geometry?.type !== "Point") continue;
       const bounds = imageBounds(feature);
@@ -1308,6 +1437,13 @@
           byId("ppReferenceStatus").textContent = "Linked image loaded. Click its footprint again to hide it.";
         }
       });
+      if (imageUrl) {
+        item.imageRecords.push({
+          imageUrl,
+          bounds,
+          matchTokens: imageMatchTokens(properties.image, properties.file, properties.src, properties.name),
+        });
+      }
       item.layer.addLayer(footprint);
       count += 1;
     }
@@ -1501,7 +1637,7 @@
             maxHeight: 210,
           })
             .setLatLng(event.latlng)
-            .setContent(polygonPopupHtml(feature, style.label))
+            .setContent(polygonPopupContent(feature, style.label))
             .openOn(state.map);
         });
       },
@@ -2300,7 +2436,9 @@
       combined: status.manual_edits?.combined?.feature_count ?? status.combine_stats?.output_features,
       regularized: status.manual_edits?.regularized?.feature_count ?? status.hierarchy_stats?.panel_count ?? status.regularize_stats?.output_features,
       solar_rows: status.manual_edits?.solar_rows?.feature_count ?? status.hierarchy_stats?.row_count,
-      deduplicated: status.manual_edits?.deduplicated?.feature_count ?? status.deduplicate_stats?.output_features,
+      deduplicated: status.manual_edits?.deduplicated?.feature_count
+        ?? status.deduplicate_stats?.output_features
+        ?? status.overlap_deduplicate_stats?.output_features,
       associated: status.manual_edits?.associated?.feature_count ?? status.association_stats?.output_features,
     };
     const availableStages = [...GENERATED_STAGES].filter(stage => status.outputs?.[stage]?.url);
@@ -2799,7 +2937,9 @@
     const sourcePath = String(sourceConfig.workspace_path || "source.geojson");
     const sourceUrl = String(sourceConfig.workspace_url || "");
     const select = byId("ppGeojson");
-    const referenceResultId = state.currentJob?.sources?.segmentation?.workspace_result_id || resultId;
+    const referenceResultId = state.mode === "anomaly"
+      ? resultId
+      : state.currentJob?.sources?.segmentation?.workspace_result_id || resultId;
     try {
       if (!resultId || !sourceUrl) {
         throw new Error("This job has no saved source snapshot. Recreate the job or save its configuration again.");

@@ -2320,13 +2320,13 @@ function featurePopupHTML(f) {
 function popupImageToggleButtonHTML(props){
   const rec = findImageRecordForFeature(props);
   if (!rec) return "";
-  const label = rec.on ? "Hide image overlay" : "Show image overlay";
+  const label = rec.on ? "Remove image" : "View image";
   const state = rec.on ? "on" : "off";
   const eyeSvg = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
     <path d="M2 12s4-8 10-8 10 8 10 8-4 8-10 8S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
     <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
   </svg>`;
-  return `<button type="button" class="popupImageToggle ${state}" data-image-id="${escapeHtml(rec.id)}" data-state="${state}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${eyeSvg}</button>`;
+  return `<button type="button" class="popupImageToggle ${state}" data-image-id="${escapeHtml(rec.id)}" data-state="${state}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${eyeSvg}<span class="popupImageToggleText">${escapeHtml(label)}</span></button>`;
 }
 
 function findImageRecordForFeature(props){
@@ -3140,9 +3140,11 @@ document.addEventListener('click', (e) => {
   btn.dataset.state = nextState ? 'on' : 'off';
   btn.classList.toggle('on', nextState);
   btn.classList.toggle('off', !nextState);
-  const label = nextState ? 'Hide image overlay' : 'Show image overlay';
+  const label = nextState ? 'Remove image' : 'View image';
   btn.title = label;
   btn.setAttribute('aria-label', label);
+  const text = btn.querySelector('.popupImageToggleText');
+  if (text) text.textContent = label;
 });
 
 

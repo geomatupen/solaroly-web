@@ -5,8 +5,8 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260827o" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260828k" />
+  <link rel="stylesheet" href="css/styles.css?v=20260829a" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260829d" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -618,11 +618,29 @@
 
         <div id="ppAnomalyControls" hidden>
           <div class="postprocessSteps">
-            <article id="ppDeduplicateStep" class="postprocessStep" hidden>
+            <article id="ppOverlapDeduplicateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">1</div>
               <div class="postprocessStepBody">
-                <h3>Find duplicate predictions across images</h3>
-                <p class="muted tiny">Compare every anomaly with candidates from neighboring images, including shifted polygons that do not overlap. No detection is removed until you review the result and apply a duplicate-score threshold.</p>
+                <h3>Remove overlapping predictions</h3>
+                <p class="muted tiny">First remove same-class polygons when their overlap reaches the configured percentage. The strongest prediction is kept.</p>
+                <div class="postprocessFields postprocessFieldsCompact">
+                  <div>
+                    <label for="ppAnomalyOverlapPercent">Minimum overlap (%)</label>
+                    <div class="postprocessPercentInput">
+                      <input id="ppAnomalyOverlapPercent" type="number" value="60" min="1" max="100" step="1" />
+                      <span>%</span>
+                    </div>
+                    <small class="muted">Share of the smaller polygon covered by the other polygon.</small>
+                  </div>
+                </div>
+                <button id="ppRemoveOverlappingAnomalies" type="button" disabled>Remove overlapping polygons</button>
+              </div>
+            </article>
+            <article id="ppDeduplicateStep" class="postprocessStep" hidden>
+              <div class="postprocessStepNumber">2</div>
+              <div class="postprocessStepBody">
+                <h3>Find shifted duplicates across images <span class="postprocessOptionalLabel">Optional</span></h3>
+                <p class="muted tiny">Use weighted image, shape, size, and location evidence to find duplicates that do not overlap because their mapped positions shifted. Skip this step if overlap removal is sufficient.</p>
                 <div class="postprocessFields">
                   <div>
                     <label for="ppAnomalyOutputName">Output name</label>
@@ -641,6 +659,7 @@
                 <div class="postprocessStepActions">
                   <button id="ppDeduplicate" type="button" disabled>Analyze visual duplicates</button>
                   <button id="ppConfigureRepresentativeWeights" class="secondary" type="button">Configure weights</button>
+                  <button id="ppViewVisualComparisons" class="secondary" type="button" hidden>Review image comparisons</button>
                 </div>
                 <section id="ppVisualReview" class="postprocessVisualReview" hidden aria-live="polite">
                   <div class="postprocessVisualReviewHeader">
@@ -663,42 +682,35 @@
                       <option value="manual">Manual image review</option>
                     </select>
                   </div>
-                  <details id="ppDuplicateScoringAdvanced" class="postprocessScoringAdvanced">
-                    <summary>Advanced thresholds</summary>
-                    <div class="postprocessFields postprocessScoringFields">
-                      <div><label for="ppMinimumAppearance">Minimum appearance (%)</label><input id="ppMinimumAppearance" type="number" value="75" min="0" max="100" step="1" /></div>
-                      <div><label for="ppMinimumContext">Minimum context (%)</label><input id="ppMinimumContext" type="number" value="60" min="0" max="100" step="1" /></div>
-                      <div><label for="ppManualReviewThreshold">Manual review from (%)</label><input id="ppManualReviewThreshold" type="number" value="60" min="0" max="100" step="1" /></div>
-                    </div>
-                    <div class="postprocessScoringFooter">
-                      <span id="ppScoringValidation" class="muted tiny"></span>
-                      <button id="ppResetScoringDefaults" class="secondary tiny" type="button">Reset defaults</button>
-                    </div>
-                  </details>
-                  <button id="ppViewVisualComparisons" class="secondary" type="button" hidden>View image comparisons</button>
+                  <p id="ppScoringValidation" class="muted tiny"></p>
                   <p id="ppVisualThresholdEffect" class="muted tiny"></p>
                   <p id="ppVisualThresholdWarning" class="statusLine warn" hidden></p>
-                  <button id="ppApplyVisualDeduplication" type="button">Apply visual deduplication</button>
                 </section>
+                <div class="postprocessStepActions postprocessDeduplicationDecisionActions">
+                  <button id="ppApplyVisualDeduplication" type="button" hidden>Apply visual deduplication</button>
+                  <button id="ppSkipVisualDeduplication" class="secondary" type="button" disabled>Skip visual analysis</button>
+                </div>
               </div>
             </article>
             <article id="ppAdjustAnomaliesStep" class="postprocessStep" hidden>
-              <div class="postprocessStepNumber">2</div>
-              <div class="postprocessStepBody">
-                <h3>Review and adjust placement</h3>
-                <p class="muted tiny">In Processing layers, choose the deduplicated layer and click Edit this layer. Move, rotate, reshape, or delete selected polygons with undo/redo, then save the changes directly to that layer before assignment.</p>
-              </div>
-            </article>
-            <article id="ppAssociateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">3</div>
               <div class="postprocessStepBody">
-                <h3>Assign anomalies to panels</h3>
-                <p class="muted tiny">Assign anomalies against the final Regularized panel polygons. Final Rows are shown only as a visual reference; unassigned and nearest-only matches are flagged for review.</p>
+                <h3>Review and adjust placement</h3>
+                <p class="muted tiny"><strong>Manual process:</strong> select the final segmentation panels below, then edit the deduplicated anomaly layer in Processing layers. Move, rotate, reshape, or delete polygons while using the panels as the placement reference, then save the layer.</p>
                 <div class="postprocessFields postprocessFieldsCompact">
                   <div>
                     <label for="ppPanelReference">Final regularized panels</label>
                     <select id="ppPanelReference" disabled><option value="">Select final regularized panels…</option></select>
                   </div>
+                </div>
+              </div>
+            </article>
+            <article id="ppAssociateStep" class="postprocessStep" hidden>
+              <div class="postprocessStepNumber">4</div>
+              <div class="postprocessStepBody">
+                <h3>Assign anomalies to panels</h3>
+                <p class="muted tiny">Assign anomalies against the final Regularized panel polygons. Final Rows are shown only as a visual reference; unassigned and nearest-only matches are flagged for review.</p>
+                <div class="postprocessFields postprocessFieldsCompact">
                   <div>
                     <label for="ppAssociationOverlap">Minimum anomaly overlap</label>
                     <input id="ppAssociationOverlap" type="number" value="0.20" min="0" max="1" step="0.05" />
@@ -712,6 +724,40 @@
               </div>
             </article>
           </div>
+          <section id="ppVisualComparisonsWorkspace" class="postprocessVisualComparisonsWorkspace" hidden aria-live="polite">
+            <div class="postprocessComparisonWorkspaceHeader">
+              <button id="ppVisualComparisonsBackToSteps" class="secondary tiny" type="button"><span aria-hidden="true">←</span> Back to anomaly steps</button>
+              <div>
+                <h3 id="ppVisualComparisonsTitle">Image comparisons</h3>
+                <p id="ppVisualComparisonsSummary" class="muted tiny"></p>
+              </div>
+            </div>
+            <div id="ppVisualReviewPairs" class="postprocessVisualReviewPairs"></div>
+            <section id="ppVisualComparisonDetail" class="postprocessVisualComparisonDetail" hidden>
+              <div class="postprocessComparisonDetailToolbar">
+                <button id="ppVisualComparisonBack" class="secondary tiny" type="button"><span aria-hidden="true">←</span> Back to comparisons</button>
+                <span id="ppVisualComparisonPosition" class="muted tiny"></span>
+                <div class="postprocessComparisonZoomControls" aria-label="Synchronized image zoom controls">
+                  <button id="ppVisualComparisonZoomOut" class="secondary" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+                  <span id="ppVisualComparisonZoomLevel" class="muted tiny">100%</span>
+                  <button id="ppVisualComparisonZoomIn" class="secondary" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+                  <button id="ppVisualComparisonFit" class="secondary tiny" type="button">Fit</button>
+                </div>
+                <div class="postprocessComparisonNavigation">
+                  <button id="ppVisualComparisonPrevious" class="secondary tiny" type="button" aria-label="Previous comparison">←</button>
+                  <button id="ppVisualComparisonNext" class="secondary tiny" type="button" aria-label="Next comparison">→</button>
+                  <button id="ppVisualComparisonFullscreen" class="secondary tiny postprocessIconButton" type="button" title="View comparison fullscreen" aria-label="View comparison fullscreen" aria-pressed="false"><span aria-hidden="true">⛶</span></button>
+                </div>
+              </div>
+              <p class="muted tiny postprocessComparisonInteractionHint">Scroll over either image to zoom. Drag an image to pan it.</p>
+              <div id="ppVisualComparisonFullImages" class="postprocessComparisonFullImages"></div>
+              <div id="ppVisualComparisonDetails" class="postprocessComparisonDetails"></div>
+              <div class="postprocessComparisonMapAction">
+                <button id="ppVisualComparisonViewOnMap" class="secondary" type="button">⌖ Recenter this pair on map</button>
+              </div>
+            </section>
+            <button id="ppVisualComparisonsLoadMore" class="secondary" type="button" hidden>Load more</button>
+          </section>
         </div>
 
         <details id="ppLogWrap" class="postprocessLogWrap" hidden>
@@ -1078,46 +1124,6 @@
         <button id="ppRepresentativeWeightsReset" class="secondary" type="button">Reset defaults</button>
         <button id="ppRepresentativeWeightsCancel" class="secondary" type="button">Cancel</button>
         <button id="ppRepresentativeWeightsSave" type="button">Save weights</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="ppVisualComparisonsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppVisualComparisonsTitle">
-    <div class="modalContent postprocessVisualComparisonsModalContent">
-      <div class="modalHeader">
-        <div>
-          <h3 id="ppVisualComparisonsTitle">Image comparisons</h3>
-          <p id="ppVisualComparisonsSummary" class="muted tiny"></p>
-        </div>
-        <button id="ppVisualComparisonsClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
-      </div>
-      <div class="modalBody postprocessVisualComparisonsBody">
-        <div id="ppVisualReviewPairs" class="postprocessVisualReviewPairs"></div>
-        <section id="ppVisualComparisonDetail" class="postprocessVisualComparisonDetail" hidden aria-live="polite">
-          <div class="postprocessComparisonDetailToolbar">
-            <button id="ppVisualComparisonBack" class="secondary" type="button"><span aria-hidden="true">←</span> Back to comparisons</button>
-            <span id="ppVisualComparisonPosition" class="muted tiny"></span>
-            <div class="postprocessComparisonZoomControls" aria-label="Synchronized image zoom controls">
-              <button id="ppVisualComparisonZoomOut" class="secondary" type="button" title="Zoom out" aria-label="Zoom out">−</button>
-              <span id="ppVisualComparisonZoomLevel" class="muted tiny">100%</span>
-              <button id="ppVisualComparisonZoomIn" class="secondary" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
-              <button id="ppVisualComparisonFit" class="secondary tiny" type="button">Fit images</button>
-            </div>
-            <div class="postprocessComparisonNavigation">
-              <button id="ppVisualComparisonPrevious" class="secondary" type="button" aria-label="Previous comparison" title="Previous comparison">← Previous</button>
-              <button id="ppVisualComparisonNext" class="secondary" type="button" aria-label="Next comparison" title="Next comparison">Next →</button>
-            </div>
-          </div>
-          <div id="ppVisualComparisonFullImages" class="postprocessComparisonFullImages"></div>
-          <div id="ppVisualComparisonDetails" class="postprocessComparisonDetails"></div>
-          <div class="postprocessComparisonMapAction">
-            <button id="ppVisualComparisonViewOnMap" class="secondary" type="button">⌖ View this pair on map</button>
-          </div>
-        </section>
-      </div>
-      <div class="modalFooter">
-        <button id="ppVisualComparisonsLoadMore" class="secondary" type="button" hidden>Load more</button>
-        <button id="ppVisualComparisonsDone" class="secondary" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -1612,10 +1618,10 @@
   <script src="js/map.js?v=20260827h"></script>
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
-  <script src="js/main.js?v=20260825q"></script>
-  <script src="js/postprocess.js?v=20260828k"></script>
+  <script src="js/main.js?v=20260829a"></script>
+  <script src="js/postprocess.js?v=20260829d"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260828q"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829g"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

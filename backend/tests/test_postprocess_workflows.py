@@ -144,6 +144,56 @@ class PostprocessWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(shape_result["duplicates_removed"], 0)
 
+    def test_visual_deduplication_uses_only_the_weighted_score_threshold(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "predictions.geojson"
+            _write(source, [
+                _feature(box(500000, 5500000, 500000.4, 5500000.4), class_name="hotspot", score=0.95),
+                _feature(box(500001, 5500000, 500001.4, 5500000.4), class_name="hotspot", score=0.85),
+            ])
+            review = root / "visual_review.json"
+            review.write_text(json.dumps({"pairs": [{
+                "first_index": 0,
+                "second_index": 1,
+                "appearance_similarity": 0.10,
+                "context_similarity": 0.10,
+                "shape_similarity": 0.90,
+                "size_similarity": 0.10,
+                "proximity_similarity": 0.10,
+            }]}), encoding="utf-8")
+            result = apply_visual_deduplication(
+                source,
+                review,
+                root / "weighted.geojson",
+                duplicate_score_threshold=0.80,
+                weights={"appearance": 0.0, "context": 0.0, "shape": 1.0, "size": 0.0, "proximity": 0.0},
+            )
+            self.assertEqual(result["duplicates_removed"], 1)
+
+    def test_overlap_only_deduplication_obeys_the_configured_percentage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "predictions.geojson"
+            _write(source, [
+                _feature(box(500000, 5500000, 500001, 5500001), class_name="hotspot", score=0.95),
+                _feature(box(500000.4, 5500000, 500001.4, 5500001), class_name="hotspot", score=0.85),
+            ])
+            strict = deduplicate_anomalies(
+                source,
+                root / "strict.geojson",
+                minimum_smaller_overlap=0.70,
+                overlap_only=True,
+            )
+            permissive = deduplicate_anomalies(
+                source,
+                root / "permissive.geojson",
+                minimum_smaller_overlap=0.50,
+                overlap_only=True,
+            )
+            self.assertEqual(strict["duplicates_removed"], 0)
+            self.assertEqual(permissive["duplicates_removed"], 1)
+
     def test_visual_deduplication_keeps_candidates_when_images_are_unavailable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -10,6 +10,51 @@ from pvrt.web.postprocess import EditSourceRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_saved_visual_review_is_recovered_after_status_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            workflow_dir = sessions / "test-result" / "postprocess" / "anomaly-review"
+            workflow_dir.mkdir(parents=True)
+            overlays.mkdir()
+            source = sessions / "test-result" / "source.geojson"
+            source.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+            (workflow_dir / "visual_review.json").write_text(json.dumps({
+                "pairs": [{
+                    "first_index": 0,
+                    "second_index": 1,
+                    "appearance_similarity": 0.9,
+                }],
+            }), encoding="utf-8")
+            (workflow_dir / "status.json").write_text(json.dumps({
+                "id": "anomaly-review",
+                "workflow_kind": "anomaly",
+                "status": "complete",
+                "input_path": "source.geojson",
+                "parameters": {
+                    "neighbor_image_radius_m": 25,
+                    "maximum_center_distance_m": 5,
+                },
+                "outputs": {},
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}"
+                and "GET" in item.methods
+            )
+            payload = asyncio.run(route.endpoint("test-result", "anomaly-review"))
+            self.assertEqual(payload["visual_review"]["total_pairs"], 1)
+            self.assertTrue(payload["visual_review_available"])
+            self.assertEqual(payload["visual_review_total_pairs"], 1)
+            self.assertEqual(payload["visual_analysis_stats"]["visually_compared_pairs"], 1)
+            self.assertTrue(payload["visual_analysis_stats"]["recovered_from_saved_review"])
+
     def test_job_snapshot_workflow_resolves_without_original_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

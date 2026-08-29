@@ -1085,6 +1085,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   gap: 14px;
   margin-top: 16px;
 }
+.postprocessSteps[hidden] { display: none; }
 
 .postprocessStep {
   display: flex;
@@ -1112,6 +1113,17 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 
 .postprocessStepBody { flex: 1; min-width: 0; }
 .postprocessStepBody h3 { margin: 2px 0 4px; }
+.postprocessOptionalLabel {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
 .postprocessStepBody p { min-height: 51px; margin: 0 0 12px; }
 .postprocessStepBody > button { margin-top: 12px; }
 
@@ -1262,7 +1274,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessPairMapButton { margin-left: auto; white-space: nowrap; }
 .postprocessVisualSimilarity { font-weight: 700; }
 .postprocessVisualPair.isDuplicate { border-color: var(--accent); }
-.postprocessVisualPair.needsReview { border-color: #d99b34; }
 .postprocessVisualComponents {
   display: block;
   margin-top: 6px;
@@ -1287,26 +1298,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   min-width: 0;
   flex: 1;
 }
-.postprocessScoringAdvanced {
-  margin-top: 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.postprocessScoringAdvanced summary {
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-}
-.postprocessScoringFields { margin-top: 12px; }
-.postprocessScoringFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 10px;
-}
-.postprocessScoringFooter .err { color: var(--danger, #ef6b73); }
 .postprocessStepActions {
   display: flex;
   align-items: center;
@@ -1376,21 +1367,26 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 .postprocessWeightValidation { margin: 10px 0 0; }
 .postprocessWeightValidation.err { color: var(--danger, #ef6b73); }
-.postprocessVisualComparisonsModalContent {
-  width: min(1120px, calc(100vw - 40px));
-  max-width: 1120px;
-  max-height: calc(100vh - 40px);
+.postprocessVisualComparisonsWorkspace { margin-top: 16px; }
+.postprocessVisualComparisonsWorkspace[hidden] { display: none; }
+.postprocessVisualComparisonsWorkspace:fullscreen {
+  padding: 20px;
+  overflow: auto;
+  background: var(--surface, #0b1117);
 }
-.postprocessVisualComparisonsModalContent .modalHeader > div { min-width: 0; }
-.postprocessVisualComparisonsModalContent .modalHeader h3 { margin: 0; }
-.postprocessVisualComparisonsModalContent .modalHeader p { margin: 4px 0 0; }
-.postprocessVisualComparisonsBody {
-  display: block;
-  align-items: stretch;
-  justify-content: initial;
-  overflow-y: auto;
-  min-height: 220px;
+.postprocessVisualComparisonsWorkspace:fullscreen .postprocessComparisonImageFrame {
+  height: min(68vh, 760px);
 }
+.postprocessComparisonWorkspaceHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.postprocessComparisonWorkspaceHeader > div { min-width: 0; }
+.postprocessComparisonWorkspaceHeader h3,
+.postprocessComparisonWorkspaceHeader p { margin: 0; }
+.postprocessComparisonWorkspaceHeader p { margin-top: 4px; }
 .postprocessVisualComparisonDetail[hidden] { display: none; }
 .postprocessComparisonDetailToolbar {
   display: flex;
@@ -1431,14 +1427,21 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   border: 1px solid var(--border);
   border-radius: 9px;
   background: #05090d;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
+.postprocessComparisonImageFrame.isPanning { cursor: grabbing; }
+.postprocessComparisonImageFrame.isPanning img { transition: none; }
 .postprocessComparisonImageFrame img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  transition: transform .18s ease;
+  transition: transform .12s ease;
+  pointer-events: none;
 }
+.postprocessComparisonInteractionHint { margin: -5px 0 10px; }
 .postprocessComparisonImageMissing {
   padding: 20px;
   color: var(--muted);
@@ -1453,6 +1456,11 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 .postprocessComparisonFullImages figcaption span { overflow-wrap: anywhere; }
 .postprocessComparisonFullImages figcaption small { grid-column: 1 / -1; }
+.postprocessComparisonAnomalyId { color: #dbeafe; font-weight: 700; }
+.postprocessPolygonPopupActions {
+  display: flex;
+  margin: 10px 0 4px;
+}
 .postprocessComparisonDetails {
   margin-top: 12px;
   padding: 10px 12px;

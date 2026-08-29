@@ -20,9 +20,6 @@
     ppShapeWeight: 15,
     ppSizeWeight: 10,
     ppProximityWeight: 5,
-    ppMinimumAppearance: 75,
-    ppMinimumContext: 60,
-    ppManualReviewThreshold: 60,
   };
   const representativeDefaults = {
     imageCenter: 40,
@@ -33,9 +30,6 @@
     Object.entries(scoringDefaults).filter(([id]) => id.endsWith("Weight")),
   );
   const modalWeightDefaults = { ...duplicateWeightDefaults };
-  const thresholdDefaultIds = [
-    "ppVisualSimilarity", "ppMinimumAppearance", "ppMinimumContext", "ppManualReviewThreshold",
-  ];
   let representativeModalSnapshot = null;
   const manualDuplicateDecisions = new Map();
   let loadedComparisonPairs = [];
@@ -43,6 +37,17 @@
   let loadedComparisonWorkflowId = "";
   let activeComparisonIndex = null;
   let comparisonImageZoom = 1;
+  let anomalyStepPhase = null;
+
+  function setAnomalyStepCollapsed(step, collapsed) {
+    if (!step) return;
+    step.classList.toggle("collapsed", collapsed);
+    const toggle = step.querySelector(".postprocessStepCollapse");
+    if (!toggle) return;
+    toggle.textContent = collapsed ? "+" : "−";
+    toggle.title = collapsed ? "Expand step" : "Minimize step";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
 
   function comparisonPairs(workflow) {
     return loadedComparisonWorkflowId === workflow?.id && loadedComparisonPairs.length
@@ -58,9 +63,6 @@
     const percent = id => Math.max(0, Math.min(100, Number(byId(id)?.value || 0)));
     return {
       threshold: visualThreshold(),
-      reviewThreshold: percent("ppManualReviewThreshold"),
-      minimumAppearance: percent("ppMinimumAppearance"),
-      minimumContext: percent("ppMinimumContext"),
       weights: {
         appearance: percent("ppAppearanceWeight"),
         context: percent("ppContextWeight"),
@@ -124,8 +126,18 @@
     document.getElementById("ppAppearanceWeight").focus();
   }
 
-  function openComparisonsModalLoading() {
-    const modal = document.getElementById("ppVisualComparisonsModal");
+  function showComparisonsWorkspace() {
+    byId("ppAnomalyControls").querySelector(".postprocessSteps").hidden = true;
+    byId("ppVisualComparisonsWorkspace").hidden = false;
+  }
+
+  function closeComparisonsWorkspace() {
+    byId("ppVisualComparisonsWorkspace").hidden = true;
+    byId("ppAnomalyControls").querySelector(".postprocessSteps").hidden = false;
+    showComparisonGrid();
+  }
+
+  function openComparisonsWorkspaceLoading() {
     const pairs = document.getElementById("ppVisualReviewPairs");
     const summary = document.getElementById("ppVisualComparisonsSummary");
     const loadMore = document.getElementById("ppVisualComparisonsLoadMore");
@@ -144,9 +156,7 @@
     pairs.replaceChildren(loading);
     summary.textContent = "Comparing anomaly crops from neighboring images. This may take a moment.";
     loadMore.hidden = true;
-    modal.classList.remove("hidden");
-    modal.classList.add("show");
-    document.getElementById("ppVisualComparisonsClose")?.focus();
+    showComparisonsWorkspace();
   }
 
   function bindRepresentativeWeightsModal() {
@@ -185,14 +195,11 @@
   }
 
   function scoringIsValid(config = scoringConfig()) {
-    const duplicateValid = validateDuplicateWeights(config);
-    const valid = duplicateValid && config.reviewThreshold <= config.threshold;
+    const valid = validateDuplicateWeights(config);
     const validation = byId("ppScoringValidation");
-    validation.textContent = !duplicateValid
+    validation.textContent = !valid
       ? "Duplicate-matching weights must total 100%. Open Configure weights to correct them."
-      : config.reviewThreshold > config.threshold
-        ? "Manual-review threshold must not exceed the automatic threshold."
-        : "Weights total 100%.";
+      : "The weighted score is the only automatic deduplication threshold.";
     validation.classList.toggle("err", !valid);
     const warning = byId("ppVisualThresholdWarning");
     warning.hidden = config.threshold >= 70;
@@ -209,14 +216,7 @@
     const valid = manualMode ? manualDuplicateDecisions.size > 0 : scoringIsValid(config);
     const matching = pairs.filter(pair => {
       const score = compositeScore(pair, config);
-      return score != null
-        && score >= config.threshold
-        && Number(pair.appearance_similarity || 0) * 100 >= config.minimumAppearance
-        && Number(pair.context_similarity || 0) * 100 >= config.minimumContext;
-    }).length;
-    const reviewCount = pairs.filter(pair => {
-      const score = compositeScore(pair, config);
-      return score != null && score >= config.reviewThreshold && score < config.threshold;
+      return score != null && score >= config.threshold;
     }).length;
     const comparedTotal = Number(workflow?.visual_analysis_stats?.visually_compared_pairs || 0);
     const displayed = pairs.length;
@@ -226,17 +226,13 @@
       : ` ${matching.toLocaleString()} pair${matching === 1 ? "" : "s"} will be deduplicated.`;
     byId("ppVisualThresholdEffect").textContent = manualMode
       ? `${manualDuplicateDecisions.size.toLocaleString()} pair${manualDuplicateDecisions.size === 1 ? " is" : "s are"} marked as duplicate. Open image comparisons to change manual selections.`
-      : `${config.threshold.toLocaleString()}% duplicate score or higher.${estimate} ${reviewCount.toLocaleString()} displayed pair${reviewCount === 1 ? " is" : "s are"} in the manual-review range.`;
+      : `${config.threshold.toLocaleString()}% weighted duplicate score or higher.${estimate}`;
     for (const card of byId("ppVisualReviewPairs").querySelectorAll(".postprocessVisualPair")) {
       const pair = pairs[Number(card.dataset.pairIndex)];
       const score = compositeScore(pair, config);
-      const qualifies = score != null
-        && score >= config.threshold
-        && Number(pair.appearance_similarity || 0) * 100 >= config.minimumAppearance
-        && Number(pair.context_similarity || 0) * 100 >= config.minimumContext;
+      const qualifies = score != null && score >= config.threshold;
       const edgeKey = `${Math.min(pair.first_index, pair.second_index)}:${Math.max(pair.first_index, pair.second_index)}`;
       card.classList.toggle("isDuplicate", manualMode ? manualDuplicateDecisions.has(edgeKey) : qualifies);
-      card.classList.toggle("needsReview", !manualMode && !qualifies && score != null && score >= config.reviewThreshold);
       card.querySelector(".postprocessManualPairControls")?.toggleAttribute("hidden", !manualMode);
       const scoreLabel = card.querySelector(".postprocessVisualSimilarity");
       if (scoreLabel) scoreLabel.textContent = score == null ? "Not compared" : `${Math.round(score)}% duplicate`;
@@ -244,7 +240,6 @@
     byId("ppApplyVisualDeduplication").disabled = !valid || workflow?.status !== "complete";
     byId("ppApplyVisualDeduplication").textContent = manualMode ? "Apply manual selections" : "Apply visual deduplication";
     byId("ppVisualSimilarity").disabled = manualMode;
-    byId("ppDuplicateScoringAdvanced").classList.toggle("locked", manualMode);
   }
 
   function comparisonEdgeKey(pair) {
@@ -286,23 +281,18 @@
   function mapReviewPair(pair) {
     const config = scoringConfig();
     const score = compositeScore(pair, config);
-    const qualifies = score != null
-      && score >= config.threshold
-      && Number(pair.appearance_similarity || 0) * 100 >= config.minimumAppearance
-      && Number(pair.context_similarity || 0) * 100 >= config.minimumContext;
+    const qualifies = score != null && score >= config.threshold;
     return {
       ...pair,
       display_score: score,
-      review_status: qualifies ? "duplicate" : score != null && score >= config.reviewThreshold ? "review" : "below",
+      review_status: qualifies ? "duplicate" : "below",
     };
   }
 
   function viewComparisonOnMap(pairIndex) {
-    const pairs = loadedComparisonPairs.map(mapReviewPair);
-    if (!api()?.showAnomalyReviewPair(pairs, pairIndex, false)) return;
-    const modal = byId("ppVisualComparisonsModal");
-    modal.classList.remove("show");
-    modal.classList.add("hidden");
+    const workflow = currentAnomalyWorkflow();
+    const pairs = comparisonPairs(workflow).map(mapReviewPair);
+    api()?.showAnomalyReviewPair(pairs, pairIndex, false);
   }
 
   async function loadAllComparisonMapPairs() {
@@ -336,18 +326,64 @@
     return Math.max(1, Math.min(8, 0.38 / Math.max(width, height)));
   }
 
-  function setComparisonImageZoom(zoom) {
+  function applyComparisonImageTransform(image) {
+    const panX = Number(image.dataset.panX || 0);
+    const panY = Number(image.dataset.panY || 0);
+    image.style.transformOrigin = `${image.dataset.focusX}% ${image.dataset.focusY}%`;
+    image.style.transform = `translate(${panX}px, ${panY}px) scale(${comparisonImageZoom})`;
+  }
+
+  function setComparisonImageZoom(zoom, resetPan = false) {
     comparisonImageZoom = Math.max(1, Math.min(10, Number(zoom) || 1));
     for (const image of byId("ppVisualComparisonFullImages").querySelectorAll("img[data-focus-x]")) {
-      image.style.transformOrigin = `${image.dataset.focusX}% ${image.dataset.focusY}%`;
-      image.style.transform = `scale(${comparisonImageZoom})`;
+      if (resetPan || comparisonImageZoom === 1) {
+        image.dataset.panX = "0";
+        image.dataset.panY = "0";
+      }
+      applyComparisonImageTransform(image);
     }
     byId("ppVisualComparisonZoomLevel").textContent = `${Math.round(comparisonImageZoom * 100)}%`;
     byId("ppVisualComparisonZoomOut").disabled = comparisonImageZoom <= 1;
   }
 
+  function bindComparisonImageInteraction(frame, image) {
+    let drag = null;
+    image.dataset.panX = "0";
+    image.dataset.panY = "0";
+    frame.addEventListener("wheel", event => {
+      event.preventDefault();
+      setComparisonImageZoom(comparisonImageZoom + (event.deltaY < 0 ? 0.5 : -0.5));
+    }, { passive: false });
+    frame.addEventListener("pointerdown", event => {
+      if (comparisonImageZoom <= 1) return;
+      drag = {
+        x: event.clientX,
+        y: event.clientY,
+        panX: Number(image.dataset.panX || 0),
+        panY: Number(image.dataset.panY || 0),
+      };
+      frame.setPointerCapture(event.pointerId);
+      frame.classList.add("isPanning");
+    });
+    frame.addEventListener("pointermove", event => {
+      if (!drag) return;
+      image.dataset.panX = String(drag.panX + event.clientX - drag.x);
+      image.dataset.panY = String(drag.panY + event.clientY - drag.y);
+      applyComparisonImageTransform(image);
+    });
+    const stop = event => {
+      if (!drag) return;
+      drag = null;
+      frame.classList.remove("isPanning");
+      if (frame.hasPointerCapture(event.pointerId)) frame.releasePointerCapture(event.pointerId);
+    };
+    frame.addEventListener("pointerup", stop);
+    frame.addEventListener("pointercancel", stop);
+  }
+
   function renderComparisonDetail(pairIndex) {
-    const pair = loadedComparisonPairs[pairIndex];
+    const pairs = comparisonPairs(currentAnomalyWorkflow());
+    const pair = pairs[pairIndex];
     if (!pair) return;
     activeComparisonIndex = pairIndex;
     byId("ppVisualReviewPairs").hidden = true;
@@ -365,9 +401,9 @@
 
     const images = byId("ppVisualComparisonFullImages");
     images.replaceChildren();
-    for (const [side, imageUrl, cropUrl, name, focusBox] of [
-      ["Left", pair.first_image_url, pair.first_crop_url, pair.first_image, pair.first_focus_box],
-      ["Right", pair.second_image_url, pair.second_crop_url, pair.second_image, pair.second_focus_box],
+    for (const [side, imageUrl, cropUrl, name, focusBox, anomalyId] of [
+      ["Left", pair.first_image_url, pair.first_crop_url, pair.first_image, pair.first_focus_box, pair.first_anomaly_id ?? Number(pair.first_index) + 1],
+      ["Right", pair.second_image_url, pair.second_crop_url, pair.second_image, pair.second_focus_box, pair.second_anomaly_id ?? Number(pair.second_index) + 1],
     ]) {
       const figure = document.createElement("figure");
       const frame = document.createElement("div");
@@ -383,6 +419,7 @@
         image.dataset.focusX = String(focusX);
         image.dataset.focusY = String(focusY);
         frame.appendChild(image);
+        bindComparisonImageInteraction(frame, image);
       } else {
         const missing = document.createElement("div");
         missing.className = "postprocessComparisonImageMissing";
@@ -395,6 +432,10 @@
       const filename = document.createElement("span");
       filename.textContent = name || "Source image unavailable";
       caption.append(label, filename);
+      const identifier = document.createElement("small");
+      identifier.className = "postprocessComparisonAnomalyId";
+      identifier.textContent = `Anomaly ID: ${anomalyId}`;
+      caption.appendChild(identifier);
       if (!imageUrl && cropUrl) {
         const cropOnly = document.createElement("small");
         cropOnly.className = "muted";
@@ -440,6 +481,17 @@
     keep.onchange = persist;
     manualControls.append(markLabel, keep);
     details.appendChild(manualControls);
+    viewComparisonOnMap(pairIndex);
+  }
+
+  async function toggleComparisonFullscreen() {
+    const workspace = byId("ppVisualComparisonsWorkspace");
+    try {
+      if (document.fullscreenElement === workspace) await document.exitFullscreen();
+      else await workspace.requestFullscreen();
+    } catch (error) {
+      api()?.setMessage(`Could not open the comparison fullscreen: ${error.message}`, "err");
+    }
   }
 
   async function navigateComparison(direction) {
@@ -447,17 +499,35 @@
     const target = activeComparisonIndex + direction;
     if (target < 0 || target >= loadedComparisonTotal) return;
     if (target >= loadedComparisonPairs.length) await loadComparisonPage(false);
-    if (loadedComparisonPairs[target]) renderComparisonDetail(target);
+    if (comparisonPairs(currentAnomalyWorkflow())[target]) renderComparisonDetail(target);
   }
 
   function renderVisualReview(workflow) {
     const review = byId("ppVisualReview");
     const pairsHost = byId("ppVisualReviewPairs");
+    const applyButton = byId("ppApplyVisualDeduplication");
     const stats = workflow?.visual_analysis_stats;
-    if (!stats || !workflow?.visual_review) {
+    const viewButton = byId("ppViewVisualComparisons");
+    const savedTotal = Number(
+      workflow?.visual_review?.total_pairs
+      ?? workflow?.visual_review_total_pairs
+      ?? 0
+    );
+    const hasSavedReview = Boolean(
+      workflow?.visual_review_available
+      || workflow?.visual_review_path
+      || workflow?.visual_review
+    );
+    const workflowRunning = workflow?.status === "queued" || workflow?.status === "running";
+    viewButton.hidden = !hasSavedReview;
+    viewButton.disabled = !hasSavedReview || workflowRunning;
+    viewButton.textContent = savedTotal > 0
+      ? `Review image comparisons (${savedTotal.toLocaleString()})`
+      : "Review saved image comparisons";
+    applyButton.hidden = !workflow?.visual_review;
+    if (!workflow?.visual_review) {
       review.hidden = true;
       if (pairsHost.dataset.analysisLoading !== "true") pairsHost.replaceChildren();
-      byId("ppViewVisualComparisons").hidden = true;
       return;
     }
     delete pairsHost.dataset.analysisLoading;
@@ -475,9 +545,6 @@
         ppShapeWeight: saved.shape_weight_percent,
         ppSizeWeight: saved.size_weight_percent,
         ppProximityWeight: saved.proximity_weight_percent,
-        ppMinimumAppearance: saved.minimum_appearance_percent,
-        ppMinimumContext: saved.minimum_context_percent,
-        ppManualReviewThreshold: saved.manual_review_percent,
       };
       for (const [id, value] of Object.entries(fields)) {
         const field = byId(id);
@@ -490,10 +557,12 @@
       }
     }
     review.hidden = false;
-    const candidateCount = Number(stats.spatial_candidate_pairs || 0);
-    const comparedCount = Number(stats.visually_compared_pairs || 0);
-    const missingCount = Number(stats.missing_image_pairs || 0);
-    byId("ppVisualReviewSummary").textContent = `${candidateCount.toLocaleString()} candidate pairs from images within ${Number(stats.neighbor_image_radius_m || 0).toLocaleString()} m · anomaly shift up to ${Number(stats.maximum_location_shift_m || 0).toLocaleString()} m · ${comparedCount.toLocaleString()} visually compared${missingCount ? ` · ${missingCount.toLocaleString()} kept because imagery was unavailable` : ""}`;
+    const candidateCount = Number(stats?.spatial_candidate_pairs ?? workflow.visual_review.total_pairs ?? 0);
+    const comparedCount = Number(stats?.visually_compared_pairs || 0);
+    const missingCount = Number(stats?.missing_image_pairs || 0);
+    byId("ppVisualReviewSummary").textContent = stats
+      ? `${candidateCount.toLocaleString()} candidate pairs from images within ${Number(stats.neighbor_image_radius_m || 0).toLocaleString()} m · anomaly shift up to ${Number(stats.maximum_location_shift_m || 0).toLocaleString()} m · ${comparedCount.toLocaleString()} visually compared${missingCount ? ` · ${missingCount.toLocaleString()} kept because imagery was unavailable` : ""}`
+      : `${candidateCount.toLocaleString()} saved comparison pair${candidateCount === 1 ? "" : "s"} restored from this job.`;
     byId("ppVisualComparisonsSummary").textContent = byId("ppVisualReviewSummary").textContent;
     pairsHost.replaceChildren();
     const pairs = comparisonPairs(workflow);
@@ -589,9 +658,9 @@
       note.textContent = `Showing ${pairs.length.toLocaleString()} of ${totalPairs.toLocaleString()} candidate pairs.`;
       pairsHost.appendChild(note);
     }
-    const viewButton = byId("ppViewVisualComparisons");
-    viewButton.hidden = totalPairs === 0;
-    viewButton.textContent = `View image comparisons (${totalPairs.toLocaleString()})`;
+    viewButton.hidden = false;
+    viewButton.disabled = false;
+    viewButton.textContent = `Review image comparisons (${totalPairs.toLocaleString()})`;
     const loadMore = byId("ppVisualComparisonsLoadMore");
     loadMore.hidden = pairs.length >= totalPairs;
     loadMore.disabled = false;
@@ -676,9 +745,21 @@
         : [...loadedComparisonPairs, ...(payload.pairs || [])];
       loadedComparisonTotal = Number(payload.total_pairs || loadedComparisonPairs.length);
       const workflow = current.workflows.find(item => item.id === workflowId && item.workflow_kind === "anomaly");
-      if (workflow) renderVisualReview(workflow);
+      if (workflow) {
+        workflow.visual_review = {
+          ...(workflow.visual_review || {}),
+          pairs: loadedComparisonPairs.slice(0, 12),
+          total_pairs: loadedComparisonTotal,
+          displayed_pairs: Math.min(12, loadedComparisonPairs.length),
+        };
+        renderVisualReview(workflow);
+      }
     } catch (error) {
       api()?.setMessage(`Could not load image comparisons: ${error.message}`, "err");
+      const errorMessage = document.createElement("p");
+      errorMessage.className = "statusLine err";
+      errorMessage.textContent = `Could not load saved comparisons: ${error.message}`;
+      byId("ppVisualReviewPairs").replaceChildren(errorMessage);
     } finally {
       button.disabled = false;
       button.textContent = "Load more";
@@ -687,6 +768,7 @@
 
   function switchMode(mode) {
     if (api()?.getContext()?.mode === mode) return;
+    closeComparisonsWorkspace();
     const anomaly = mode === "anomaly";
     byId("ppSegmentationWorkflow").hidden = anomaly;
     byId("ppAnomalyControls").hidden = !anomaly;
@@ -766,7 +848,7 @@
           option.dataset.rowsUrl,
           null,
           "Final rows (visual reference)",
-          false,
+          true,
           option.dataset.rowsMtime,
           null,
           false,
@@ -780,6 +862,7 @@
   function refresh(context = api()?.getContext()) {
     if (!context) return;
     const workflow = context.workflows.find(item => item.id === context.workflowId && item.workflow_kind === "anomaly");
+    const hasOverlapDeduplicated = Boolean(workflow?.overlap_deduplicate_stats);
     const hasDeduplicated = Boolean(workflow?.outputs?.deduplicated);
     renderVisualReview(workflow);
     const anomalySelect = byId("ppAnomalyGeojson");
@@ -817,13 +900,21 @@
     }
     const scanned = Boolean(configuredReady || (selectedKey && selectedKey === scannedPath) || hasDeduplicated);
     const workflowRunning = workflow?.status === "queued" || workflow?.status === "running";
+    byId("ppOverlapDeduplicateStep").hidden = false;
+    byId("ppOverlapDeduplicateStep").classList.toggle("locked", !scanned);
+    byId("ppOverlapDeduplicateStep").setAttribute("aria-disabled", String(!scanned));
+    byId("ppRemoveOverlappingAnomalies").disabled = !scanned || workflowRunning;
+    byId("ppRemoveOverlappingAnomalies").textContent = workflowRunning && workflow?.stage === "overlap_deduplicate"
+      ? "Removing overlapping polygons…"
+      : hasOverlapDeduplicated ? "Re-run overlap removal" : "Remove overlapping polygons";
     byId("ppDeduplicateStep").hidden = false;
-    byId("ppDeduplicateStep").classList.toggle("locked", !scanned);
-    byId("ppDeduplicateStep").setAttribute("aria-disabled", String(!scanned));
-    byId("ppDeduplicate").disabled = !scanned || workflowRunning;
+    byId("ppDeduplicateStep").classList.toggle("locked", !hasOverlapDeduplicated);
+    byId("ppDeduplicateStep").setAttribute("aria-disabled", String(!hasOverlapDeduplicated));
+    byId("ppDeduplicate").disabled = !hasOverlapDeduplicated || workflowRunning;
     byId("ppDeduplicate").textContent = workflowRunning && workflow?.stage === "deduplicate"
       ? "Analyzing visual duplicates…"
       : "Analyze visual duplicates";
+    byId("ppSkipVisualDeduplication").disabled = !hasOverlapDeduplicated || workflowRunning;
 
     const panelSelect = byId("ppPanelReference");
     const previousPanel = panelSelect.value;
@@ -862,6 +953,19 @@
     byId("ppAdjustAnomaliesStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
+    const phase = workflow?.outputs?.associated
+      ? 0
+      : workflow?.deduplicate_stats ? 3
+        : hasOverlapDeduplicated ? 2 : 1;
+    if (phase !== anomalyStepPhase) {
+      anomalyStepPhase = phase;
+      [
+        byId("ppOverlapDeduplicateStep"),
+        byId("ppDeduplicateStep"),
+        byId("ppAdjustAnomaliesStep"),
+        byId("ppAssociateStep"),
+      ].forEach((step, index) => setAnomalyStepCollapsed(step, phase === 0 || index + 1 !== phase));
+    }
     if (context.mode === "anomaly" && context.resultId && context.geojsonFiles.length) {
       void api()?.whenProcessingLayersReady().then(() => {
         if (api()?.getContext()?.mode === "anomaly") scheduleNeighborStats();
@@ -869,11 +973,46 @@
     }
   }
 
-  async function deduplicate() {
+  async function removeOverlappingAnomalies() {
     const workspace = api();
     const context = workspace.getContext();
     const resultId = context.resultId || context.configuredResultId;
     const source = byId("ppAnomalyGeojson")?.value || context.configuredSourcePath;
+    const button = byId("ppRemoveOverlappingAnomalies");
+    if (!resultId || !source) {
+      workspace.setMessage("The configured anomaly source is unavailable. Open Edit config and verify it.", "err");
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Removing overlapping polygons…";
+    workspace.setMessage("Removing overlapping anomaly polygons…");
+    try {
+      const payload = await workspace.requestJson(
+        `/api/results/${encodeURIComponent(resultId)}/postprocess/anomalies/overlap-deduplicate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            input_path: source,
+            output_name: byId("ppAnomalyOutputName").value.trim() || "anomaly_postprocess",
+            minimum_overlap_percent: Number(byId("ppAnomalyOverlapPercent").value),
+          }),
+        },
+      );
+      await workspace.runWorkflow(payload);
+    } catch (error) {
+      workspace.setMessage(error.message, "err");
+      button.disabled = false;
+      button.textContent = "Remove overlapping polygons";
+    }
+  }
+
+  async function deduplicate() {
+    const workspace = api();
+    const context = workspace.getContext();
+    const resultId = context.resultId || context.configuredResultId;
+    const workflow = context.workflows.find(item => item.id === context.workflowId && item.workflow_kind === "anomaly");
+    const source = workflow?.overlap_input_path || workflow?.outputs?.deduplicated?.path;
     const button = document.getElementById("ppDeduplicate");
     if (!resultId || !source) {
       workspace.setMessage("The configured anomaly result or GeoJSON source is unavailable. Open Edit config and verify the anomaly source.", "err");
@@ -882,7 +1021,12 @@
     button.disabled = true;
     button.textContent = "Starting visual analysis…";
     workspace.setMessage("Starting anomaly deduplication…");
-    openComparisonsModalLoading();
+    loadedComparisonPairs = [];
+    loadedComparisonTotal = 0;
+    loadedComparisonWorkflowId = context.workflowId || "";
+    activeComparisonIndex = null;
+    manualDuplicateDecisions.clear();
+    openComparisonsWorkspaceLoading();
     try {
       const payload = await workspace.requestJson(
         `/api/results/${encodeURIComponent(resultId)}/postprocess/anomalies/deduplicate`,
@@ -891,6 +1035,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             input_path: source,
+            workflow_id: context.workflowId,
             output_name: byId("ppAnomalyOutputName").value.trim() || "anomaly_postprocess",
             maximum_center_distance_m: Number(byId("ppAnomalyDistance").value),
             neighbor_image_radius_m: Number(byId("ppAnomalyNeighborRadius").value),
@@ -943,9 +1088,6 @@
             deduplication_mode: deduplicationMode,
             manual_decisions: deduplicationMode === "manual" ? [...manualDuplicateDecisions.values()] : [],
             duplicate_score_percent: config.threshold,
-            manual_review_percent: config.reviewThreshold,
-            minimum_appearance_percent: config.minimumAppearance,
-            minimum_context_percent: config.minimumContext,
             appearance_weight_percent: config.weights.appearance,
             context_weight_percent: config.weights.context,
             shape_weight_percent: config.weights.shape,
@@ -1008,52 +1150,58 @@
       if (option?.dataset.url) void showSegmentationReferences(option, context);
     });
     byId("ppApplyVisualDeduplication")?.addEventListener("click", applyVisualDeduplication);
+    byId("ppRemoveOverlappingAnomalies")?.addEventListener("click", removeOverlappingAnomalies);
+    byId("ppSkipVisualDeduplication")?.addEventListener("click", () => {
+      setAnomalyStepCollapsed(byId("ppDeduplicateStep"), true);
+      setAnomalyStepCollapsed(byId("ppAdjustAnomaliesStep"), false);
+      byId("ppAdjustAnomaliesStep")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
     for (const id of Object.keys(scoringDefaults)) byId(id)?.addEventListener("input", refreshScoringControls);
     byId("ppDeduplicationMode")?.addEventListener("change", () => {
       refreshScoringControls();
       if (activeComparisonIndex != null) renderComparisonDetail(activeComparisonIndex);
     });
-    byId("ppResetScoringDefaults")?.addEventListener("click", () => {
-      for (const id of thresholdDefaultIds) byId(id).value = String(scoringDefaults[id]);
-      refreshScoringControls();
-    });
-    const comparisonsModal = byId("ppVisualComparisonsModal");
-    const closeComparisonsModal = () => {
-      comparisonsModal.classList.remove("show");
-      comparisonsModal.classList.add("hidden");
-      showComparisonGrid();
-    };
     byId("ppViewVisualComparisons")?.addEventListener("click", () => {
       showComparisonGrid();
-      comparisonsModal.classList.remove("hidden");
-      comparisonsModal.classList.add("show");
-      byId("ppVisualComparisonsClose").focus();
+      showComparisonsWorkspace();
+      if (!comparisonPairs(currentAnomalyWorkflow()).length) {
+        const loading = document.createElement("div");
+        loading.className = "postprocessComparisonsLoading";
+        loading.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Loading saved image comparisons…</span>';
+        byId("ppVisualReviewPairs").replaceChildren(loading);
+      }
       void loadComparisonPage(true);
     });
+    byId("ppVisualComparisonsBackToSteps")?.addEventListener("click", closeComparisonsWorkspace);
     byId("ppVisualComparisonsLoadMore")?.addEventListener("click", () => void loadComparisonPage(false));
     byId("ppVisualComparisonBack").onclick = showComparisonGrid;
     byId("ppVisualComparisonPrevious").onclick = () => void navigateComparison(-1);
     byId("ppVisualComparisonNext").onclick = () => void navigateComparison(1);
     byId("ppVisualComparisonZoomOut").onclick = () => setComparisonImageZoom(comparisonImageZoom - 0.5);
     byId("ppVisualComparisonZoomIn").onclick = () => setComparisonImageZoom(comparisonImageZoom + 0.5);
-    byId("ppVisualComparisonFit").onclick = () => setComparisonImageZoom(1);
+    byId("ppVisualComparisonFit").onclick = () => setComparisonImageZoom(1, true);
     byId("ppVisualComparisonViewOnMap").onclick = () => {
       if (activeComparisonIndex != null) viewComparisonOnMap(activeComparisonIndex);
     };
-    byId("ppVisualComparisonsClose")?.addEventListener("click", closeComparisonsModal);
-    byId("ppVisualComparisonsDone")?.addEventListener("click", closeComparisonsModal);
-    comparisonsModal?.addEventListener("click", event => {
-      if (event.target === comparisonsModal) closeComparisonsModal();
+    byId("ppVisualComparisonFullscreen").onclick = () => void toggleComparisonFullscreen();
+    document.addEventListener("fullscreenchange", () => {
+      const button = byId("ppVisualComparisonFullscreen");
+      const active = document.fullscreenElement === byId("ppVisualComparisonsWorkspace");
+      button?.setAttribute("aria-pressed", String(active));
+      if (button) {
+        button.title = active ? "Exit comparison fullscreen" : "View comparison fullscreen";
+        button.setAttribute("aria-label", button.title);
+      }
     });
     document.addEventListener("keydown", event => {
       const representativeModal = document.getElementById("ppRepresentativeWeightsModal");
       if (event.key === "Escape" && !representativeModal?.classList.contains("hidden")) {
         closeRepresentativeWeightsModal(false);
       }
-      if (event.key === "Escape" && !comparisonsModal?.classList.contains("hidden")) {
-        closeComparisonsModal();
+      if (event.key === "Escape" && !byId("ppVisualComparisonsWorkspace")?.hidden) {
+        closeComparisonsWorkspace();
       }
-      if (!comparisonsModal?.classList.contains("hidden") && activeComparisonIndex != null) {
+      if (!byId("ppVisualComparisonsWorkspace")?.hidden && activeComparisonIndex != null) {
         if (event.key === "ArrowLeft") void navigateComparison(-1);
         else if (event.key === "ArrowRight") void navigateComparison(1);
       }
@@ -1083,6 +1231,7 @@
       api()?.invalidateCachedMode("segmentation");
     });
     document.addEventListener("postprocess:cache-reset", () => {
+      closeComparisonsWorkspace();
       scannedPath = "";
       panelLayers = [];
       panelLayersLoaded = false;
@@ -1097,12 +1246,12 @@
       loadedComparisonTotal = 0;
       loadedComparisonWorkflowId = "";
       activeComparisonIndex = null;
+      anomalyStepPhase = null;
     });
     document.addEventListener("postprocess:request-all-anomaly-pairs", () => void loadAllComparisonMapPairs());
     document.addEventListener("postprocess:return-comparisons", event => {
       const pairIndex = Number(event.detail?.pairIndex);
-      comparisonsModal.classList.remove("hidden");
-      comparisonsModal.classList.add("show");
+      showComparisonsWorkspace();
       if (Number.isInteger(pairIndex) && loadedComparisonPairs[pairIndex]) renderComparisonDetail(pairIndex);
       else showComparisonGrid();
     });

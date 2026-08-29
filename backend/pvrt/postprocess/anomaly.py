@@ -466,6 +466,10 @@ def analyze_visual_duplicates(
             pair = {
                 "first_index": source_index,
                 "second_index": candidate_index,
+                "first_anomaly_id": _anomaly_id(properties, source_index),
+                "second_anomaly_id": _anomaly_id(candidate_properties, candidate_index),
+                "first_geometry": mapping(wgs_geometry),
+                "second_geometry": mapping(candidate_wgs),
                 "first_image": _image_name(properties),
                 "second_image": _image_name(candidate_properties),
                 "first_crop_path": first_crop[1] if first_crop else None,
@@ -505,8 +509,6 @@ def analyze_visual_duplicates(
         "missing_image_pairs": len(pairs) - compared,
         "suggested_duplicates_at_80_percent": sum(
             (pair.get("duplicate_score") or 0) >= 0.80
-            and (pair.get("appearance_similarity") or 0) >= 0.75
-            and (pair.get("context_similarity") or 0) >= 0.60
             for pair in pairs
         ),
         "neighbor_image_radius_m": neighbor_image_radius_m,
@@ -522,8 +524,6 @@ def apply_visual_deduplication(
     output_path: Path,
     *,
     duplicate_score_threshold: float = 0.80,
-    minimum_appearance_similarity: float = 0.75,
-    minimum_context_similarity: float = 0.60,
     weights: dict[str, float] | None = None,
     representative_weights: dict[str, float] | None = None,
     manual_decisions: list[dict[str, int]] | None = None,
@@ -545,8 +545,6 @@ def apply_visual_deduplication(
             and
             composite is not None
             and composite >= duplicate_score_threshold
-            and float(pair.get("appearance_similarity") or 0.0) >= minimum_appearance_similarity
-            and float(pair.get("context_similarity") or 0.0) >= minimum_context_similarity
         ):
             qualifying_pairs[edge] = pair
     if manual_decisions is not None:
@@ -710,8 +708,6 @@ def apply_visual_deduplication(
         "output_features": len(output_features),
         "duplicates_removed": len(removed),
         "duplicate_score_threshold": duplicate_score_threshold,
-        "minimum_appearance_similarity": minimum_appearance_similarity,
-        "minimum_context_similarity": minimum_context_similarity,
         "weights": weights or DEFAULT_DUPLICATE_WEIGHTS,
         "representative_weights": selected_representative_weights,
         "deduplication_method": "manual" if manual_decisions is not None else "threshold",
@@ -726,6 +722,7 @@ def deduplicate_anomalies(
     minimum_iou: float = 0.35,
     maximum_center_distance_m: float = 0.35,
     minimum_smaller_overlap: float = 0.55,
+    overlap_only: bool = False,
     callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Keep the strongest of same-class predictions representing one anomaly."""
@@ -762,7 +759,12 @@ def deduplicate_anomalies(
             intersection = geometry.intersection(candidate).area
             smaller_overlap = intersection / min(geometry.area, candidate.area) if min(geometry.area, candidate.area) > 0 else 0.0
             centres_close = geometry.centroid.distance(candidate.centroid) <= maximum_center_distance_m
-            if _intersection_over_union(geometry, candidate) >= minimum_iou or (centres_close and smaller_overlap >= minimum_smaller_overlap):
+            if (
+                smaller_overlap >= minimum_smaller_overlap
+                if overlap_only
+                else _intersection_over_union(geometry, candidate) >= minimum_iou
+                or (centres_close and smaller_overlap >= minimum_smaller_overlap)
+            ):
                 removed.add(candidate_index)
                 duplicate_indices.append(candidate_index)
         kept.append((source_index, geometry, properties, duplicate_indices))
@@ -786,6 +788,7 @@ def deduplicate_anomalies(
         "invalid_input_features": invalid,
         "output_features": len(output_features),
         "duplicates_removed": len(removed),
+        "minimum_overlap": minimum_smaller_overlap if overlap_only else None,
         "metric_crs": metric_crs.to_string(),
         "output_path": str(output_path),
     }
