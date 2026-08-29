@@ -2538,7 +2538,13 @@
     };
     const availableStages = [...GENERATED_STAGES].filter(stage => status.outputs?.[stage]?.url);
     const preferredStage = state.mode === "anomaly"
-      ? (availableStages.includes("associated") ? "associated" : "deduplicated")
+      ? (availableStages.includes("associated")
+          ? "associated"
+          : availableStages.includes("deduplicated")
+            ? "deduplicated"
+            : availableStages.includes("overlap_deduplicated")
+              ? "overlap_deduplicated"
+              : null)
       : (availableStages.includes("regularized") ? "regularized" : availableStages.includes("combined") ? "combined" : "solar_rows");
     const immediateStages = preferredStage && availableStages.includes(preferredStage) ? [preferredStage] : [];
     const deferredStages = availableStages.filter(stage => !immediateStages.includes(stage));
