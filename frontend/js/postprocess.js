@@ -1486,17 +1486,48 @@
     item.bounds = item.layer.getBounds?.();
   }
 
-  async function loadReferenceSources(resultId) {
+  function labeledReferenceItem(item, sourceLabel) {
+    if (!sourceLabel) return item;
+    const labeled = {
+      ...item,
+      label: `${sourceLabel} · ${item.label}`,
+    };
+    if (item.loader) {
+      labeled.loader = async () => {
+        await item.loader();
+        labeled.loaded = item.loaded;
+        labeled.loading = item.loading;
+        labeled.detail = item.detail;
+        labeled.bounds = item.bounds;
+        labeled.geojson = item.geojson;
+      };
+    }
+    return labeled;
+  }
+
+  function applyReferenceSource(loaded, { append = false, sourceKey = "", sourceLabel = "" } = {}) {
+    const layers = append ? new Map(state.referenceLayers) : new Map();
+    for (const [key, item] of loaded.layers) {
+      layers.set(sourceKey ? `${sourceKey}:${key}` : key, labeledReferenceItem(item, sourceLabel));
+    }
+    state.referenceLayers = layers;
+    renderReferenceLayers();
+    byId("ppReferenceStatus").textContent = layers.size
+      ? "Reference sources found. Enable only the imagery needed for editing."
+      : loaded.status;
+  }
+
+  async function loadReferenceSources(resultId, options = {}) {
     const token = ++state.referenceToken;
     const cached = state.referenceSourceCache.get(resultId);
     if (cached) {
-      state.referenceLayers = new Map(cached.layers);
-      renderReferenceLayers();
-      byId("ppReferenceStatus").textContent = cached.status;
+      applyReferenceSource(cached, options);
       return;
     }
-    showListLoading("ppReferenceLayers", "Loading reference layers…");
-    byId("ppReferenceStatus").textContent = "Finding linked orthophoto and image references…";
+    if (!options.append) showListLoading("ppReferenceLayers", "Loading reference layers…");
+    byId("ppReferenceStatus").textContent = options.sourceLabel
+      ? `Finding ${options.sourceLabel.toLowerCase()} orthophoto and image references…`
+      : "Finding linked orthophoto and image references…";
     let pending = state.referenceLoadPromises.get(resultId);
     if (!pending) {
       pending = (async () => {
@@ -1563,9 +1594,33 @@
       if (state.referenceLoadPromises.get(resultId) === pending) state.referenceLoadPromises.delete(resultId);
     }
     if (token !== state.referenceToken) return;
-    state.referenceLayers = new Map(loaded.layers);
-    renderReferenceLayers();
-    byId("ppReferenceStatus").textContent = loaded.status;
+    applyReferenceSource(loaded, options);
+  }
+
+  async function loadConfiguredReferenceSources() {
+    const sources = state.currentJob?.sources || {};
+    const segmentationId = String(sources.segmentation?.result_id || sources.segmentation?.workspace_result_id || "");
+    const anomalyId = String(sources.anomaly?.result_id || sources.anomaly?.workspace_result_id || "");
+    if (state.mode !== "anomaly") {
+      if (segmentationId) await loadReferenceSources(segmentationId);
+      return;
+    }
+    if (anomalyId && anomalyId === segmentationId) {
+      await loadReferenceSources(anomalyId, { sourceKey: "shared", sourceLabel: "Shared run" });
+      return;
+    }
+    let appended = false;
+    if (anomalyId) {
+      await loadReferenceSources(anomalyId, { sourceKey: "anomaly", sourceLabel: "Anomaly run" });
+      appended = true;
+    }
+    if (segmentationId) {
+      await loadReferenceSources(segmentationId, {
+        append: appended,
+        sourceKey: "segmentation",
+        sourceLabel: "Segmentation run",
+      });
+    }
   }
 
   async function addTemporaryGeoJson(file) {
@@ -2983,9 +3038,6 @@
     const sourcePath = String(sourceConfig.workspace_path || "source.geojson");
     const sourceUrl = String(sourceConfig.workspace_url || "");
     const select = byId("ppGeojson");
-    const referenceResultId = state.mode === "anomaly"
-      ? resultId
-      : state.currentJob?.sources?.segmentation?.workspace_result_id || resultId;
     try {
       if (!resultId || !sourceUrl) {
         throw new Error("This job has no saved source snapshot. Recreate the job or save its configuration again.");
@@ -3043,7 +3095,7 @@
       setStepsLoading(false);
       void whenProcessingLayersReady().finally(() => {
         if (!isCurrentLoad(requestedContext)) return;
-        void loadReferenceSources(referenceResultId);
+        void loadConfiguredReferenceSources();
       });
     }
   }
