@@ -257,7 +257,7 @@
     const keep = card.querySelector('[data-role="manual-keep"]');
     if (keep) {
       keep.value = String(decision?.keep_index ?? pair.first_index);
-      keep.disabled = !decision;
+      keep.disabled = false;
     }
     const status = pair.manual_review_status || "unreviewed";
     card.classList.toggle("isRejected", status === "rejected");
@@ -350,6 +350,24 @@
     if (empty) empty.hidden = visible > 0;
   }
 
+  function setComparisonFilter(value) {
+    const select = byId("ppVisualComparisonFilter");
+    const menu = byId("ppVisualComparisonFilterMenu");
+    const button = byId("ppVisualComparisonFilterButton");
+    if (!select || !menu || !button) return;
+    select.value = value;
+    const label = select.selectedOptions[0]?.textContent || "Active";
+    button.title = `Filter comparisons: ${label}`;
+    for (const option of menu.querySelectorAll("[data-comparison-filter]")) {
+      const active = option.dataset.comparisonFilter === value;
+      option.classList.toggle("isActive", active);
+      option.querySelector("span").textContent = active ? "✓" : "";
+    }
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    applyComparisonFilter();
+  }
+
   function buildPairDecisionControls(pair, pairIndex, detailed = false) {
     const controls = document.createElement("div");
     controls.className = `postprocessManualPairControls${detailed ? " postprocessComparisonManualControls" : ""}`;
@@ -360,7 +378,8 @@
     addOption(keep, String(pair.first_index), `Keep left · ${pair.first_image || Number(pair.first_index) + 1}`);
     addOption(keep, String(pair.second_index), `Keep right · ${pair.second_image || Number(pair.second_index) + 1}`);
     keep.value = String(pair.manual_keep_index ?? pair.first_index);
-    keep.disabled = pair.manual_review_status !== "accepted";
+    keep.disabled = false;
+    keep.title = "Choose which prediction to keep. Changing this accepts the duplicate pair.";
     for (const [status, symbol, title] of [
       ["accepted", "✓", "Accept duplicate"],
       ["rejected", "×", "Reject duplicate"],
@@ -423,6 +442,7 @@
 
   function showComparisonGrid() {
     activeComparisonIndex = null;
+    byId("ppVisualComparisonsHeader").hidden = false;
     byId("ppVisualComparisonDetail").hidden = true;
     byId("ppVisualReviewPairs").hidden = false;
     byId("ppVisualComparisonsTitle").textContent = "Image comparisons";
@@ -442,8 +462,27 @@
   function applyComparisonImageTransform(image) {
     const panX = Number(image.dataset.panX || 0);
     const panY = Number(image.dataset.panY || 0);
-    image.style.transformOrigin = `${image.dataset.focusX}% ${image.dataset.focusY}%`;
-    image.style.transform = `translate(${panX}px, ${panY}px) scale(${comparisonImageZoom})`;
+    const basePanX = comparisonImageZoom > 1 ? Number(image.dataset.basePanX || 0) : 0;
+    const basePanY = comparisonImageZoom > 1 ? Number(image.dataset.basePanY || 0) : 0;
+    image.style.transform = `translate(${basePanX + panX}px, ${basePanY + panY}px) scale(${comparisonImageZoom})`;
+  }
+
+  function centerComparisonImage(image) {
+    const frame = image.parentElement;
+    if (!frame || !image.naturalWidth || !image.naturalHeight) return;
+    const frameWidth = frame.clientWidth;
+    const frameHeight = frame.clientHeight;
+    const containedScale = Math.min(frameWidth / image.naturalWidth, frameHeight / image.naturalHeight);
+    const contentWidth = image.naturalWidth * containedScale;
+    const contentHeight = image.naturalHeight * containedScale;
+    const contentLeft = (frameWidth - contentWidth) / 2;
+    const contentTop = (frameHeight - contentHeight) / 2;
+    const focusX = contentLeft + Number(image.dataset.focusX || 50) / 100 * contentWidth;
+    const focusY = contentTop + Number(image.dataset.focusY || 50) / 100 * contentHeight;
+    image.style.transformOrigin = `${focusX}px ${focusY}px`;
+    image.dataset.basePanX = String(frameWidth / 2 - focusX);
+    image.dataset.basePanY = String(frameHeight / 2 - focusY);
+    applyComparisonImageTransform(image);
   }
 
   function setComparisonImageZoom(zoom, resetPan = false) {
@@ -499,6 +538,7 @@
     const pair = pairs[pairIndex];
     if (!pair) return;
     activeComparisonIndex = pairIndex;
+    byId("ppVisualComparisonsHeader").hidden = true;
     byId("ppVisualReviewPairs").hidden = true;
     byId("ppVisualComparisonDetail").hidden = false;
     byId("ppVisualComparisonsLoadMore").hidden = true;
@@ -534,6 +574,10 @@
         image.dataset.focusY = String(focusY);
         frame.appendChild(image);
         bindComparisonImageInteraction(frame, image);
+        image.addEventListener("load", () => {
+          window.requestAnimationFrame(() => centerComparisonImage(image));
+        }, { once: true });
+        if (image.complete) window.requestAnimationFrame(() => centerComparisonImage(image));
       } else {
         const missing = document.createElement("div");
         missing.className = "postprocessComparisonImageMissing";
@@ -1263,7 +1307,25 @@
     });
     byId("ppVisualComparisonsBackToSteps")?.addEventListener("click", closeComparisonsWorkspace);
     byId("ppVisualComparisonsLoadMore")?.addEventListener("click", () => void loadComparisonPage(false));
-    byId("ppVisualComparisonFilter")?.addEventListener("change", applyComparisonFilter);
+    byId("ppVisualComparisonFilterButton")?.addEventListener("click", event => {
+      event.stopPropagation();
+      const menu = byId("ppVisualComparisonFilterMenu");
+      const open = menu.hidden;
+      menu.hidden = !open;
+      event.currentTarget.setAttribute("aria-expanded", String(open));
+    });
+    for (const option of byId("ppVisualComparisonFilterMenu")?.querySelectorAll("[data-comparison-filter]") || []) {
+      option.addEventListener("click", () => setComparisonFilter(option.dataset.comparisonFilter));
+    }
+    document.addEventListener("click", event => {
+      const wrap = byId("ppVisualComparisonFilterWrap");
+      if (wrap?.contains(event.target)) return;
+      const menu = byId("ppVisualComparisonFilterMenu");
+      const button = byId("ppVisualComparisonFilterButton");
+      if (menu) menu.hidden = true;
+      button?.setAttribute("aria-expanded", "false");
+    });
+    setComparisonFilter("active");
     byId("ppVisualComparisonBack").onclick = showComparisonGrid;
     byId("ppVisualComparisonPrevious").onclick = () => void navigateComparison(-1);
     byId("ppVisualComparisonNext").onclick = () => void navigateComparison(1);
@@ -1281,6 +1343,15 @@
       if (button) {
         button.title = active ? "Exit comparison fullscreen" : "View comparison fullscreen";
         button.setAttribute("aria-label", button.title);
+      }
+      for (const image of byId("ppVisualComparisonFullImages")?.querySelectorAll("img[data-focus-x]") || []) {
+        centerComparisonImage(image);
+      }
+    });
+    window.addEventListener("resize", () => {
+      if (activeComparisonIndex == null) return;
+      for (const image of byId("ppVisualComparisonFullImages")?.querySelectorAll("img[data-focus-x]") || []) {
+        centerComparisonImage(image);
       }
     });
     document.addEventListener("keydown", event => {

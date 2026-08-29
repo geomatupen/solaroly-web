@@ -989,7 +989,7 @@
     const bounds = selected.getBounds();
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 21 });
     byId("ppAnomalyMapReview").hidden = false;
-    byId("ppAnomalyMapReviewTitle").textContent = `Duplicate comparison ${selectedIndex + 1}`;
+    byId("ppAnomalyMapReviewTitle").textContent = `Comparison ${selectedIndex + 1}`;
     byId("ppAnomalyMapReviewDetails").textContent = `IDs ${pair.first_anomaly_id ?? Number(pair.first_index) + 1} / ${pair.second_anomaly_id ?? Number(pair.second_index) + 1} · ${pair.display_score == null ? "Score unavailable" : `${Math.round(pair.display_score)}% duplicate`} · ${Number(pair.center_distance_m || 0).toFixed(2)} m apart`;
     window.requestAnimationFrame(() => map.invalidateSize());
     return true;

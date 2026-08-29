@@ -469,19 +469,30 @@
   position: absolute;
   z-index: 900;
   top: 12px;
-  left: 58px;
   right: 12px;
-  display: flex;
+  display: grid;
+  width: min(360px, calc(100% - 84px));
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
+  gap: 8px;
+  padding: 10px;
   border: 1px solid #334155;
   border-radius: 9px;
   background: rgba(11, 17, 23, .94);
   box-shadow: 0 8px 22px rgba(0, 0, 0, .32);
 }
 .postprocessAnomalyMapReview[hidden] { display: none; }
-.postprocessAnomalyMapReview > div:first-child { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.postprocessAnomalyMapReview > div:first-child {
+  display: flex;
+  min-width: 0;
+  grid-column: 1 / -1;
+  flex-direction: column;
+}
+.postprocessAnomalyMapReview > div:first-child strong { font-size: 13px; }
+.postprocessAnomalyMapReview > div:first-child span {
+  margin-top: 2px;
+  line-height: 1.35;
+}
 .postprocessMapPairToggle {
   display: inline-flex;
   align-items: center;
@@ -1411,16 +1422,48 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   gap: 12px;
   margin-bottom: 12px;
 }
+.postprocessComparisonWorkspaceHeader[hidden] { display: none; }
 .postprocessComparisonWorkspaceHeader > div { min-width: 0; }
 .postprocessComparisonFilter {
-  display: flex;
-  min-width: 150px;
+  position: relative;
+  display: block;
+  min-width: 0;
   margin-left: auto;
-  align-items: center;
-  gap: 8px;
 }
-.postprocessComparisonFilter label { white-space: nowrap; }
-.postprocessComparisonFilter select { min-width: 115px; }
+.postprocessComparisonFilter > select[hidden] { display: none; }
+.postprocessComparisonFilter > .postprocessIconButton svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.postprocessComparisonFilterMenu {
+  position: absolute;
+  z-index: 1200;
+  top: calc(100% + 5px);
+  right: 0;
+  width: 150px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel, #101820);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+}
+.postprocessComparisonFilterMenu[hidden] { display: none; }
+.postprocessComparisonFilterMenu button {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 9px;
+  justify-content: space-between;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.postprocessComparisonFilterMenu button:hover,
+.postprocessComparisonFilterMenu button.isActive { background: rgba(43, 135, 255, .14); }
 .postprocessMapPairFilter {
   display: flex;
   align-items: center;
@@ -1430,7 +1473,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 .postprocessMapPairFilter select {
   width: auto;
-  min-width: 98px;
+  min-width: 86px;
   padding-block: 6px;
 }
 .postprocessComparisonWorkspaceHeader h3,
@@ -1557,7 +1600,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   .postprocessComparisonImageFrame { height: min(48vh, 520px); }
   .postprocessComparisonDetailToolbar { align-items: stretch; flex-wrap: wrap; }
   .postprocessComparisonDetailToolbar > .muted { order: 3; flex-basis: 100%; }
-  .postprocessAnomalyMapReview { left: 12px; flex-wrap: wrap; }
+  .postprocessAnomalyMapReview { width: min(340px, calc(100% - 84px)); }
 }
 
 .postprocessLogWrap { margin-top: 12px; }
