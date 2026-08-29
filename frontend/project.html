@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260829a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260829h" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260829i" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -525,7 +525,6 @@
           <div id="ppProgressText" class="progressText">Waiting…</div>
         </div>
         <div id="ppSegmentationWorkflow">
-        <div id="ppSummary" hidden></div>
 
         <div class="postprocessSteps">
           <article id="ppCombineStep" class="postprocessStep" hidden>
@@ -1129,14 +1128,15 @@
           <div class="postprocessWeightGroupHeader">
             <div>
               <h4>Duplicate-matching weights</h4>
-              <p class="muted tiny">These five weights produce the duplicate score used to decide whether two anomaly predictions represent the same physical anomaly.</p>
+              <p class="muted tiny">These six weights produce the duplicate score used to decide whether two anomaly predictions represent the same physical anomaly.</p>
             </div>
           </div>
           <div class="postprocessFields postprocessWeightFields">
-            <div><label for="ppAppearanceWeight">Appearance (%)</label><input id="ppAppearanceWeight" type="number" value="50" min="0" max="100" step="1" /><small class="muted">Anomaly crop similarity</small></div>
+            <div><label for="ppAppearanceWeight">Appearance (%)</label><input id="ppAppearanceWeight" type="number" value="45" min="0" max="100" step="1" /><small class="muted">Anomaly crop similarity</small></div>
             <div><label for="ppContextWeight">Context (%)</label><input id="ppContextWeight" type="number" value="20" min="0" max="100" step="1" /><small class="muted">Surrounding image similarity</small></div>
-            <div><label for="ppShapeWeight">Shape (%)</label><input id="ppShapeWeight" type="number" value="15" min="0" max="100" step="1" /><small class="muted">Polygon shape similarity</small></div>
+            <div><label for="ppShapeWeight">Shape (%)</label><input id="ppShapeWeight" type="number" value="10" min="0" max="100" step="1" /><small class="muted">Aspect and compactness similarity</small></div>
             <div><label for="ppSizeWeight">Size (%)</label><input id="ppSizeWeight" type="number" value="10" min="0" max="100" step="1" /><small class="muted">Polygon area similarity</small></div>
+            <div><label for="ppOrientationWeight">Orientation (%)</label><input id="ppOrientationWeight" type="number" value="10" min="0" max="100" step="1" /><small class="muted">Longest-axis direction similarity</small></div>
             <div><label for="ppProximityWeight">Proximity (%)</label><input id="ppProximityWeight" type="number" value="5" min="0" max="100" step="1" /><small class="muted">Mapped-location closeness</small></div>
           </div>
           <p id="ppDuplicateWeightsValidation" class="postprocessWeightValidation muted tiny">Weights total 100%.</p>
@@ -1641,9 +1641,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260829a"></script>
-  <script src="js/postprocess.js?v=20260829o"></script>
+  <script src="js/postprocess.js?v=20260829p"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260829r"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829s"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

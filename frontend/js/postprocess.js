@@ -77,25 +77,10 @@
     select.disabled = true;
     internalControls.set(id, select);
   }
-  for (const id of ["ppAnalyze"]) {
-    const button = document.createElement("button");
-    button.id = id;
-    button.type = "button";
-    button.disabled = true;
-    internalControls.set(id, button);
-  }
   const resultSpinner = document.createElement("span");
   resultSpinner.id = "ppResultSpinner";
   resultSpinner.hidden = true;
   internalControls.set(resultSpinner.id, resultSpinner);
-  const workflowList = document.createElement("div");
-  workflowList.id = "ppWorkflowList";
-  internalControls.set(workflowList.id, workflowList);
-  const refreshOutputs = document.createElement("button");
-  refreshOutputs.id = "ppRefreshOutputs";
-  refreshOutputs.type = "button";
-  internalControls.set(refreshOutputs.id, refreshOutputs);
-
   const byId = id => document.getElementById(id) || internalControls.get(id) || null;
 
   function loadContext() {
@@ -588,13 +573,6 @@
     button.setAttribute("aria-label", label);
   }
 
-  function startIndeterminate(message) {
-    const progress = byId("ppProgressWrap");
-    progress.hidden = false;
-    progress.classList.add("ppIndeterminate");
-    byId("ppProgressText").textContent = message;
-  }
-
   function stopIndeterminate() {
     const progress = byId("ppProgressWrap");
     progress.classList.remove("ppIndeterminate");
@@ -629,8 +607,6 @@
     state.workflowId = null;
     state.segmentationStepPhase = null;
     state.pollToken += 1;
-    byId("ppSummary").hidden = true;
-    byId("ppSummary").replaceChildren();
     byId("ppCombine").disabled = true;
     byId("ppRegularize").disabled = true;
     byId("ppCombineStep").hidden = true;
@@ -1139,7 +1115,6 @@
     }
     if (mode === "segmentation") {
       showConfiguredInitialStep();
-      if (state.analysis) renderAnalysis(state.analysis);
       const workflow = state.workflows.find(item => item.id === state.workflowId);
       syncSegmentationStepProgress(workflow || null);
     }
@@ -1889,7 +1864,6 @@
   function lockProcessingControls(locked) {
     byId("ppResult").disabled = locked || Boolean(state.currentJob);
     byId("ppGeojson").disabled = locked || Boolean(state.currentJob) || !byId("ppResult").value;
-    byId("ppAnalyze").disabled = locked || !byId("ppGeojson").value;
     byId("ppRefresh").disabled = locked;
     byId("ppSegmentationTab").disabled = locked;
     byId("ppAnomalyTab").disabled = locked;
@@ -2615,166 +2589,6 @@
   }
 
   function renderWorkflowList() {
-    const container = byId("ppWorkflowList");
-    container.replaceChildren();
-    const visibleWorkflows = state.workflows.filter(workflow =>
-      state.mode === "anomaly" ? workflow.workflow_kind === "anomaly" : workflow.workflow_kind !== "anomaly"
-    );
-    if (state.mode === "segmentation") {
-      const deliverableWorkflow = visibleWorkflows.find(workflow =>
-        workflow.id === state.workflowId && workflow.outputs?.regularized && workflow.outputs?.solar_rows
-      ) || visibleWorkflows.find(workflow => workflow.outputs?.regularized && workflow.outputs?.solar_rows);
-      if (deliverableWorkflow) {
-        state.workflowId = deliverableWorkflow.id;
-        const definitions = [
-          ["regularized", "Solar panels", deliverableWorkflow.hierarchy_stats?.panel_count],
-          ["solar_rows", "Solar rows", deliverableWorkflow.hierarchy_stats?.row_count],
-        ];
-        for (const [stage, label, count] of definitions) {
-          const output = deliverableWorkflow.outputs[stage];
-          const item = document.createElement("div");
-          item.className = "postprocessWorkflowItem";
-          const info = document.createElement("div");
-          info.className = "postprocessWorkflowInfo";
-          const name = document.createElement("strong");
-          name.textContent = label;
-          const id = document.createElement("small");
-          id.textContent = `ID: ${deliverableWorkflow.id} · ${stage}`;
-          const detail = document.createElement("small");
-          detail.textContent = `${Number(count || 0).toLocaleString()} polygons · Complete`;
-          info.append(name, id, detail);
-          const dots = document.createElement("button");
-          dots.type = "button";
-          dots.className = "iconDots";
-          dots.textContent = "⋮";
-          dots.setAttribute("aria-label", `Options for ${label}`);
-          const menu = document.createElement("div");
-          menu.className = "postprocessWorkflowMenu";
-          menu.hidden = true;
-          const download = document.createElement("a");
-          download.href = output.url;
-          download.download = "";
-          download.textContent = "Download";
-          download.addEventListener("click", () => { menu.hidden = true; });
-          const send = document.createElement("button");
-          send.type = "button";
-          send.textContent = "Link to Map";
-          send.addEventListener("click", () => {
-            menu.hidden = true;
-            void sendLayerToMap(stage, send);
-          });
-          menu.append(download, send);
-          dots.addEventListener("click", event => {
-            event.stopPropagation();
-            const willOpen = menu.hidden;
-            closeLayerMenus(menu);
-            menu.hidden = !willOpen;
-          });
-          item.append(info, dots, menu);
-          container.appendChild(item);
-        }
-        populateRegularizeSources(state.workflowId);
-        return;
-      }
-    }
-    if (!visibleWorkflows.length) {
-      container.innerHTML = '<div class="muted tiny">No saved outputs.</div>';
-      populateRegularizeSources();
-      return;
-    }
-    for (const workflow of visibleWorkflows) {
-      const item = document.createElement("div");
-      item.className = `postprocessWorkflowItem${workflow.id === state.workflowId ? " active" : ""}${workflow.source_changed ? " sourceChanged" : ""}`;
-      const info = document.createElement("div");
-      info.className = "postprocessWorkflowInfo";
-      const name = document.createElement("strong");
-      name.textContent = workflowDisplayName(workflow);
-      name.title = workflowDisplayName(workflow);
-      const id = document.createElement("small");
-      id.textContent = `ID: ${workflow.id}`;
-      id.title = workflow.id;
-      const stages = Object.keys(workflow.outputs || {})
-        .filter(stage => !["edited", "panel_hierarchy", "panel_rows", "identified_panels", "solar_panels"].includes(stage))
-        .join(" + ") || workflow.stage || "No output";
-      const status = document.createElement("small");
-      status.textContent = workflow.source_changed
-        ? `Source changed · review required · ${stages}`
-        : `${workflow.status || "unknown"} · ${stages}`;
-      info.append(name, id, status);
-      info.tabIndex = 0;
-      info.setAttribute("role", "button");
-      const open = () => {
-        if (state.editing) return;
-        state.workflowId = workflow.id;
-        applyWorkflow(workflow);
-        if (workflow.outputs?.combined) populateRegularizeSources(workflow.id);
-        renderWorkflowList();
-      };
-      info.addEventListener("click", open);
-      info.addEventListener("keydown", event => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
-      });
-
-      const dots = document.createElement("button");
-      dots.type = "button";
-      dots.className = "iconDots";
-      dots.textContent = "⋮";
-      dots.setAttribute("aria-label", `Options for ${workflowDisplayName(workflow)}`);
-      dots.disabled = Boolean(state.editing);
-      const menu = document.createElement("div");
-      menu.className = "postprocessWorkflowMenu";
-      menu.hidden = true;
-      const rename = document.createElement("button");
-      rename.type = "button";
-      rename.textContent = "Rename";
-      rename.addEventListener("click", async () => {
-        menu.hidden = true;
-        const next = window.prompt("Output name", workflowDisplayName(workflow));
-        if (next == null || !next.trim() || next.trim() === workflowDisplayName(workflow)) return;
-        try {
-          await requestJson(`/api/results/${encodeURIComponent(byId("ppResult").value)}/postprocess/${encodeURIComponent(workflow.id)}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: next.trim() }),
-          });
-          await restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value, workflow.id);
-          setMessage("Saved output renamed.", "ok");
-        } catch (error) {
-          setMessage(error.message, "err");
-        }
-      });
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "danger";
-      remove.textContent = "Delete";
-      remove.addEventListener("click", async () => {
-        menu.hidden = true;
-        if (!window.confirm(`Delete “${workflowDisplayName(workflow)}” and all of its post-processing files?`)) return;
-        try {
-          await requestJson(`/api/results/${encodeURIComponent(byId("ppResult").value)}/postprocess/${encodeURIComponent(workflow.id)}`, { method: "DELETE" });
-          if (state.workflowId === workflow.id) {
-            state.workflowId = null;
-            await bindCurrentJobWorkflow(null);
-            clearPreviewLayers();
-            byId("ppRegularize").disabled = true;
-          }
-          await restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value);
-          setMessage("Saved output deleted.", "ok");
-        } catch (error) {
-          setMessage(error.message, "err");
-        }
-      });
-      menu.append(rename, remove);
-      dots.addEventListener("click", event => {
-        event.stopPropagation();
-        document.querySelectorAll(".postprocessWorkflowMenu").forEach(other => {
-          if (other !== menu) other.hidden = true;
-        });
-        menu.hidden = !menu.hidden;
-      });
-      item.append(info, dots, menu);
-      container.appendChild(item);
-    }
     populateRegularizeSources(state.workflowId);
   }
 
@@ -2893,7 +2707,6 @@
 
   async function loadSavedOutputsFirst(resultId, requestedContext = null) {
     if (!isCurrentLoad(requestedContext)) return null;
-    showListLoading("ppWorkflowList", "Loading saved outputs…");
     showListLoading("ppLayerList", "Loading output layers…");
     try {
       const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess`, {
@@ -2935,7 +2748,6 @@
     const resultId = byId("ppResult").value;
     const select = byId("ppGeojson");
     select.disabled = true;
-    byId("ppAnalyze").disabled = true;
     select.replaceChildren();
     addOption(select, "", resultId ? "Looking for GeoJSON files…" : "Select a GeoJSON…");
     if (!resultId) {
@@ -2982,7 +2794,6 @@
       else if (predictions) select.value = predictions.value;
       else if (select.options.length > 1) select.selectedIndex = 1;
       select.disabled = Boolean(state.currentJob) || select.options.length <= 1;
-      byId("ppAnalyze").disabled = !select.value;
       let deferredSource = null;
       if (state.currentJob && state.mode === "segmentation") {
         await initializeConfiguredSegmentation({ loadSource: !earlyWorkflow });
@@ -3071,8 +2882,6 @@
       addOption(select, sourcePath, sourceFile.name);
       select.value = sourcePath;
       select.disabled = true;
-      byId("ppAnalyze").disabled = false;
-
       const binding = state.currentJob.workflows?.[state.mode];
       let workflow = null;
       if (binding?.workflow_id) {
@@ -3140,23 +2949,6 @@
     return pending;
   }
 
-  function metric(container, value, label) {
-    const item = document.createElement("div");
-    item.className = "postprocessMetric";
-    const strong = document.createElement("strong");
-    strong.textContent = value;
-    const caption = document.createElement("span");
-    caption.textContent = label;
-    item.append(strong, caption);
-    container.appendChild(item);
-  }
-
-  function renderAnalysis(summary) {
-    const container = byId("ppSummary");
-    container.replaceChildren();
-    container.hidden = true;
-  }
-
   async function initializeConfiguredSegmentation({ loadSource = true } = {}) {
     const configured = state.currentJob?.sources?.segmentation;
     const summary = configured?.summary;
@@ -3164,7 +2956,6 @@
     if (!configured || !summary || !sourcePath) return false;
     state.analysis = summary;
     state.scanComplete = true;
-    renderAnalysis(summary);
     syncSegmentationStepProgress();
     const source = state.geojsonFiles.find(file => file.path === sourcePath);
     if (loadSource && source?.url) await loadPreviewLayer("source", source.url, summary.feature_count, null, false, source.mtime);
@@ -3172,51 +2963,6 @@
     byId("ppCombine").disabled = !canCombine;
     setMessage("");
     return true;
-  }
-
-  async function analyze() {
-    const resultId = byId("ppResult").value;
-    const inputPath = byId("ppGeojson").value;
-    if (!resultId || !inputPath) return;
-    resetAnalysis();
-    byId("ppAnalyze").disabled = true;
-    startIndeterminate("Scanning polygons and tile metadata…");
-    setMessage("Scanning polygons and saved tile metadata…");
-    try {
-      const payload = await requestJson(`/api/results/${encodeURIComponent(resultId)}/postprocess/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input_path: inputPath, edge_tolerance_px: numberValue("ppEdgeTolerance") }),
-      });
-      state.analysis = payload.summary;
-      state.scanComplete = true;
-      syncSegmentationStepProgress();
-      renderAnalysis(payload.summary);
-      byId("ppCombineStep").hidden = false;
-      const source = state.geojsonFiles.find(file => file.path === inputPath);
-      if (source?.url) void loadPreviewLayer("source", source.url, payload.summary.feature_count, null, false, source.mtime);
-      const restored = await restoreLatestWorkflow(resultId, inputPath);
-      if (!payload.summary.tile_metadata_available) {
-        setMessage("The GeoJSON can be read, but its referenced result tiles were not found. Grid-aware combining cannot run.", "warn");
-        return;
-      }
-      if (!payload.summary.features_on_tile_edges) {
-        setMessage("No polygons touch a tile edge at this tolerance. There are no tile fragments to combine.", "warn");
-        return;
-      }
-      byId("ppCombine").disabled = false;
-      setMessage(
-        restored
-          ? "Scan complete. A saved combined output is available; you can combine again or continue to regularization."
-          : "Scan complete. Review the settings, then start fragment combining.",
-        "ok",
-      );
-    } catch (error) {
-      setMessage(error.message, "err");
-    } finally {
-      stopIndeterminate();
-      byId("ppAnalyze").disabled = !byId("ppGeojson").value;
-    }
   }
 
   function showProgress(progress, message) {
@@ -3410,11 +3156,9 @@
     byId("ppResult").addEventListener("change", loadGeojsons);
     byId("ppGeojson").addEventListener("change", async () => {
       resetAnalysis();
-      byId("ppAnalyze").disabled = !byId("ppGeojson").value;
       setMessage(byId("ppGeojson").value ? "Configured segmentation source selected." : "No configured segmentation source is available.");
       await restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value);
     });
-    byId("ppAnalyze").addEventListener("click", analyze);
     byId("ppCombine").addEventListener("click", combine);
     byId("ppRegularize").addEventListener("click", regularize);
     byId("ppRegularizeSource").addEventListener("change", () => {
@@ -3436,9 +3180,6 @@
       }));
     });
     byId("ppClearAnomalyPair").addEventListener("click", clearAnomalyReviewMap);
-    byId("ppRefreshOutputs").addEventListener("click", () =>
-      restoreLatestWorkflow(byId("ppResult").value, byId("ppGeojson").value, state.workflowId)
-    );
     byId("ppEditVertices").addEventListener("click", enableVertexEditing);
     byId("ppMovePolygons").addEventListener("click", enablePolygonMovement);
     byId("ppRotatePolygons").addEventListener("click", enablePolygonRotation);
@@ -4023,7 +3764,6 @@
     byId("ppJobModalClose").disabled = false;
     save.disabled = false;
     const config = mode === "config";
-    const jobName = config ? value?.name : value;
     byId("ppJobModalTitle").textContent = mode === "create" ? "Create post-processing job"
       : config ? "Edit job configuration"
         : mode === "delete" ? "Delete post-processing job"

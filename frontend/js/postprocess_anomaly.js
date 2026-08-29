@@ -15,10 +15,11 @@
   let pendingNeighborStatsKey = "";
   const scoringDefaults = {
     ppVisualSimilarity: 80,
-    ppAppearanceWeight: 50,
+    ppAppearanceWeight: 45,
     ppContextWeight: 20,
-    ppShapeWeight: 15,
+    ppShapeWeight: 10,
     ppSizeWeight: 10,
+    ppOrientationWeight: 10,
     ppProximityWeight: 5,
   };
   const representativeDefaults = {
@@ -68,6 +69,7 @@
         context: percent("ppContextWeight"),
         shape: percent("ppShapeWeight"),
         size: percent("ppSizeWeight"),
+        orientation: percent("ppOrientationWeight"),
         proximity: percent("ppProximityWeight"),
       },
       representativeWeights: { ...representativeDefaults },
@@ -203,9 +205,47 @@
     const total = Object.values(config.weights).reduce((sum, value) => sum + value, 0);
     if (!total) return null;
     return Object.entries(config.weights).reduce(
-      (sum, [name, weight]) => sum + Number(pair[`${name}_similarity`] || 0) * weight,
+      (sum, [name, weight]) => sum + componentSimilarity(pair, name) * weight,
       0,
     ) / total * 100;
+  }
+
+  function geometryOrientation(geometry) {
+    const polygons = geometry?.type === "Polygon"
+      ? [geometry.coordinates]
+      : geometry?.type === "MultiPolygon" ? geometry.coordinates : [];
+    let longest = null;
+    for (const polygon of polygons) {
+      const ring = polygon?.[0] || [];
+      for (let index = 0; index + 1 < ring.length; index += 1) {
+        const first = ring[index];
+        const second = ring[index + 1];
+        if (!Array.isArray(first) || !Array.isArray(second)) continue;
+        const latitude = (Number(first[1]) + Number(second[1])) / 2;
+        const dx = (Number(second[0]) - Number(first[0])) * Math.cos(latitude * Math.PI / 180);
+        const dy = Number(second[1]) - Number(first[1]);
+        const length = Math.hypot(dx, dy);
+        if (!longest || length > longest.length) longest = { length, dx, dy };
+      }
+    }
+    if (!longest?.length) return null;
+    return (Math.atan2(longest.dy, longest.dx) * 180 / Math.PI + 180) % 180;
+  }
+
+  function orientationSimilarity(pair) {
+    if (pair?.orientation_similarity != null) return Number(pair.orientation_similarity);
+    const first = geometryOrientation(pair?.first_geometry);
+    const second = geometryOrientation(pair?.second_geometry);
+    if (first == null || second == null) return 0;
+    const rawDifference = Math.abs(first - second) % 180;
+    const difference = Math.min(rawDifference, 180 - rawDifference);
+    return Math.max(0, 1 - difference / 90);
+  }
+
+  function componentSimilarity(pair, name) {
+    return name === "orientation"
+      ? orientationSimilarity(pair)
+      : Number(pair?.[`${name}_similarity`] || 0);
   }
 
   function scoringIsValid(config = scoringConfig()) {
@@ -639,7 +679,7 @@
     metrics.className = "muted tiny";
     metrics.textContent = pair.appearance_similarity == null
       ? `IoU ${Math.round(Number(pair.iou || 0) * 100)}% · Component scores unavailable`
-      : `${score == null ? "No duplicate score" : `${Math.round(score)}% duplicate`} · Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
+      : `${score == null ? "No duplicate score" : `${Math.round(score)}% duplicate`} · Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Orientation ${Math.round(orientationSimilarity(pair) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
     details.appendChild(metrics);
 
     details.appendChild(buildPairDecisionControls(pair, pairIndex, true));
@@ -707,8 +747,12 @@
         ppContextWeight: saved.context_weight_percent,
         ppShapeWeight: saved.shape_weight_percent,
         ppSizeWeight: saved.size_weight_percent,
+        ppOrientationWeight: saved.orientation_weight_percent,
         ppProximityWeight: saved.proximity_weight_percent,
       };
+      if (Object.keys(saved).length && saved.orientation_weight_percent == null) {
+        fields.ppOrientationWeight = 0;
+      }
       for (const [id, value] of Object.entries(fields)) {
         const field = byId(id);
         if (field && value != null) field.value = String(value);
@@ -781,7 +825,7 @@
       components.className = "postprocessVisualComponents muted";
       components.textContent = pair.appearance_similarity == null
         ? "Component scores unavailable"
-        : `Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
+        : `Appearance ${Math.round(Number(pair.appearance_similarity) * 100)}% · Context ${Math.round(Number(pair.context_similarity) * 100)}% · Shape ${Math.round(Number(pair.shape_similarity) * 100)}% · Size ${Math.round(Number(pair.size_similarity) * 100)}% · Orientation ${Math.round(orientationSimilarity(pair) * 100)}% · Distance ${Number(pair.center_distance_m || 0).toFixed(2)} m`;
       const manualControls = buildPairDecisionControls(pair, pairIndex);
       card.append(images, meta, components, manualControls);
       card.onclick = event => {
@@ -1249,6 +1293,7 @@
             context_weight_percent: config.weights.context,
             shape_weight_percent: config.weights.shape,
             size_weight_percent: config.weights.size,
+            orientation_weight_percent: config.weights.orientation,
             proximity_weight_percent: config.weights.proximity,
             representative_image_center_weight_percent: config.representativeWeights.imageCenter,
             representative_spatial_centrality_weight_percent: config.representativeWeights.spatialCentrality,

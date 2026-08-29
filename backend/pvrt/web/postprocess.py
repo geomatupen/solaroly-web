@@ -100,10 +100,11 @@ class ApplyVisualDeduplicationRequest(BaseModel):
     deduplication_mode: Literal["threshold", "manual"] = "threshold"
     manual_decisions: list[ManualDuplicateDecision] = Field(default_factory=list)
     duplicate_score_percent: float = Field(default=80.0, ge=0.0, le=100.0)
-    appearance_weight_percent: float = Field(default=50.0, ge=0.0, le=100.0)
+    appearance_weight_percent: float = Field(default=45.0, ge=0.0, le=100.0)
     context_weight_percent: float = Field(default=20.0, ge=0.0, le=100.0)
-    shape_weight_percent: float = Field(default=15.0, ge=0.0, le=100.0)
+    shape_weight_percent: float = Field(default=10.0, ge=0.0, le=100.0)
     size_weight_percent: float = Field(default=10.0, ge=0.0, le=100.0)
+    orientation_weight_percent: float = Field(default=10.0, ge=0.0, le=100.0)
     proximity_weight_percent: float = Field(default=5.0, ge=0.0, le=100.0)
     representative_image_center_weight_percent: float = Field(default=40.0, ge=0.0, le=100.0)
     representative_spatial_centrality_weight_percent: float = Field(default=35.0, ge=0.0, le=100.0)
@@ -983,11 +984,25 @@ def create_postprocess_router(
             manual_decisions = list(saved_by_edge.values())
         if request.deduplication_mode == "manual" and not manual_decisions:
             raise HTTPException(status_code=400, detail="Mark at least one image pair as a duplicate before applying manual review.")
+        supplied_fields = getattr(request, "model_fields_set", None)
+        if supplied_fields is None:
+            supplied_fields = getattr(request, "__fields_set__", set())
+        legacy_weight_total = sum((
+            request.appearance_weight_percent,
+            request.context_weight_percent,
+            request.shape_weight_percent,
+            request.size_weight_percent,
+            request.proximity_weight_percent,
+        ))
+        orientation_weight = request.orientation_weight_percent
+        if "orientation_weight_percent" not in supplied_fields:
+            orientation_weight = max(0.0, 100.0 - legacy_weight_total)
         weight_values = {
             "appearance": request.appearance_weight_percent,
             "context": request.context_weight_percent,
             "shape": request.shape_weight_percent,
             "size": request.size_weight_percent,
+            "orientation": orientation_weight,
             "proximity": request.proximity_weight_percent,
         }
         if request.deduplication_mode == "threshold" and abs(sum(weight_values.values()) - 100.0) > 0.01:
@@ -1012,6 +1027,7 @@ def create_postprocess_router(
             message=f"Queued deduplication at {request.duplicate_score_percent:g}% duplicate score.",
             scoring_parameters={
                 **(request.model_dump() if hasattr(request, "model_dump") else request.dict()),
+                "orientation_weight_percent": orientation_weight,
                 "manual_decisions": manual_decisions if request.deduplication_mode == "manual" else [],
             },
         )
@@ -1143,31 +1159,6 @@ def create_postprocess_router(
             "second_index": request.second_index,
             "status": request.status,
             "keep_index": request.keep_index if request.status == "accepted" else None,
-        }
-
-    @router.get("/{result_id}/postprocess/{workflow_id}/visual-review-map")
-    async def visual_review_map_pairs(result_id: str, workflow_id: str) -> dict[str, Any]:
-        result_dir = resolve_result(result_id)
-        workflow_dir = resolve_workflow(result_dir, workflow_id)
-        review_path = workflow_dir / "visual_review.json"
-        if not review_path.is_file():
-            raise HTTPException(status_code=404, detail="Visual review is not available for this workflow.")
-        try:
-            review = await asyncio.to_thread(lambda: json.loads(review_path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
-        fields = {
-            "first_index", "second_index", "center_distance_m", "appearance_similarity",
-            "context_similarity", "shape_similarity", "size_similarity", "proximity_similarity",
-            "first_anomaly_id", "second_anomaly_id", "first_geometry", "second_geometry",
-            "manual_review_status", "manual_keep_index",
-        }
-        return {
-            "ok": True,
-            "pairs": [
-                {key: value for key, value in pair.items() if key in fields}
-                for pair in (review.get("pairs") or [])
-            ],
         }
 
     @router.post("/{result_id}/postprocess/{workflow_id}/associate")

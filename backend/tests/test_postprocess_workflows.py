@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from pyproj import Transformer
+from shapely.affinity import rotate
 from shapely.geometry import box, mapping
 from shapely.ops import transform as transform_geometry
 
@@ -16,6 +17,7 @@ from pvrt.postprocess import (
     deduplicate_anomalies,
     image_neighbor_statistics,
 )
+from pvrt.postprocess.anomaly import _orientation_similarity
 
 
 TO_WGS84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True).transform
@@ -34,6 +36,12 @@ def _write(path: Path, features):
 
 
 class PostprocessWorkflowTests(unittest.TestCase):
+    def test_orientation_similarity_treats_parallel_axes_as_matching(self):
+        horizontal = box(0, 0, 4, 1)
+        self.assertEqual(_orientation_similarity(horizontal, rotate(horizontal, 180)), 1.0)
+        self.assertAlmostEqual(_orientation_similarity(horizontal, rotate(horizontal, 10)), 0.8889, places=4)
+        self.assertEqual(_orientation_similarity(horizontal, rotate(horizontal, 90)), 0.0)
+
     def test_representative_weights_choose_which_duplicate_polygon_is_kept(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -264,6 +272,7 @@ class PostprocessWorkflowTests(unittest.TestCase):
             self.assertGreaterEqual(pair["duplicate_score"], 0.80)
             self.assertIn("context_similarity", pair)
             self.assertIn("shape_similarity", pair)
+            self.assertIn("orientation_similarity", pair)
 
             output = workflow_dir / "deduplicated.geojson"
             applied = apply_visual_deduplication(

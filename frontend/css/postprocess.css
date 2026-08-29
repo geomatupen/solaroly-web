@@ -930,18 +930,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   vertical-align: top;
 }
 
-.postprocessSavedHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.postprocessSavedHeader h3 { margin: 0; }
-
 .postprocessWorkflowList {
   display: flex;
   flex-direction: column;
@@ -963,9 +951,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   background: #101820;
 }
 
-.postprocessWorkflowItem.active { border-color: var(--accent); }
-.postprocessWorkflowItem.sourceChanged { border-color: #f59e0b; }
-.postprocessWorkflowItem.sourceChanged .postprocessWorkflowInfo small:last-child { color: #fbbf24; }
 .postprocessWorkflowInfo { min-width: 0; }
 .postprocessWorkflowInfo strong,
 .postprocessWorkflowInfo small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1060,27 +1045,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessSelection select,
 .postprocessFields input,
 .postprocessFields select { width: 100%; }
-
-.postprocessSummary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 12px 0;
-}
-
-.postprocessSummary[hidden] { display: none; }
-
-.postprocessMetric {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(11, 17, 23, .65);
-}
-
-.postprocessMetric strong,
-.postprocessMetric span { display: block; }
-.postprocessMetric strong { font-size: 17px; }
-.postprocessMetric span { color: var(--muted); font-size: 11px; }
 
 .postprocessSteps {
   display: flex;

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable
 
-from shapely.geometry import Point, Polygon, mapping
+from shapely.geometry import Point, Polygon, mapping, shape
 from shapely.strtree import STRtree
 
 from .common import class_key, feature, infer_metric_crs, load_polygon_features, project_geometry, score, transformer, write_feature_collection
@@ -14,10 +15,11 @@ from .common import class_key, feature, infer_metric_crs, load_polygon_features,
 
 ProgressCallback = Callable[[int, str], None]
 DEFAULT_DUPLICATE_WEIGHTS = {
-    "appearance": 0.50,
+    "appearance": 0.45,
     "context": 0.20,
-    "shape": 0.15,
+    "shape": 0.10,
     "size": 0.10,
+    "orientation": 0.10,
     "proximity": 0.05,
 }
 DEFAULT_REPRESENTATIVE_WEIGHTS = {
@@ -270,6 +272,45 @@ def _shape_similarity(first: Any, second: Any) -> float:
     return round((aspect_score + compactness_score) / 2.0, 4)
 
 
+def _orientation_similarity(first: Any, second: Any) -> float:
+    """Compare the longest-axis direction, treating 0° and 180° as equivalent."""
+    def orientation(geometry: Any) -> float | None:
+        rectangle = geometry.minimum_rotated_rectangle
+        coordinates = list(rectangle.exterior.coords)
+        edges = [
+            (
+                Point(coordinates[index]).distance(Point(coordinates[index + 1])),
+                coordinates[index],
+                coordinates[index + 1],
+            )
+            for index in range(min(4, max(0, len(coordinates) - 1)))
+        ]
+        if not edges:
+            return None
+        length, start, end = max(edges, key=lambda edge: edge[0])
+        if length <= 0:
+            return None
+        return math.degrees(math.atan2(end[1] - start[1], end[0] - start[0])) % 180.0
+
+    first_orientation = orientation(first)
+    second_orientation = orientation(second)
+    if first_orientation is None or second_orientation is None:
+        return 0.0
+    difference = abs(first_orientation - second_orientation) % 180.0
+    difference = min(difference, 180.0 - difference)
+    return round(max(0.0, 1.0 - difference / 90.0), 4)
+
+
+def _pair_orientation_similarity(pair: dict[str, Any]) -> float:
+    value = pair.get("orientation_similarity")
+    if value is not None:
+        return float(value)
+    try:
+        return _orientation_similarity(shape(pair["first_geometry"]), shape(pair["second_geometry"]))
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
 def _duplicate_score(pair: dict[str, Any], weights: dict[str, float] | None = None) -> float | None:
     if pair.get("appearance_similarity") is None or pair.get("context_similarity") is None:
         return None
@@ -278,7 +319,8 @@ def _duplicate_score(pair: dict[str, Any], weights: dict[str, float] | None = No
     if total_weight <= 0:
         return None
     value = sum(
-        float(pair.get(f"{name}_similarity") or 0.0) * max(0.0, float(weight))
+        (_pair_orientation_similarity(pair) if name == "orientation" else float(pair.get(f"{name}_similarity") or 0.0))
+        * max(0.0, float(weight))
         for name, weight in selected.items()
     ) / total_weight
     return round(max(0.0, min(1.0, value)), 4)
@@ -483,6 +525,7 @@ def analyze_visual_duplicates(
                 "context_similarity": context,
                 "shape_similarity": _shape_similarity(metric_geometry, candidate_metric),
                 "size_similarity": round(size, 4),
+                "orientation_similarity": _orientation_similarity(metric_geometry, candidate_metric),
                 "proximity_similarity": round(max(0.0, 1.0 - distance / maximum_center_distance_m), 4),
                 "visual_status": "compared" if appearance is not None else "unavailable",
             }
