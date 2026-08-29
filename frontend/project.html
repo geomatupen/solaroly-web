@@ -696,13 +696,8 @@
               <div class="postprocessStepNumber">3</div>
               <div class="postprocessStepBody">
                 <h3>Review and adjust placement</h3>
-                <p class="muted tiny"><strong>Manual process:</strong> select the final segmentation panels below, then edit the deduplicated anomaly layer in Processing layers. Move, rotate, reshape, or delete polygons while using the panels as the placement reference, then save the layer.</p>
-                <div class="postprocessFields postprocessFieldsCompact">
-                  <div>
-                    <label for="ppPanelReference">Final regularized panels</label>
-                    <select id="ppPanelReference" disabled><option value="">Select final regularized panels…</option></select>
-                  </div>
-                </div>
+                <p class="muted tiny"><strong>Manual process:</strong> edit the deduplicated anomaly layer in Processing layers. Move, rotate, reshape, or delete polygons while using this job’s automatically loaded final regularized panels as the placement reference, then save the layer.</p>
+                <p id="ppPanelReferenceStatus" class="muted tiny">Loading this job’s final regularized panels…</p>
               </div>
             </article>
             <article id="ppAssociateStep" class="postprocessStep" hidden>
@@ -1644,9 +1639,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260829a"></script>
-  <script src="js/postprocess.js?v=20260829g"></script>
+  <script src="js/postprocess.js?v=20260829h"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260829k"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829n"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

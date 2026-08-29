@@ -2353,7 +2353,7 @@
     if (alreadyLoaded?.url === url && alreadyLoaded?.version === version) {
       if (visible && showAlongside && !map.hasLayer(alreadyLoaded.layer)) alreadyLoaded.layer.addTo(map);
       renderPreviewLayers();
-      return;
+      return alreadyLoaded;
     }
     const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
     const renderedKey = `${stage}::${url}::${version || ""}::${label || ""}`;
@@ -2370,7 +2370,7 @@
       state.previewLayers.set(stage, cachedLayer);
       renderPreviewLayers();
       if (visible) byId("ppMapStatus").textContent = `${cachedLayer.label} preview reused.`;
-      return;
+      return cachedLayer;
     }
     state.previewLoading.set(stage, (state.previewLoading.get(stage) || 0) + 1);
     renderPreviewLayers();
@@ -2429,6 +2429,7 @@
         if (bounds.isValid()) map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
         byId("ppMapStatus").textContent = `${style.label} preview loaded.`;
       }
+      return item;
     } catch (error) {
       if (!isCurrentLoad(context)) return;
       if (visible) byId("ppMapStatus").textContent = `Could not load ${style.label.toLowerCase()} preview: ${error.message}`;

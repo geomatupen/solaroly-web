@@ -252,18 +252,26 @@
 
   function syncPairCardDecision(pair, pairIndex) {
     const card = byId("ppVisualReviewPairs").querySelector(`[data-pair-index="${pairIndex}"]`);
-    if (!card) return;
     const decision = manualDuplicateDecisions.get(comparisonEdgeKey(pair));
-    const keep = card.querySelector('[data-role="manual-keep"]');
-    if (keep) {
-      keep.value = String(decision?.keep_index ?? pair.first_index);
-      keep.disabled = false;
-    }
     const status = pair.manual_review_status || "unreviewed";
-    card.classList.toggle("isRejected", status === "rejected");
-    for (const button of card.querySelectorAll("[data-decision]")) {
-      button.classList.toggle("isActive", button.dataset.decision === status);
-      button.setAttribute("aria-pressed", String(button.dataset.decision === status));
+    const detailControls = activeComparisonIndex === pairIndex
+      ? byId("ppVisualComparisonDetails")?.querySelector(".postprocessComparisonManualControls")
+      : null;
+    if (card) card.classList.toggle("isRejected", status === "rejected");
+    for (const controls of [card?.querySelector(".postprocessManualPairControls"), detailControls].filter(Boolean)) {
+      const keep = controls.querySelector('[data-role="manual-keep"]');
+      if (keep) {
+        keep.value = String(decision?.keep_index ?? pair.first_index);
+        keep.disabled = false;
+      }
+      for (const button of controls.querySelectorAll("[data-decision]")) {
+        const active = button.dataset.decision === status;
+        const action = button.dataset.decision === "accepted" ? "accept duplicate" : "reject duplicate";
+        button.classList.toggle("isActive", active);
+        button.setAttribute("aria-pressed", String(active));
+        button.title = active ? `Undo ${action}` : `${action[0].toUpperCase()}${action.slice(1)}`;
+        button.setAttribute("aria-label", button.title);
+      }
     }
     applyComparisonFilter();
   }
@@ -317,6 +325,7 @@
           }),
         },
       );
+      return true;
     } catch (error) {
       setLocalPairDecision(pair, previousStatus, previousKeep ?? pair.first_index);
       api()?.updateAnomalyReviewPairDecision(
@@ -327,6 +336,7 @@
       syncPairCardDecision(pair, pairIndex);
       if (workflow) updateThresholdEffect(workflow);
       api()?.setMessage(`Could not save the comparison decision: ${error.message}`, "err");
+      return false;
     }
   }
 
@@ -368,6 +378,21 @@
     applyComparisonFilter();
   }
 
+  function leaveFilteredComparison(pairIndex) {
+    const pairs = comparisonPairs(currentAnomalyWorkflow());
+    const next = pairs.findIndex((pair, index) => index > pairIndex && pairMatchesFilter(pair));
+    if (next >= 0) {
+      renderComparisonDetail(next);
+      return;
+    }
+    for (let index = pairIndex - 1; index >= 0; index -= 1) {
+      if (!pairMatchesFilter(pairs[index])) continue;
+      renderComparisonDetail(index);
+      return;
+    }
+    showComparisonGrid();
+  }
+
   function buildPairDecisionControls(pair, pairIndex, detailed = false) {
     const controls = document.createElement("div");
     controls.className = `postprocessManualPairControls${detailed ? " postprocessComparisonManualControls" : ""}`;
@@ -392,17 +417,19 @@
       button.title = pair.manual_review_status === status ? `Undo ${title.toLowerCase()}` : title;
       button.setAttribute("aria-label", button.title);
       button.setAttribute("aria-pressed", String(pair.manual_review_status === status));
-      button.onclick = event => {
+      button.onclick = async event => {
         event.preventDefault();
         event.stopPropagation();
         const nextStatus = pair.manual_review_status === status ? "unreviewed" : status;
-        void saveManualPairDecision(pair, pairIndex, nextStatus, keep.value);
+        const saved = await saveManualPairDecision(pair, pairIndex, nextStatus, keep.value);
+        if (saved && detailed && !pairMatchesFilter(pair)) leaveFilteredComparison(pairIndex);
       };
       buttons.appendChild(button);
     }
-    keep.onchange = event => {
+    keep.onchange = async event => {
       event.stopPropagation();
-      void saveManualPairDecision(pair, pairIndex, "accepted", keep.value);
+      const saved = await saveManualPairDecision(pair, pairIndex, "accepted", keep.value);
+      if (saved && detailed && !pairMatchesFilter(pair)) leaveFilteredComparison(pairIndex);
     };
     controls.append(buttons, keep);
     return controls;
@@ -617,6 +644,7 @@
     details.appendChild(metrics);
 
     details.appendChild(buildPairDecisionControls(pair, pairIndex, true));
+    syncPairCardDecision(pair, pairIndex);
     viewComparisonOnMap(pairIndex);
   }
 
@@ -912,7 +940,6 @@
     byId("ppAnomalyTab").classList.toggle("secondary", !anomaly);
     byId("ppAnomalyTab").setAttribute("aria-selected", String(anomaly));
     api()?.setMode(mode);
-    if (anomaly) void loadPanelLayers();
   }
 
   async function loadPanelLayers() {
@@ -924,10 +951,7 @@
       refresh(api()?.getContext());
       return;
     }
-    const select = byId("ppPanelReference");
-    select.replaceChildren();
-    addOption(select, "", "Loading identified panel layers…");
-    select.disabled = true;
+    byId("ppPanelReferenceStatus").textContent = "Loading this job’s final regularized panels…";
     try {
       if (!binding?.workflow_id || !source?.workspace_result_id) {
         panelLayers = [];
@@ -961,34 +985,47 @@
     refresh(api()?.getContext());
   }
 
-  async function showSegmentationReferences(option, context = api()?.getContext()) {
-    if (!option?.dataset.url || context?.mode !== "anomaly") return;
-    const referenceKey = `${option.dataset.url}::${option.dataset.mtime || ""}::${option.dataset.rowsUrl || ""}::${option.dataset.rowsMtime || ""}`;
+  function currentPanelLayer(context = api()?.getContext()) {
+    const available = context?.segmentationResultId
+      ? panelLayers.filter(layer => layer.result_id === context.segmentationResultId)
+      : panelLayers;
+    return available[0] || null;
+  }
+
+  async function showSegmentationReferences(layer, context = api()?.getContext()) {
+    if (!layer?.url || context?.mode !== "anomaly") return;
+    const referenceKey = `${layer.url}::${layer.mtime || ""}::${layer.rows_url || ""}::${layer.rows_mtime || ""}`;
     if (referenceKey === loadedPanelReferenceKey) return;
-    loadedPanelReferenceKey = referenceKey;
     try {
-      await api()?.loadPreviewLayer(
+      const panels = await api()?.loadPreviewLayer(
         "segmentation_regularized_reference",
-        option.dataset.url,
+        layer.url,
         null,
         "Final regularized panels (read-only)",
         true,
-        option.dataset.mtime,
+        layer.mtime,
       );
-      if (option.dataset.rowsUrl) {
-        await api()?.loadPreviewLayer(
+      if (!panels) throw new Error("The panel layer request was interrupted.");
+      if (layer.rows_url) {
+        const rows = await api()?.loadPreviewLayer(
           "segmentation_rows_reference",
-          option.dataset.rowsUrl,
+          layer.rows_url,
           null,
           "Final rows (visual reference)",
           true,
-          option.dataset.rowsMtime,
+          layer.rows_mtime,
           null,
           false,
         );
+        if (!rows) throw new Error("The row layer request was interrupted.");
       }
-    } catch (_) {
+      loadedPanelReferenceKey = referenceKey;
+      byId("ppPanelReferenceStatus").textContent = layer.rows_url
+        ? "Using this job’s final regularized panels and rows as read-only references."
+        : "Using this job’s final regularized panels. Final rows will appear after panel and row IDs are assigned in Segmentation.";
+    } catch (error) {
       loadedPanelReferenceKey = "";
+      byId("ppPanelReferenceStatus").textContent = `Could not load final segmentation references: ${error.message}`;
     }
   }
 
@@ -1049,35 +1086,15 @@
       : "Analyze visual duplicates";
     byId("ppSkipVisualDeduplication").disabled = !hasOverlapDeduplicated || workflowRunning;
 
-    const panelSelect = byId("ppPanelReference");
-    const previousPanel = panelSelect.value;
-    const availablePanelLayers = context.segmentationResultId
-      ? panelLayers.filter(layer => layer.result_id === context.segmentationResultId)
-      : panelLayers;
-    panelSelect.replaceChildren();
-    addOption(panelSelect, "", "Select final regularized panels…");
-    availablePanelLayers.forEach((layer, index) => addOption(
-      panelSelect,
-      `${layer.result_id}::${layer.path}`,
-      `${layer.workflow_name}${index === 0 ? " · Latest" : ""} · ${layer.result_id} · Regularized`,
-      {
-        resultId: layer.result_id,
-        workflowId: layer.workflow_id,
-        path: layer.path,
-        url: layer.url,
-        mtime: layer.mtime,
-        rowsPath: layer.rows_path,
-        rowsUrl: layer.rows_url,
-        rowsMtime: layer.rows_mtime,
-      },
-    ));
-    if ([...panelSelect.options].some(option => option.value === previousPanel)) panelSelect.value = previousPanel;
-    else if (availablePanelLayers.length) panelSelect.selectedIndex = 1;
-    panelSelect.disabled = availablePanelLayers.length === 0;
-    if (context.mode === "anomaly" && panelSelect.selectedOptions[0]?.dataset.url) {
-      const selectedOption = panelSelect.selectedOptions[0];
-      void showSegmentationReferences(selectedOption, context);
-    }
+    const panelLayer = currentPanelLayer(context);
+    byId("ppPanelReferenceStatus").textContent = panelLayer
+      ? panelLayer.rows_url
+        ? "Using this job’s final regularized panels and rows as read-only references."
+        : "Using this job’s final regularized panels. Final rows will appear after panel and row IDs are assigned in Segmentation."
+      : panelLayersLoaded
+        ? "Final regularized panels are unavailable. Complete segmentation for this job first."
+        : "Loading this job’s final regularized panels…";
+    if (context.mode === "anomaly" && panelLayer?.url) void showSegmentationReferences(panelLayer, context);
 
     byId("ppAdjustAnomaliesStep").hidden = false;
     byId("ppAssociateStep").hidden = false;
@@ -1085,7 +1102,7 @@
     byId("ppAssociateStep").classList.toggle("locked", !hasDeduplicated);
     byId("ppAdjustAnomaliesStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
-    byId("ppAssociate").disabled = !hasDeduplicated || !panelSelect.value;
+    byId("ppAssociate").disabled = !hasDeduplicated || !panelLayer;
     const phase = workflow?.outputs?.associated
       ? 0
       : workflow?.deduplicate_stats ? 3
@@ -1242,8 +1259,8 @@
   async function associate() {
     const workspace = api();
     const context = workspace.getContext();
-    const panelOption = byId("ppPanelReference").selectedOptions[0];
-    if (!context.resultId || !context.workflowId || !panelOption?.dataset.path) return;
+    const panelLayer = currentPanelLayer(context);
+    if (!context.resultId || !context.workflowId || !panelLayer?.path) return;
     byId("ppAssociate").disabled = true;
     workspace.setMessage("Starting anomaly-to-panel association…");
     try {
@@ -1253,9 +1270,9 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            panel_path: panelOption.dataset.path,
-            panel_result_id: panelOption.dataset.resultId,
-            panel_workflow_id: panelOption.dataset.workflowId,
+            panel_path: panelLayer.path,
+            panel_result_id: panelLayer.result_id,
+            panel_workflow_id: panelLayer.workflow_id,
             minimum_overlap: Number(byId("ppAssociationOverlap").value),
             maximum_distance_m: Number(byId("ppAssociationDistance").value),
           }),
@@ -1274,13 +1291,6 @@
     byId("ppAnomalyNeighborRadius")?.addEventListener("input", () => {
       lastNeighborStatsKey = "";
       scheduleNeighborStats(true);
-    });
-    byId("ppPanelReference")?.addEventListener("change", event => {
-      const context = api()?.getContext();
-      const workflow = context?.workflows.find(item => item.id === context.workflowId);
-      byId("ppAssociate").disabled = !event.target.value || !workflow?.outputs?.deduplicated;
-      const option = event.target.selectedOptions[0];
-      if (option?.dataset.url) void showSegmentationReferences(option, context);
     });
     byId("ppApplyVisualDeduplication")?.addEventListener("click", applyVisualDeduplication);
     byId("ppRemoveOverlappingAnomalies")?.addEventListener("click", removeOverlappingAnomalies);
@@ -1381,14 +1391,23 @@
     document.addEventListener("postprocess:workflow", event => {
       refresh(event.detail.context);
       const status = event.detail.status;
+      if (event.detail.context?.mode === "segmentation"
+        && status?.status === "complete"
+        && (status?.outputs?.regularized || status?.outputs?.solar_panels)) {
+        panelLayersLoaded = false;
+        panelLayersJobKey = "";
+        loadedPanelReferenceKey = "";
+        return;
+      }
       if (event.detail.context?.mode !== "anomaly"
         || status?.status !== "complete"
         || !status?.outputs?.associated
         || !status?.association_stats?.panel_updated_mtime) return;
-      const option = byId("ppPanelReference").selectedOptions[0];
-      if (!option?.dataset.url) return;
-      option.dataset.mtime = String(status.association_stats.panel_updated_mtime);
-      void showSegmentationReferences(option, event.detail.context);
+      const panelLayer = currentPanelLayer(event.detail.context);
+      if (!panelLayer?.url) return;
+      panelLayer.mtime = String(status.association_stats.panel_updated_mtime);
+      loadedPanelReferenceKey = "";
+      void showSegmentationReferences(panelLayer, event.detail.context);
       api()?.invalidateCachedMode("segmentation");
     });
     document.addEventListener("postprocess:cache-reset", () => {
