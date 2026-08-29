@@ -75,6 +75,7 @@ class DeduplicateAnomaliesRequest(BaseModel):
 class OverlapDeduplicateAnomaliesRequest(BaseModel):
     input_path: str
     output_name: str = "anomaly_postprocess"
+    workflow_id: str | None = None
     minimum_overlap_percent: float = Field(default=60.0, gt=0.0, le=100.0)
 
 
@@ -410,6 +411,39 @@ def create_postprocess_router(
             ):
                 shutil.rmtree(overlay_dir)
 
+    def clear_panel_anomaly_assignments(
+        anomaly_workflow_dir: Path,
+        status: dict[str, Any],
+    ) -> None:
+        """Clear panel attributes derived from an associated output being invalidated."""
+        parameters = status.get("association_parameters") or {}
+        panel_path_value = str(parameters.get("panel_path") or "")
+        if not panel_path_value:
+            return
+        try:
+            panel_result_dir = resolve_result(str(parameters.get("panel_result_id") or status.get("result_id") or ""))
+            panel_path = resolve_input(panel_result_dir, panel_path_value)
+            payload = json.loads(panel_path.read_text(encoding="utf-8"))
+            for panel in payload.get("features") or []:
+                if not isinstance(panel, dict):
+                    continue
+                properties = dict(panel.get("properties") or {})
+                properties["anomaly_count"] = 0
+                properties["anomaly_ids"] = []
+                panel["properties"] = properties
+            _atomic_json(panel_path, payload)
+            panel_workflow_id = str(parameters.get("panel_workflow_id") or "")
+            if panel_workflow_id:
+                panel_workflow_dir = resolve_workflow(panel_result_dir, panel_workflow_id)
+                panel_status = read_status(panel_workflow_dir)
+                update_status(
+                    panel_workflow_dir,
+                    anomaly_association=None,
+                    outputs=panel_status.get("outputs") or {},
+                )
+        except (HTTPException, OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            append_log(anomaly_workflow_dir, f"WARNING: Could not clear stale panel anomaly attributes: {exc}")
+
     @router.get("/{result_id}/postprocess/geojsons")
     async def list_geojsons(result_id: str) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
@@ -432,6 +466,7 @@ def create_postprocess_router(
                 "combined.geojson": "combined",
                 "regularized.geojson": "regularized",
                 "solar_rows.geojson": "solar_rows",
+                "overlap_deduplicated.geojson": "overlap_deduplicated",
                 "deduplicated.geojson": "deduplicated",
                 "associated.geojson": "associated",
             }
@@ -764,9 +799,33 @@ def create_postprocess_router(
         result_dir = resolve_result(result_id)
         input_path = resolve_input(result_dir, request.input_path)
         prefix = _safe_name(request.output_name, "anomaly_postprocess")
-        workflow_id = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        workflow_dir = result_dir / "postprocess" / workflow_id
-        workflow_dir.mkdir(parents=True, exist_ok=False)
+        if request.workflow_id:
+            workflow_dir = resolve_workflow(result_dir, request.workflow_id)
+            existing = read_status(workflow_dir)
+            if existing.get("status") in {"queued", "running"}:
+                raise HTTPException(status_code=409, detail="This workflow is already running.")
+            workflow_id = request.workflow_id
+            had_associated_output = bool((existing.get("outputs") or {}).get("associated"))
+            outputs = remove_stage_outputs(
+                result_dir,
+                workflow_dir,
+                existing,
+                {"overlap_deduplicated", "deduplicated", "associated"},
+            )
+            if had_associated_output:
+                clear_panel_anomaly_assignments(workflow_dir, existing)
+            review_path = workflow_dir / "visual_review.json"
+            review_images_dir = workflow_dir / "review_images"
+            if review_path.is_file():
+                review_path.unlink()
+            if review_images_dir.is_dir():
+                shutil.rmtree(review_images_dir)
+        else:
+            workflow_id = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            workflow_dir = result_dir / "postprocess" / workflow_id
+            workflow_dir.mkdir(parents=True, exist_ok=False)
+            existing = {}
+            outputs = {}
         initial = {
             "ok": True,
             "id": workflow_id,
@@ -777,11 +836,19 @@ def create_postprocess_router(
             "stage": "overlap_deduplicate",
             "progress": 0,
             "message": "Queued overlapping-polygon removal.",
-            "created_at": datetime.now().isoformat(),
+            "created_at": existing.get("created_at") or datetime.now().isoformat(),
             "input_path": input_path.relative_to(result_dir).as_posix(),
             "source_fingerprint": source_fingerprint(input_path),
             "parameters": request.model_dump() if hasattr(request, "model_dump") else request.dict(),
-            "outputs": {},
+            "outputs": outputs,
+            "overlap_deduplicate_stats": None,
+            "deduplicate_stats": None,
+            "association_stats": None,
+            "association_parameters": None,
+            "visual_review_available": False,
+            "visual_review_total_pairs": 0,
+            "visual_review_path": "",
+            "visual_review_preview": {"pairs": [], "total_pairs": 0},
         }
         _atomic_json(workflow_dir / "status.json", initial)
         _atomic_json(workflow_dir / "postprocess_meta.json", initial)
@@ -805,7 +872,7 @@ def create_postprocess_router(
                     message=f"Overlapping polygons at {request.minimum_overlap_percent:g}% or more were removed.",
                     overlap_deduplicate_stats=stats,
                     overlap_input_path=output_path.relative_to(result_dir).as_posix(),
-                    outputs={"deduplicated": output},
+                    outputs={"overlap_deduplicated": output},
                 )
             except Exception as exc:
                 append_log(workflow_dir, f"ERROR: {exc}")
@@ -1048,7 +1115,16 @@ def create_postprocess_router(
                     ),
                     callback=progress_callback(workflow_dir, "deduplicate_apply"),
                 )
-                current_outputs = dict(status.get("outputs") or {})
+                latest = read_status(workflow_dir)
+                had_associated_output = bool((latest.get("outputs") or {}).get("associated"))
+                current_outputs = remove_stage_outputs(
+                    result_dir,
+                    workflow_dir,
+                    latest,
+                    {"associated"},
+                )
+                if had_associated_output:
+                    clear_panel_anomaly_assignments(workflow_dir, latest)
                 current_outputs["deduplicated"] = {"path": output_path.relative_to(result_dir).as_posix()}
                 update_status(
                     workflow_dir,
@@ -1057,6 +1133,8 @@ def create_postprocess_router(
                     progress=100,
                     message=f"Deduplicated anomaly GeoJSON is ready at {request.duplicate_score_percent:g}% duplicate score.",
                     deduplicate_stats=stats,
+                    association_stats=None,
+                    association_parameters=None,
                     outputs=current_outputs,
                 )
             except Exception as exc:
@@ -1170,7 +1248,8 @@ def create_postprocess_router(
         status = read_status(workflow_dir)
         if status.get("status") in {"queued", "running"}:
             raise HTTPException(status_code=409, detail="This workflow is already running.")
-        anomaly_output = (status.get("outputs") or {}).get("deduplicated") or {}
+        outputs = status.get("outputs") or {}
+        anomaly_output = outputs.get("deduplicated") or outputs.get("overlap_deduplicated") or {}
         anomaly_path = resolve_input(result_dir, str(anomaly_output.get("path") or ""))
         panel_result_dir = resolve_result(request.panel_result_id or result_id)
         panel_path = resolve_input(panel_result_dir, request.panel_path)
@@ -1279,7 +1358,7 @@ def create_postprocess_router(
     ) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
         workflow_dir = resolve_workflow(result_dir, workflow_id)
-        allowed_stages = {"combined", "regularized", "solar_rows", "deduplicated", "associated"}
+        allowed_stages = {"combined", "regularized", "solar_rows", "overlap_deduplicated", "deduplicated", "associated"}
         if stage not in allowed_stages:
             raise HTTPException(status_code=400, detail="Only generated post-processing outputs can be sent to Map.")
         status = read_status(workflow_dir)
@@ -1296,7 +1375,12 @@ def create_postprocess_router(
         if not source.is_file():
             raise HTTPException(status_code=404, detail=f"The {stage} GeoJSON is not available.")
         base_name = request.name or status.get("display_name") or status.get("parameters", {}).get("output_name") or workflow_id
-        stage_label = "Rows" if stage == "solar_rows" else stage.title()
+        stage_labels = {
+            "solar_rows": "Rows",
+            "overlap_deduplicated": "Overlap-filtered anomalies",
+            "deduplicated": "Visually deduplicated anomalies",
+        }
+        stage_label = stage_labels.get(stage, stage.title())
         display_name = f"{str(base_name).strip()} — {stage_label}"
         overlay_id = _safe_name(f"postprocess-{workflow_id[:54]}-{stage}", f"postprocess-{uuid.uuid4().hex[:10]}")
         overlay_dir = (Path(get_overlays_dir()).resolve() / overlay_id).resolve()
@@ -1337,7 +1421,7 @@ def create_postprocess_router(
     ) -> dict[str, Any]:
         result_dir = resolve_result(result_id)
         workflow_dir = resolve_workflow(result_dir, workflow_id)
-        editable_stages = {"combined", "regularized", "solar_rows", "deduplicated", "associated"}
+        editable_stages = {"combined", "regularized", "solar_rows", "overlap_deduplicated", "deduplicated", "associated"}
         if stage not in editable_stages:
             raise HTTPException(status_code=400, detail="This layer cannot be edited.")
         geojson = request.geojson

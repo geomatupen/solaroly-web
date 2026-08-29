@@ -51,7 +51,7 @@
   };
 
   const GENERATED_STAGES = new Set([
-    "combined", "regularized", "solar_rows", "deduplicated", "associated",
+    "combined", "regularized", "solar_rows", "overlap_deduplicated", "deduplicated", "associated",
   ]);
   const SHAREABLE_STAGES = new Set(GENERATED_STAGES);
   const GENERATION_DETAIL_STAGES = new Set([
@@ -66,7 +66,8 @@
     panel_reference: { label: "Panel reference", color: "#14b8a6", weight: 2, fillOpacity: 0.08 },
     segmentation_regularized_reference: { label: "Final regularized panels", color: "#22c55e", weight: 2, fillOpacity: 0.10 },
     segmentation_rows_reference: { label: "Final rows", color: "#ef4444", weight: 3, fillOpacity: 0.035 },
-    deduplicated: { label: "Deduplicated anomalies", color: "#f97316", weight: 2, fillOpacity: 0.22 },
+    overlap_deduplicated: { label: "Overlap-filtered anomalies", color: "#fb923c", weight: 2, fillOpacity: 0.18 },
+    deduplicated: { label: "Visually deduplicated anomalies", color: "#f97316", weight: 2, fillOpacity: 0.22 },
     associated: { label: "Associated anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
   };
 
@@ -1655,7 +1656,7 @@
 
   function previewPane(stage) {
     if (stage === "solar_rows" || stage === "segmentation_rows_reference") return "ppRowsPane";
-    if (state.mode === "anomaly" && (stage === "source" || stage === "deduplicated" || stage === "associated")) {
+    if (state.mode === "anomaly" && (stage === "source" || stage === "overlap_deduplicated" || stage === "deduplicated" || stage === "associated")) {
       return "ppAnomaliesPane";
     }
     return "ppPanelsPane";
@@ -2514,7 +2515,7 @@
 
   async function syncOutputPreviews(status, requestedContext = null) {
     const removableStages = [
-      "combined", "regularized", "solar_rows", "deduplicated", "associated",
+      "combined", "regularized", "solar_rows", "overlap_deduplicated", "deduplicated", "associated",
       "panel_hierarchy", "panel_rows", "identified_panels", "edited",
     ];
     for (const stage of removableStages) {
@@ -2528,6 +2529,8 @@
       combined: status.manual_edits?.combined?.feature_count ?? status.combine_stats?.output_features,
       regularized: status.manual_edits?.regularized?.feature_count ?? status.hierarchy_stats?.panel_count ?? status.regularize_stats?.output_features,
       solar_rows: status.manual_edits?.solar_rows?.feature_count ?? status.hierarchy_stats?.row_count,
+      overlap_deduplicated: status.manual_edits?.overlap_deduplicated?.feature_count
+        ?? status.overlap_deduplicate_stats?.output_features,
       deduplicated: status.manual_edits?.deduplicated?.feature_count
         ?? status.deduplicate_stats?.output_features
         ?? status.overlap_deduplicate_stats?.output_features,
@@ -2701,7 +2704,7 @@
       state.mode === "anomaly" ? item.workflow_kind === "anomaly" : item.workflow_kind !== "anomaly"
     );
     return visible.find(item => item.id === preferredId)
-      || visible.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && (item.outputs?.source || item.outputs?.combined || item.outputs?.deduplicated))
+      || visible.find(item => sourceIdentity(item.input_path) === sourceIdentity(inputPath) && (item.outputs?.source || item.outputs?.combined || item.outputs?.overlap_deduplicated || item.outputs?.deduplicated))
       || (allowLatest ? visible.find(item => Object.keys(item.outputs || {}).length) : null);
   }
 

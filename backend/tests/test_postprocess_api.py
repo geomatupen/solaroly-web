@@ -1,16 +1,86 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from pvrt.web.postprocess import create_postprocess_router
 from pvrt.web.postprocess import EditLayerRequest
 from pvrt.web.postprocess import EditSourceRequest
+from pvrt.web.postprocess import OverlapDeduplicateAnomaliesRequest
 from pvrt.web.postprocess import VisualReviewDecisionRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_overlap_filter_has_its_own_replaceable_output_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            result_dir = sessions / "test-result"
+            result_dir.mkdir(parents=True)
+            overlays.mkdir()
+            source = result_dir / "predictions.geojson"
+            source.write_text(json.dumps({
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [[[8.0, 49.0], [8.00001, 49.0], [8.00001, 49.00001], [8.0, 49.00001], [8.0, 49.0]]]},
+                        "properties": {"score": 0.9},
+                    },
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [[[8.000002, 49.0], [8.000012, 49.0], [8.000012, 49.00001], [8.000002, 49.00001], [8.000002, 49.0]]]},
+                        "properties": {"score": 0.8},
+                    },
+                ],
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/anomalies/overlap-deduplicate"
+                and "POST" in item.methods
+            )
+            first = asyncio.run(route.endpoint(
+                "test-result",
+                OverlapDeduplicateAnomaliesRequest(input_path="predictions.geojson"),
+            ))
+            workflow_dir = result_dir / "postprocess" / first["id"]
+
+            def completed_status():
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    status = json.loads((workflow_dir / "status.json").read_text(encoding="utf-8"))
+                    if status.get("status") in {"complete", "failed"}:
+                        return status
+                    time.sleep(0.02)
+                self.fail("Overlap filtering did not finish in time.")
+
+            first_status = completed_status()
+            self.assertEqual(first_status["status"], "complete")
+            self.assertIn("overlap_deduplicated", first_status["outputs"])
+            self.assertNotIn("deduplicated", first_status["outputs"])
+
+            second = asyncio.run(route.endpoint(
+                "test-result",
+                OverlapDeduplicateAnomaliesRequest(
+                    input_path="predictions.geojson",
+                    workflow_id=first["id"],
+                    minimum_overlap_percent=70,
+                ),
+            ))
+            self.assertEqual(second["id"], first["id"])
+            second_status = completed_status()
+            self.assertEqual(second_status["status"], "complete")
+            self.assertIn("overlap_deduplicated", second_status["outputs"])
+            self.assertEqual(len(list((result_dir / "postprocess").iterdir())), 1)
+
     def test_visual_review_decisions_are_persisted_and_restorable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

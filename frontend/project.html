@@ -621,7 +621,7 @@
               <div class="postprocessStepNumber">1</div>
               <div class="postprocessStepBody">
                 <h3>Remove overlapping predictions</h3>
-                <p class="muted tiny">First remove same-class polygons when their overlap reaches the configured percentage. The strongest prediction is kept.</p>
+                <p class="muted tiny">First remove same-class polygons when their overlap reaches the configured percentage. The strongest prediction is kept in a separate Overlap-filtered anomalies layer.</p>
                 <div class="postprocessFields postprocessFieldsCompact">
                   <div>
                     <label for="ppAnomalyOverlapPercent">Minimum overlap (%)</label>
@@ -639,7 +639,7 @@
               <div class="postprocessStepNumber">2</div>
               <div class="postprocessStepBody">
                 <h3>Find shifted duplicates across images <span class="postprocessOptionalLabel">Optional</span></h3>
-                <p class="muted tiny">Use weighted image, shape, size, and location evidence to find duplicates that do not overlap because their mapped positions shifted. Skip this step if overlap removal is sufficient.</p>
+                <p class="muted tiny">Use weighted image, shape, size, orientation, and location evidence to create a separate Visually deduplicated anomalies layer for duplicates whose mapped positions shifted. Skip this step if overlap removal is sufficient.</p>
                 <div class="postprocessFields">
                   <div>
                     <label for="ppAnomalyOutputName">Output name</label>
@@ -695,7 +695,7 @@
               <div class="postprocessStepNumber">3</div>
               <div class="postprocessStepBody">
                 <h3>Review and adjust placement</h3>
-                <p class="muted tiny"><strong>Manual process:</strong> edit the deduplicated anomaly layer in Processing layers. Move, rotate, reshape, or delete polygons while using this job’s automatically loaded final regularized panels as the placement reference, then save the layer.</p>
+                <p class="muted tiny"><strong>Manual process:</strong> edit the Visually deduplicated anomalies layer, or the Overlap-filtered anomalies layer when visual analysis was skipped. Move, rotate, reshape, or delete polygons while using the final regularized panels as the placement reference, then save the layer.</p>
                 <p id="ppPanelReferenceStatus" class="muted tiny">Loading this job’s final regularized panels…</p>
               </div>
             </article>
@@ -1641,9 +1641,9 @@
   <script src="js/colmap.js?v=20260825o"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/main.js?v=20260829a"></script>
-  <script src="js/postprocess.js?v=20260829p"></script>
+  <script src="js/postprocess.js?v=20260829q"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260829s"></script>
+  <script src="js/postprocess_anomaly.js?v=20260829u"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

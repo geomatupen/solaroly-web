@@ -1084,7 +1084,9 @@
     if (!context) return;
     const workflow = context.workflows.find(item => item.id === context.workflowId && item.workflow_kind === "anomaly");
     const hasOverlapDeduplicated = Boolean(workflow?.overlap_deduplicate_stats);
-    const hasDeduplicated = Boolean(workflow?.outputs?.deduplicated);
+    const hasDeduplicated = Boolean(
+      workflow?.outputs?.deduplicated || workflow?.outputs?.overlap_deduplicated
+    );
     renderVisualReview(workflow);
     const anomalySelect = byId("ppAnomalyGeojson");
     const previousAnomaly = anomalySelect.value;
@@ -1154,6 +1156,9 @@
     byId("ppAdjustAnomaliesStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociate").disabled = !hasDeduplicated || !panelLayer;
+    byId("ppAssociate").textContent = workflow?.outputs?.associated
+      ? "Reassign panel and row IDs"
+      : "Assign panel and row IDs";
     const phase = workflow?.outputs?.associated
       ? 0
       : workflow?.deduplicate_stats ? 3
@@ -1184,6 +1189,19 @@
       workspace.setMessage("The configured anomaly source is unavailable. Open Edit config and verify it.", "err");
       return;
     }
+    const workflow = context.workflows.find(item =>
+      item.id === context.workflowId && item.workflow_kind === "anomaly"
+    );
+    if (workflow?.overlap_deduplicate_stats) {
+      const hasDownstreamOutputs = Boolean(
+        workflow?.deduplicate_stats || workflow?.outputs?.associated
+      );
+      const confirmed = await workspace.confirmReplacement(
+        "Replace overlap-filtered anomalies?",
+        `The existing Overlap-filtered anomalies layer will be deleted and replaced.${hasDownstreamOutputs ? " Visual-deduplication and associated-anomaly outputs derived from it will also be removed and must be generated again." : ""} Are you sure you want to continue?`,
+      );
+      if (!confirmed) return;
+    }
     button.disabled = true;
     button.textContent = "Removing overlapping polygons…";
     workspace.setMessage("Removing overlapping anomaly polygons…");
@@ -1195,6 +1213,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             input_path: source,
+            workflow_id: context.workflowId || null,
             output_name: byId("ppAnomalyOutputName").value.trim() || "anomaly_postprocess",
             minimum_overlap_percent: Number(byId("ppAnomalyOverlapPercent").value),
           }),
@@ -1213,7 +1232,9 @@
     const context = workspace.getContext();
     const resultId = context.resultId || context.configuredResultId;
     const workflow = context.workflows.find(item => item.id === context.workflowId && item.workflow_kind === "anomaly");
-    const source = workflow?.overlap_input_path || workflow?.outputs?.deduplicated?.path;
+    const source = workflow?.overlap_input_path
+      || workflow?.outputs?.overlap_deduplicated?.path
+      || (!workflow?.deduplicate_stats ? workflow?.outputs?.deduplicated?.path : "");
     const button = document.getElementById("ppDeduplicate");
     if (!resultId || !source) {
       workspace.setMessage("The configured anomaly result or GeoJSON source is unavailable. Open Edit config and verify the anomaly source.", "err");
@@ -1270,12 +1291,24 @@
     const workspace = api();
     const context = workspace.getContext();
     if (!context.resultId || !context.workflowId) return;
-    const button = byId("ppApplyVisualDeduplication");
-    button.disabled = true;
     const config = scoringConfig();
     const deduplicationMode = byId("ppDeduplicationMode").value;
     if (deduplicationMode === "threshold" && !scoringIsValid(config)) return;
     if (deduplicationMode === "manual" && !manualDuplicateDecisions.size) return;
+    const workflow = context.workflows.find(item =>
+      item.id === context.workflowId && item.workflow_kind === "anomaly"
+    );
+    const hasVisualOutput = Boolean(workflow?.outputs?.deduplicated && workflow?.deduplicate_stats);
+    if (hasVisualOutput) {
+      const alsoRemovesAssociation = Boolean(workflow?.outputs?.associated);
+      const confirmed = await workspace.confirmReplacement(
+        "Replace deduplicated anomalies?",
+        `The existing deduplicated anomaly layer will be deleted and replaced with a newly generated layer.${alsoRemovesAssociation ? " The associated-anomalies output derived from it will also be removed and must be generated again." : ""} Are you sure you want to continue?`,
+      );
+      if (!confirmed) return;
+    }
+    const button = byId("ppApplyVisualDeduplication");
+    button.disabled = true;
     workspace.setMessage(deduplicationMode === "manual"
       ? "Applying manual duplicate selections…"
       : `Applying ${config.threshold}% duplicate score threshold…`);
@@ -1313,6 +1346,16 @@
     const context = workspace.getContext();
     const panelLayer = currentPanelLayer(context);
     if (!context.resultId || !context.workflowId || !panelLayer?.path) return;
+    const workflow = context.workflows.find(item =>
+      item.id === context.workflowId && item.workflow_kind === "anomaly"
+    );
+    if (workflow?.outputs?.associated) {
+      const confirmed = await workspace.confirmReplacement(
+        "Replace assigned anomaly output?",
+        "Panel and row IDs have already been assigned. The existing Associated anomalies layer will be deleted and replaced, and anomaly_count and anomaly_ids on the final panel layer will be recalculated. Are you sure you want to continue?",
+      );
+      if (!confirmed) return;
+    }
     byId("ppAssociate").disabled = true;
     workspace.setMessage("Starting anomaly-to-panel association…");
     try {
