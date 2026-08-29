@@ -151,6 +151,23 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _visual_review_decision_summary(pairs: list[dict[str, Any]]) -> tuple[dict[str, int], list[int]]:
+    counts = {"accepted": 0, "rejected": 0, "unreviewed": 0}
+    kept_indices: set[int] = set()
+    removed_indices: set[int] = set()
+    for pair in pairs:
+        status = pair.get("manual_review_status")
+        key = status if status in {"accepted", "rejected"} else "unreviewed"
+        counts[key] += 1
+        if status != "accepted":
+            continue
+        edge = (int(pair["first_index"]), int(pair["second_index"]))
+        keep_index = int(pair.get("manual_keep_index", edge[0]))
+        kept_indices.add(keep_index)
+        removed_indices.update(index for index in edge if index != keep_index)
+    return counts, sorted(kept_indices & removed_indices)
+
+
 def create_postprocess_router(
     get_sessions_dir: Callable[[], Path],
     get_overlays_dir: Callable[[], Path],
@@ -283,14 +300,18 @@ def create_postprocess_router(
             review_path = (workflow_dir.parent.parent / review_path_value).resolve()
             try:
                 review_path.relative_to(workflow_dir)
+                review = json.loads(review_path.read_text(encoding="utf-8"))
+                all_review_pairs = review.get("pairs") or []
                 stored_preview = payload.get("visual_review_preview")
                 if isinstance(stored_preview, dict):
                     review_pairs_source = stored_preview.get("pairs") or []
                     review_total = int(stored_preview.get("total_pairs") or 0)
                 else:
-                    review = json.loads(review_path.read_text(encoding="utf-8"))
-                    review_pairs_source = review.get("pairs") or []
+                    review_pairs_source = all_review_pairs
                     review_total = len(review_pairs_source)
+                decision_counts, conflict_indices = _visual_review_decision_summary(all_review_pairs)
+                payload["visual_review_decision_counts"] = decision_counts
+                payload["visual_review_conflict_indices"] = conflict_indices
                 review_pairs = []
                 # Keep workflow-list payloads small; the UI intentionally shows
                 # a representative review grid rather than every candidate.
@@ -313,7 +334,7 @@ def create_postprocess_router(
                     parameters = payload.get("parameters") or {}
                     statistics_pairs = review_pairs_source
                     if isinstance(stored_preview, dict):
-                        statistics_pairs = (json.loads(review_path.read_text(encoding="utf-8")).get("pairs") or [])
+                        statistics_pairs = all_review_pairs
                     payload["visual_analysis_stats"] = {
                         "spatial_candidate_pairs": review_total,
                         "visually_compared_pairs": sum(
@@ -1167,11 +1188,7 @@ def create_postprocess_router(
         except (OSError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=500, detail="Visual review data could not be read.") from exc
         all_pairs = review.get("pairs") or []
-        decision_counts = {"accepted": 0, "rejected": 0, "unreviewed": 0}
-        for pair in all_pairs:
-            status = pair.get("manual_review_status")
-            key = status if status in {"accepted", "rejected"} else "unreviewed"
-            decision_counts[key] += 1
+        decision_counts, conflict_indices = _visual_review_decision_summary(all_pairs)
         pairs = []
         for pair in all_pairs[offset:offset + limit]:
             item = dict(pair)
@@ -1192,6 +1209,7 @@ def create_postprocess_router(
             "limit": limit,
             "total_pairs": len(all_pairs),
             "decision_counts": decision_counts,
+            "conflict_indices": conflict_indices,
             "has_more": offset + len(pairs) < len(all_pairs),
         }
 
@@ -1265,12 +1283,15 @@ def create_postprocess_router(
             raise
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=500, detail="Visual review decision could not be saved.") from exc
+        decision_counts, conflict_indices = _visual_review_decision_summary(review.get("pairs") or [])
         return {
             "ok": True,
             "first_index": request.first_index,
             "second_index": request.second_index,
             "status": request.status,
             "keep_index": request.keep_index if request.status == "accepted" else None,
+            "decision_counts": decision_counts,
+            "conflict_indices": conflict_indices,
         }
 
     @router.post("/{result_id}/postprocess/{workflow_id}/associate")

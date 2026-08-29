@@ -178,6 +178,8 @@ class PostprocessApiTests(unittest.TestCase):
                     "first_index": 0,
                     "second_index": 1,
                     "appearance_similarity": 0.9,
+                    "manual_review_status": "accepted",
+                    "manual_keep_index": 0,
                 }],
             }), encoding="utf-8")
             (workflow_dir / "status.json").write_text(json.dumps({
@@ -205,6 +207,8 @@ class PostprocessApiTests(unittest.TestCase):
             self.assertEqual(payload["visual_review"]["total_pairs"], 1)
             self.assertTrue(payload["visual_review_available"])
             self.assertEqual(payload["visual_review_total_pairs"], 1)
+            self.assertEqual(payload["visual_review_decision_counts"]["accepted"], 1)
+            self.assertEqual(payload["visual_review_conflict_indices"], [])
             self.assertEqual(payload["visual_analysis_stats"]["visually_compared_pairs"], 1)
             self.assertTrue(payload["visual_analysis_stats"]["recovered_from_saved_review"])
 

@@ -265,11 +265,29 @@
     return valid;
   }
 
+  function manualReviewState(workflow) {
+    const savedCounts = workflow?.visual_review_decision_counts || {};
+    const counts = loadedComparisonDecisionCountsReady
+      ? loadedComparisonDecisionCounts
+      : {
+          accepted: Number(savedCounts.accepted || 0),
+          rejected: Number(savedCounts.rejected || 0),
+          unreviewed: Number(savedCounts.unreviewed || 0),
+        };
+    return {
+      accepted: Math.max(Number(counts.accepted || 0), manualDuplicateDecisions.size),
+      conflicts: (workflow?.visual_review_conflict_indices || []).map(Number),
+    };
+  }
+
   function updateThresholdEffect(workflow) {
     const pairs = comparisonPairs(workflow);
     const config = scoringConfig();
     const manualMode = byId("ppDeduplicationMode").value === "manual";
-    const valid = manualMode ? manualDuplicateDecisions.size > 0 : scoringIsValid(config);
+    const manualState = manualReviewState(workflow);
+    const valid = manualMode
+      ? manualState.accepted > 0 && manualState.conflicts.length === 0
+      : scoringIsValid(config);
     const matching = pairs.filter(pair => {
       const score = compositeScore(pair, config);
       return score != null && score >= config.threshold;
@@ -281,7 +299,7 @@
       ? ` At least ${matching} of the ${displayed} displayed pairs qualify; all ${comparedTotal.toLocaleString()} comparisons will be evaluated when applied.`
       : ` ${matching.toLocaleString()} pair${matching === 1 ? "" : "s"} will be deduplicated.`;
     byId("ppVisualThresholdEffect").textContent = manualMode
-      ? `${manualDuplicateDecisions.size.toLocaleString()} pair${manualDuplicateDecisions.size === 1 ? " is" : "s are"} marked as duplicate. Open image comparisons to change manual selections.`
+      ? `${manualState.accepted.toLocaleString()} pair${manualState.accepted === 1 ? " is" : "s are"} marked as duplicate. Open image comparisons to change manual selections.`
       : `${config.threshold.toLocaleString()}% weighted duplicate score or higher.${estimate}`;
     for (const card of byId("ppVisualReviewPairs").querySelectorAll(".postprocessVisualPair")) {
       const pair = pairs[Number(card.dataset.pairIndex)];
@@ -292,8 +310,23 @@
       const scoreLabel = card.querySelector(".postprocessVisualSimilarity");
       if (scoreLabel) scoreLabel.textContent = score == null ? "Not compared" : `${Math.round(score)}% duplicate`;
     }
-    byId("ppApplyVisualDeduplication").disabled = !valid || workflow?.status !== "complete";
-    byId("ppApplyVisualDeduplication").textContent = manualMode ? "Apply manual selections" : "Apply visual deduplication";
+    const applyButton = byId("ppApplyVisualDeduplication");
+    const applyStatus = byId("ppManualApplyStatus");
+    const workflowReady = workflow?.status === "complete";
+    applyButton.disabled = !valid || !workflowReady;
+    applyButton.textContent = manualMode ? "Apply manual selections" : "Apply visual deduplication";
+    let disabledReason = "";
+    if (manualMode && manualState.conflicts.length) {
+      const labels = manualState.conflicts.map(anomalyNumber).join(", ");
+      disabledReason = `Cannot apply yet: saved manual selections conflict for anomaly ${labels}. Open image comparisons and undo one of the conflicting accepted choices.`;
+    } else if (manualMode && manualState.accepted === 0) {
+      disabledReason = "Apply manual selections is disabled until at least one comparison pair is accepted as a duplicate.";
+    } else if (!workflowReady) {
+      disabledReason = "Apply is disabled while visual analysis is still running.";
+    }
+    applyStatus.textContent = disabledReason;
+    applyStatus.hidden = !disabledReason;
+    applyButton.title = disabledReason;
     byId("ppVisualSimilarity").disabled = manualMode;
   }
 
@@ -416,7 +449,7 @@
     if (workflow) updateThresholdEffect(workflow);
     try {
       const context = api()?.getContext();
-      await api()?.requestJson(
+      const savedDecision = await api()?.requestJson(
         `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/visual-review/decision`,
         {
           method: "PATCH",
@@ -429,7 +462,22 @@
           }),
         },
       );
-      adjustComparisonDecisionCounts(previousStatus, status);
+      if (savedDecision?.decision_counts) {
+        loadedComparisonDecisionCounts = {
+          accepted: Number(savedDecision.decision_counts.accepted || 0),
+          rejected: Number(savedDecision.decision_counts.rejected || 0),
+          unreviewed: Number(savedDecision.decision_counts.unreviewed || 0),
+        };
+        loadedComparisonDecisionCountsReady = true;
+        if (workflow) {
+          workflow.visual_review_decision_counts = { ...loadedComparisonDecisionCounts };
+          workflow.visual_review_conflict_indices = savedDecision.conflict_indices || [];
+        }
+        renderComparisonDecisionCounts();
+      } else {
+        adjustComparisonDecisionCounts(previousStatus, status);
+      }
+      if (workflow) updateThresholdEffect(workflow);
       return true;
     } catch (error) {
       setLocalPairDecision(pair, previousStatus, previousKeep ?? pair.first_index);
@@ -881,8 +929,13 @@
       loadedScoringWorkflowId = workflow.id;
       loadedComparisonPairs = [];
       loadedComparisonTotal = Math.max(savedTotal, workflow.visual_review?.pairs?.length || 0);
-      loadedComparisonDecisionCounts = { accepted: 0, rejected: 0, unreviewed: 0 };
-      loadedComparisonDecisionCountsReady = false;
+      const savedCounts = workflow.visual_review_decision_counts;
+      loadedComparisonDecisionCounts = {
+        accepted: Number(savedCounts?.accepted || 0),
+        rejected: Number(savedCounts?.rejected || 0),
+        unreviewed: Number(savedCounts?.unreviewed || 0),
+      };
+      loadedComparisonDecisionCountsReady = Boolean(savedCounts);
       loadedComparisonWorkflowId = workflow.id;
       const saved = workflow.scoring_parameters || {};
       const fields = {
@@ -954,7 +1007,7 @@
         ["Right", pair.second_anomaly_id ?? anomalyNumber(pair.second_index)],
       ]) {
         const identifier = document.createElement("span");
-        identifier.textContent = `${side} · Anomaly ID: ${anomalyId}`;
+        identifier.textContent = `${side} · ID: ${anomalyId}`;
         identifiers.appendChild(identifier);
       }
       const meta = document.createElement("div");
@@ -1117,6 +1170,8 @@
       loadedComparisonDecisionCountsReady = true;
       const workflow = current.workflows.find(item => item.id === workflowId && item.workflow_kind === "anomaly");
       if (workflow) {
+        workflow.visual_review_decision_counts = { ...loadedComparisonDecisionCounts };
+        workflow.visual_review_conflict_indices = payload.conflict_indices || [];
         workflow.visual_review = {
           ...(workflow.visual_review || {}),
           pairs: loadedComparisonPairs.slice(0, 12),
@@ -1457,11 +1512,12 @@
     if (!context.resultId || !context.workflowId) return;
     const config = scoringConfig();
     const deduplicationMode = byId("ppDeduplicationMode").value;
-    if (deduplicationMode === "threshold" && !scoringIsValid(config)) return;
-    if (deduplicationMode === "manual" && !manualDuplicateDecisions.size) return;
     const workflow = context.workflows.find(item =>
       item.id === context.workflowId && item.workflow_kind === "anomaly"
     );
+    if (deduplicationMode === "threshold" && !scoringIsValid(config)) return;
+    const manualState = manualReviewState(workflow);
+    if (deduplicationMode === "manual" && (!manualState.accepted || manualState.conflicts.length)) return;
     const hasVisualOutput = Boolean(workflow?.outputs?.deduplicated && workflow?.deduplicate_stats);
     if (hasVisualOutput) {
       const alsoRemovesAssociation = Boolean(workflow?.outputs?.associated);
