@@ -1229,11 +1229,24 @@
       swatch.style.color = item.color;
       const text = document.createElement("div");
       text.className = "postprocessLayerText";
+      const title = document.createElement("div");
+      title.className = "postprocessLayerTitle";
       const name = document.createElement("strong");
       name.textContent = item.label;
+      title.appendChild(name);
+      if (item.deduplicationMethod) {
+        const method = document.createElement("span");
+        const manual = item.deduplicationMethod === "manual";
+        method.className = `postprocessLayerMethod ${manual ? "manual" : "automatic"}`;
+        method.textContent = manual ? "Manual" : "Automatic";
+        method.title = manual
+          ? "Created from accepted manual duplicate selections"
+          : "Created using the configured weighted duplicate-score threshold";
+        title.appendChild(method);
+      }
       const detail = document.createElement("small");
       detail.textContent = item.detail;
-      text.append(name, detail);
+      text.append(title, detail);
       const actions = document.createElement("div");
       actions.className = "postprocessLayerActions";
       const opacity = document.createElement("input");
@@ -2445,6 +2458,16 @@
       renderPreviewLayers();
       return alreadyLoaded;
     }
+    if (alreadyLoaded?.url === url && alreadyLoaded?.version !== version) {
+      if (map.hasLayer(alreadyLoaded.layer)) map.removeLayer(alreadyLoaded.layer);
+      state.previewLayers.delete(stage);
+      state.previewDataCache.delete(`${url}::${alreadyLoaded.version || ""}`);
+      for (const [key, cached] of state.previewLayerCache) {
+        if (!key.startsWith(`${stage}::${url}::`)) continue;
+        if (cached.layer && map.hasLayer(cached.layer)) map.removeLayer(cached.layer);
+        state.previewLayerCache.delete(key);
+      }
+    }
     const style = PREVIEW_STYLES[stage] || PREVIEW_STYLES.source;
     const renderedKey = `${stage}::${url}::${version || ""}::${label || ""}`;
     const cachedLayer = state.previewLayerCache.get(renderedKey);
@@ -2501,10 +2524,13 @@
         }
       }
       if (visible) layer.addTo(map);
+      const actualCount = Array.isArray(geojson.features)
+        ? geojson.features.length
+        : Number(expectedCount || 0);
       const item = {
         label: created.label,
         color: style.color,
-        count: expectedCount ?? geojson.features?.length ?? 0,
+        count: actualCount,
         layer,
         url,
         version,
@@ -2517,7 +2543,7 @@
       if (visible) {
         const bounds = layer.getBounds();
         if (bounds.isValid()) map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
-        byId("ppMapStatus").textContent = `${style.label} preview loaded.`;
+        byId("ppMapStatus").textContent = `${style.label} preview loaded · ${actualCount.toLocaleString()} polygons.`;
       }
       return item;
     } catch (error) {
@@ -2573,7 +2599,13 @@
         const version = output.mtime
           || status.manual_edits?.[stage]?.updated_at
           || (stage === "regularized" && status.hierarchy_stats ? status.updated_at : null);
-        await loadPreviewLayer(stage, output.url, counts[stage], null, false, version, requestedContext, visible);
+        const item = await loadPreviewLayer(stage, output.url, counts[stage], null, false, version, requestedContext, visible);
+        if (item && (stage === "deduplicated" || stage === "associated")) {
+          item.deduplicationMethod = status.deduplicate_stats?.deduplication_method
+            || status.scoring_parameters?.deduplication_mode
+            || null;
+          renderPreviewLayers();
+        }
         if (!visible) await new Promise(resolve => window.requestAnimationFrame(resolve));
       }
     };

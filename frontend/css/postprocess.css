@@ -669,6 +669,29 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessLayerText strong,
 .postprocessLayerText small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .postprocessLayerText small { color: var(--muted); }
+.postprocessLayerTitle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.postprocessLayerTitle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.postprocessLayerMethod {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.postprocessLayerMethod.manual { color: #7dd3fc; }
+.postprocessLayerMethod.automatic { color: #c4b5fd; }
 
 .postprocessLayerDownload {
   color: #7eb8ff;
