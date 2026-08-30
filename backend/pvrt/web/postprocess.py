@@ -277,6 +277,21 @@ def create_postprocess_router(
                 status_code=503,
                 detail="Workflow status is temporarily unavailable; retrying is safe.",
             ) from last_error
+        scoring_parameters = payload.get("scoring_parameters") or {}
+        deduplication_method = (
+            (payload.get("deduplicate_stats") or {}).get("deduplication_method")
+            or scoring_parameters.get("deduplication_mode")
+        )
+        if (
+            payload.get("status") == "complete"
+            and payload.get("stage") == "deduplicate_apply"
+            and deduplication_method == "manual"
+        ):
+            accepted_count = len(scoring_parameters.get("manual_decisions") or [])
+            payload["message"] = (
+                "Manual selections applied. Deduplicated anomaly GeoJSON is ready"
+                f" from {accepted_count} accepted pair{'s' if accepted_count != 1 else ''}."
+            )
         outputs = dict(payload.get("outputs") or {})
         # Edited copies were used by an older workflow. Current edits update the
         # selected processing layer directly, so legacy copies stay hidden.
@@ -1117,12 +1132,18 @@ def create_postprocess_router(
         normalized_representative_weights = {
             name: value / 100.0 for name, value in representative_weight_values.items()
         }
+        queued_message = (
+            f"Queued {len(manual_decisions)} accepted manual duplicate "
+            f"selection{'s' if len(manual_decisions) != 1 else ''}."
+            if request.deduplication_mode == "manual"
+            else f"Queued deduplication at {request.duplicate_score_percent:g}% duplicate score."
+        )
         update_status(
             workflow_dir,
             status="queued",
             stage="deduplicate_apply",
             progress=0,
-            message=f"Queued deduplication at {request.duplicate_score_percent:g}% duplicate score.",
+            message=queued_message,
             scoring_parameters={
                 **(request.model_dump() if hasattr(request, "model_dump") else request.dict()),
                 "orientation_weight_percent": orientation_weight,
@@ -1157,12 +1178,18 @@ def create_postprocess_router(
                 if had_associated_output:
                     clear_panel_anomaly_assignments(workflow_dir, latest)
                 current_outputs["deduplicated"] = {"path": output_path.relative_to(result_dir).as_posix()}
+                completion_message = (
+                    f"Manual selections applied. Deduplicated anomaly GeoJSON is ready from "
+                    f"{len(manual_decisions)} accepted pair{'s' if len(manual_decisions) != 1 else ''}."
+                    if request.deduplication_mode == "manual"
+                    else f"Deduplicated anomaly GeoJSON is ready at {request.duplicate_score_percent:g}% duplicate score."
+                )
                 update_status(
                     workflow_dir,
                     status="complete",
                     stage="deduplicate_apply",
                     progress=100,
-                    message=f"Deduplicated anomaly GeoJSON is ready at {request.duplicate_score_percent:g}% duplicate score.",
+                    message=completion_message,
                     deduplicate_stats=stats,
                     association_stats=None,
                     association_parameters=None,
@@ -1171,7 +1198,7 @@ def create_postprocess_router(
             except Exception as exc:
                 append_log(workflow_dir, f"ERROR: {exc}")
                 update_status(workflow_dir, status="failed", stage="deduplicate_apply", message=str(exc), error=str(exc))
-                log.exception("Visual anomaly threshold application failed for %s", result_dir.name)
+                log.exception("Visual anomaly deduplication application failed for %s", result_dir.name)
 
         _EXECUTOR.submit(run_apply)
         return read_status(workflow_dir)
@@ -1383,11 +1410,11 @@ def create_postprocess_router(
                     status="complete",
                     stage="associate",
                     progress=100,
-                    message="Anomalies are associated with panel and row IDs.",
+                    message="Final anomalies are ready with panel and row IDs.",
                     association_stats=stats,
                     outputs=outputs,
                 )
-                log.info("UI:OK:postprocess: Anomaly association ready for %s", result_dir.name)
+                log.info("UI:OK:postprocess: Final anomalies ready for %s", result_dir.name)
             except Exception as exc:
                 append_log(workflow_dir, f"ERROR: {exc}")
                 update_status(workflow_dir, status="failed", stage="associate", message=str(exc), error=str(exc))

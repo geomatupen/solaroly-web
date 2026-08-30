@@ -573,7 +573,13 @@ def apply_visual_deduplication(
     callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Remove only spatial candidates whose image similarity clears the chosen threshold."""
-    _notify(callback, 5, "Applying the selected visual similarity threshold…")
+    _notify(
+        callback,
+        5,
+        "Applying accepted manual duplicate selections…"
+        if manual_decisions is not None
+        else "Applying the selected visual similarity threshold…",
+    )
     payload, records, invalid = load_polygon_features(input_path)
     review = json.loads(review_path.read_text(encoding="utf-8"))
     anomaly_ids_by_index = {

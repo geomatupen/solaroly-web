@@ -313,8 +313,8 @@
     }
     const applyButton = byId("ppApplyVisualDeduplication");
     const applyStatus = byId("ppManualApplyStatus");
-    const workflowReady = workflow?.status === "complete";
-    applyButton.disabled = !valid || !workflowReady;
+    const workflowRunning = workflow?.status === "queued" || workflow?.status === "running";
+    applyButton.disabled = !valid || workflowRunning;
     applyButton.textContent = manualMode ? "Apply manual selections" : "Apply visual deduplication";
     let disabledReason = "";
     if (manualMode && manualState.conflicts.length) {
@@ -322,8 +322,8 @@
       disabledReason = `Cannot apply yet: saved manual selections conflict for anomaly ${labels}. Open image comparisons and undo one of the conflicting accepted choices.`;
     } else if (manualMode && manualState.accepted === 0) {
       disabledReason = "Apply manual selections is disabled until at least one comparison pair is accepted as a duplicate.";
-    } else if (!workflowReady) {
-      disabledReason = "Apply is disabled while visual analysis is still running.";
+    } else if (workflowRunning) {
+      disabledReason = "Apply is disabled while anomaly processing is currently running.";
     }
     applyStatus.textContent = disabledReason;
     applyStatus.hidden = !disabledReason;
@@ -1580,7 +1580,7 @@
     if (workflow?.outputs?.associated) {
       const confirmed = await workspace.confirmReplacement(
         "Replace assigned anomaly output?",
-        "Panel and row IDs have already been assigned. The existing Associated anomalies layer will be deleted and replaced, and anomaly_count and anomaly_ids on the final panel layer will be recalculated. Are you sure you want to continue?",
+        "Panel and row IDs have already been assigned. The existing Final anomalies layer will be deleted and replaced, and anomaly_count and anomaly_ids on the final panel layer will be recalculated. Are you sure you want to continue?",
       );
       if (!confirmed) return;
     }

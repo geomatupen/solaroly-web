@@ -69,7 +69,7 @@
     segmentation_rows_reference: { label: "Final rows", color: "#ef4444", weight: 3, fillOpacity: 0.035 },
     overlap_deduplicated: { label: "Overlap-filtered anomalies", color: "#fb923c", weight: 2, fillOpacity: 0.18 },
     deduplicated: { label: "Visually deduplicated anomalies", color: "#f97316", weight: 2, fillOpacity: 0.22 },
-    associated: { label: "Associated anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
+    associated: { label: "Final anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
   };
 
   const internalControls = new Map();
