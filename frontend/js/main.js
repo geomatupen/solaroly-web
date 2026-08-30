@@ -2098,6 +2098,11 @@ function initMap(){
     const pane = MAP.createPane('overlayTifPane');
     pane.style.zIndex = 210; // Just above tile pane (200)
   }
+  // Predictions must remain above reference polygons so they stay visible and clickable.
+  if (!MAP.getPane('predictionsPane')) {
+    const pane = MAP.createPane('predictionsPane');
+    pane.style.zIndex = 640; // Below tooltips/popups, above vector and marker panes.
+  }
 
   if (!imagesLayerGroup) imagesLayerGroup = L.layerGroup().addTo(MAP);
   imageMarkersLayer = L.layerGroup().addTo(MAP);
@@ -2368,11 +2373,21 @@ async function loadGeoJSON(url){
   }catch(_){ }
 
   const layer = L.geoJSON(gj, {
+    pane: "predictionsPane",
     style: (f)=> styleForAnomalyFeature(f, base),
-    pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: base.color, fillColor: base.fillColor, fillOpacity: 0.8 }),
+    pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+      pane: "predictionsPane",
+      radius: 4,
+      color: base.color,
+      fillColor: base.fillColor,
+      fillOpacity: 0.8,
+    }),
     onEachFeature: (feature, layer) => {
       window.addGeoJsonHoverHighlight?.(feature, layer);
-      try { layer.bindPopup(featurePopupHTML(feature)); } catch(_) {}
+      // Resolve the associated image when the popup opens. The image catalog is
+      // loaded after predictions, so building this HTML during layer creation
+      // permanently omitted the View image action.
+      try { layer.bindPopup(() => featurePopupHTML(feature)); } catch(_) {}
     }
   });
 
