@@ -67,8 +67,8 @@
     panel_reference: { label: "Panel reference", color: "#14b8a6", weight: 2, fillOpacity: 0.08 },
     segmentation_regularized_reference: { label: "Final regularized panels", color: "#22c55e", weight: 2, fillOpacity: 0.10 },
     segmentation_rows_reference: { label: "Final rows", color: "#ef4444", weight: 3, fillOpacity: 0.035 },
-    overlap_deduplicated: { label: "Overlap-filtered anomalies", color: "#fb923c", weight: 2, fillOpacity: 0.18 },
-    deduplicated: { label: "Visually deduplicated anomalies", color: "#f97316", weight: 2, fillOpacity: 0.22 },
+    overlap_deduplicated: { label: "Overlap-filtered anomalies", color: "#fb923c", weight: 2, fillOpacity: 0.16 },
+    deduplicated: { label: "Visually deduplicated anomalies", color: "#a855f7", weight: 2, fillOpacity: 0.24 },
     associated: { label: "Final anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
   };
 
@@ -804,8 +804,14 @@
     rowsPane.style.zIndex = "410";
     const panelsPane = state.map.createPane("ppPanelsPane");
     panelsPane.style.zIndex = "420";
-    const anomaliesPane = state.map.createPane("ppAnomaliesPane");
-    anomaliesPane.style.zIndex = "430";
+    const anomalySourcePane = state.map.createPane("ppAnomalySourcePane");
+    anomalySourcePane.style.zIndex = "425";
+    const overlapAnomaliesPane = state.map.createPane("ppOverlapAnomaliesPane");
+    overlapAnomaliesPane.style.zIndex = "430";
+    const deduplicatedAnomaliesPane = state.map.createPane("ppDeduplicatedAnomaliesPane");
+    deduplicatedAnomaliesPane.style.zIndex = "435";
+    const finalAnomaliesPane = state.map.createPane("ppFinalAnomaliesPane");
+    finalAnomaliesPane.style.zIndex = "438";
     const anomalyReviewPane = state.map.createPane("ppAnomalyReviewPane");
     anomalyReviewPane.style.zIndex = "440";
     anomalyReviewPane.style.pointerEvents = "none";
@@ -1687,8 +1693,11 @@
 
   function previewPane(stage) {
     if (stage === "solar_rows" || stage === "segmentation_rows_reference") return "ppRowsPane";
-    if (state.mode === "anomaly" && (stage === "source" || stage === "overlap_deduplicated" || stage === "deduplicated" || stage === "associated")) {
-      return "ppAnomaliesPane";
+    if (state.mode === "anomaly") {
+      if (stage === "source") return "ppAnomalySourcePane";
+      if (stage === "overlap_deduplicated") return "ppOverlapAnomaliesPane";
+      if (stage === "deduplicated") return "ppDeduplicatedAnomaliesPane";
+      if (stage === "associated") return "ppFinalAnomaliesPane";
     }
     return "ppPanelsPane";
   }
