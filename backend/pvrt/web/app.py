@@ -1518,6 +1518,22 @@ def _build_camera_meta_from_exif(images_dir: Path) -> Dict[str, Dict[str, Any]]:
     return meta
 
 
+def _canonical_image_candidate_names(*name_groups) -> set[str]:
+    """Return one preferred filename per source stem.
+
+    Groups are ordered from lowest to highest priority. Generated inference
+    files can therefore provide missing images without duplicating an original
+    source name supplied by EXIF, camera metadata, or the manifest.
+    """
+    by_stem: Dict[str, str] = {}
+    for names in name_groups:
+        for value in sorted((str(name) for name in names if name), key=str.casefold):
+            stem = Path(value).stem.casefold()
+            if stem:
+                by_stem[stem] = value
+    return set(by_stem.values())
+
+
 
 # ----------------- overlays & geojson -----------------
 def _meters_to_deg(lat_deg: float):
@@ -1771,8 +1787,15 @@ def _preds_to_geojson(
             return None
         return _lookup_camera_meta_entry(camera_meta, name)
 
-    # Collect candidate filenames from manifest, exif, sizes, and camera_meta
-    candidates = set(manifest_map.keys()) | set(gps_index.keys()) | set(sizes_index.keys()) | set(camera_meta_keys)
+    # A prepared north-up PNG and its original JPEG have the same source stem.
+    # Keep one catalog feature per physical image, preferring the manifest's
+    # original filename and metadata over the generated PNG size entry.
+    candidates = _canonical_image_candidate_names(
+        sizes_index.keys(),
+        gps_index.keys(),
+        camera_meta_keys,
+        manifest_map.keys(),
+    )
 
     for fname in sorted(candidates):
         cam_entry = _camera_entry_for(fname)
