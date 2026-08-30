@@ -659,7 +659,7 @@
     anomalyReviewPane.style.zIndex = "440";
     anomalyReviewPane.style.pointerEvents = "none";
     window.L.control.layers({ Street: street, Satellite: satellite }, {}, { position: "topleft" }).addTo(state.map);
-    window.addStandardMeasureControl?.(state.map);
+    window.addStandardMeasureControl?.(state.map, { onStart: () => stopEditing(true) });
     return state.map;
   }
 
@@ -879,6 +879,7 @@
 
   function clearPreviewLayers() {
     stopEditing(false);
+    state.map?._solarolyMeasureControl?.cancel();
     clearAnomalyReviewMap();
     if (state.map) {
       for (const item of state.previewLayers.values()) {
@@ -1806,6 +1807,7 @@
     const item = state.previewLayers.get(stage);
     if (!item || !state.workflowId) return;
     if (state.editing?.dirty && !window.confirm("Discard the unsaved edits on the current layer?")) return;
+    state.map?._solarolyMeasureControl?.cancel();
     stopEditing(false);
     const visibleStages = new Set(
       [...state.previewLayers].filter(([, candidate]) => state.map.hasLayer(candidate.layer)).map(([key]) => key)

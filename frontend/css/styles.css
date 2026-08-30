@@ -170,6 +170,74 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
   .trainedModelsPane{ border-left:0; border-top:1px solid var(--border); padding:16px 0 0; }
   .trainingUploadLayout{ grid-template-columns:1fr; }
 }
+
+/* Compact length/area measurement control shared by both Leaflet maps. */
+.solarolyMeasureControl { position: relative; }
+.solarolyMeasureControl button { font-family: inherit; }
+.solarolyMeasureControl .solarolyMeasureToggle {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+  place-items: center;
+  color: #1f2937;
+  background: #fff;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.solarolyMeasureControl .solarolyMeasureToggle:hover,
+.solarolyMeasureControl .solarolyMeasureToggle:focus-visible { background: #f1f5f9; }
+.solarolyMeasureControl .solarolyMeasureToggle.active { color: #fff; background: #0284c7; }
+.solarolyMeasureToggle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.solarolyMeasureMenu {
+  position: absolute;
+  top: 0;
+  left: 40px;
+  display: grid;
+  width: 142px;
+  padding: 5px;
+  gap: 3px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgb(15 23 42 / 22%);
+}
+.solarolyMeasureMenu[hidden] { display: none; }
+.solarolyMeasureMenu .solarolyMeasureMenuItem {
+  width: 100%;
+  padding: 7px 9px;
+  color: #1f2937;
+  text-align: left;
+  background: #fff;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.solarolyMeasureMenu .solarolyMeasureMenuItem:hover,
+.solarolyMeasureMenu .solarolyMeasureMenuItem:focus-visible { background: #e2e8f0; }
+.solarolyMeasureActive { cursor: crosshair; }
+.solarolyMeasureActive .leaflet-interactive { pointer-events: none; }
+.solarolyMeasureResult { min-width: 120px; color: #1f2937; line-height: 1.45; }
+.solarolyMeasureRemove {
+  margin-top: 7px;
+  padding: 4px 7px;
+  color: #334155;
+  font-size: 11px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.solarolyMeasureRemove:hover { background: #e2e8f0; }
 @media (max-width:600px){
   .trainingUploadSources{ grid-template-columns:1fr; }
   .trainingUploadOr{ text-align:center; }
