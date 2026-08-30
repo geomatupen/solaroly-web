@@ -2084,6 +2084,7 @@ function initMap(){
   MAP = L.map("map", { layers: [street] });
   baseLayers = { "Street": street, "Satellite": sat };
   L.control.layers(baseLayers, {}, { position: "topleft" }).addTo(MAP);
+  window.addStandardMeasureControl?.(MAP);
   MAP.setView([0,0], 2);
 
   // Create custom panes for tile layers

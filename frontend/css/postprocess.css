@@ -564,47 +564,6 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   overflow: hidden;
 }
 
-.postprocessMeasureControl button.postprocessMeasureButton {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  padding: 7px;
-  place-items: center;
-  color: #1f2937;
-  background: #fff;
-  border: 0;
-  border-radius: 0;
-  cursor: pointer;
-}
-
-.postprocessMeasureControl button.postprocessMeasureButton:hover,
-.postprocessMeasureControl button.postprocessMeasureButton:focus-visible { background: #f1f5f9; }
-.postprocessMeasureControl button.postprocessMeasureButton.active {
-  color: #fff;
-  background: #0284c7;
-}
-.postprocessMeasureButton svg {
-  width: 20px;
-  height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.postprocessMap.postprocessMeasureMode { cursor: crosshair; }
-.leaflet-tooltip.postprocessMeasureTooltip {
-  padding: 4px 7px;
-  color: #e2e8f0;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.2;
-  background: #0f172a;
-  border: 1px solid #38bdf8;
-  box-shadow: 0 3px 10px rgb(0 0 0 / 28%);
-}
-.leaflet-tooltip-top.postprocessMeasureTooltip::before { border-top-color: #38bdf8; }
-
 .postprocessLayerList {
   display: flex;
   flex-direction: column;
