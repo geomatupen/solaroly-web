@@ -1235,24 +1235,11 @@
       swatch.style.color = item.color;
       const text = document.createElement("div");
       text.className = "postprocessLayerText";
-      const title = document.createElement("div");
-      title.className = "postprocessLayerTitle";
       const name = document.createElement("strong");
       name.textContent = item.label;
-      title.appendChild(name);
-      if (item.deduplicationMethod) {
-        const method = document.createElement("span");
-        const manual = item.deduplicationMethod === "manual";
-        method.className = `postprocessLayerMethod ${manual ? "manual" : "automatic"}`;
-        method.textContent = manual ? "Manual" : "Automatic";
-        method.title = manual
-          ? "Created from accepted manual duplicate selections"
-          : "Created using the configured weighted duplicate-score threshold";
-        title.appendChild(method);
-      }
       const detail = document.createElement("small");
       detail.textContent = item.detail;
-      text.append(title, detail);
+      text.append(name, detail);
       const actions = document.createElement("div");
       actions.className = "postprocessLayerActions";
       const opacity = document.createElement("input");
@@ -2368,7 +2355,10 @@
       name.textContent = item.label;
       const detail = document.createElement("small");
       const readOnlyReference = key === "segmentation_regularized_reference" || key === "segmentation_rows_reference";
-      detail.textContent = `${Number(item.count).toLocaleString()} polygons${key === "source" ? " · Original preserved" : readOnlyReference ? " · Read-only" : ""}`;
+      const methodLabel = item.deduplicationMethod
+        ? ` · ${item.deduplicationMethod === "manual" ? "Manual" : "Automatic"}`
+        : "";
+      detail.textContent = `${Number(item.count).toLocaleString()} polygons${methodLabel}${key === "source" ? " · Original preserved" : readOnlyReference ? " · Read-only" : ""}`;
       text.append(name, detail);
       const layerMenu = createLayerMenu(item.label, Boolean(state.editing), "processing");
       layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
@@ -2612,6 +2602,8 @@
         if (item && (stage === "deduplicated" || stage === "associated")) {
           item.deduplicationMethod = status.deduplicate_stats?.deduplication_method
             || status.scoring_parameters?.deduplication_mode
+            || item.geojson?.features?.find(feature => feature?.properties?.deduplication_method)
+              ?.properties?.deduplication_method
             || null;
           renderPreviewLayers();
         }
