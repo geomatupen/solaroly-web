@@ -35,6 +35,7 @@ from PIL.ExifTags import TAGS, GPSTAGS
 import numpy as np
 import math
 from io import BytesIO
+from ..dataops.camera_geometry import compute_meters_per_pixel as _compute_meters_per_pixel
 _TILER_STATS = {}
 
 # --- Optional tiler deps (best-effort) ---
@@ -488,9 +489,9 @@ def _latest_training_metrics(run_dir: Path) -> dict:
     return summary
 
 
-def _list_models(include_incomplete: bool = False) -> List[dict]:
+def _list_models(include_incomplete: bool = False, project: Optional[Project] = None) -> List[dict]:
     models = []
-    output_dir = get_project_output_dir()
+    output_dir = get_project_output_dir(project)
     if output_dir.exists():
         for d in sorted(output_dir.iterdir()):
             if not d.is_dir() or not any(d.iterdir()):
@@ -1348,39 +1349,6 @@ def _read_dji_xmp_meta(info: dict) -> Dict[str, float]:
     return out
 
 
-def _compute_meters_per_pixel(
-    altitude_m: Optional[float],
-    width_px: Optional[int],
-    focal_length_mm: Optional[float],
-    focal_length_35mm: Optional[float],
-    focal_plane_x_res: Optional[float],
-    focal_plane_res_unit: Optional[int],
-) -> Optional[float]:
-    if not altitude_m or altitude_m <= 0 or not width_px or width_px <= 0:
-        return None
-    if focal_length_35mm and focal_length_35mm > 1e-6:
-        try:
-            return (float(altitude_m) * 36.0) / (float(focal_length_35mm) * float(width_px))
-        except Exception:
-            return None
-    if focal_length_mm and focal_plane_x_res and focal_plane_x_res > 0 and focal_plane_res_unit:
-        unit = int(focal_plane_res_unit)
-        per_mm = None
-        if unit == 2:      # inches
-            per_mm = float(focal_plane_x_res) / 25.4
-        elif unit == 3:    # centimeters
-            per_mm = float(focal_plane_x_res) / 10.0
-        elif unit == 4:    # millimeters
-            per_mm = float(focal_plane_x_res)
-        if per_mm and per_mm > 0:
-            pixel_size_mm = 1.0 / per_mm
-            try:
-                return (float(altitude_m) * (pixel_size_mm / 1000.0)) / float(focal_length_mm)
-            except Exception:
-                return None
-    return None
-
-
 def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
     try:
         with Image.open(img_path) as img:
@@ -1420,11 +1388,10 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         # fall back to aircraft/gimbal headings if GPS direction missing
         heading = flight_yaw if flight_yaw is not None else gimbal_yaw
 
+    # GSD needs camera-to-surface distance. DJI RelativeAltitude is an AGL-like
+    # takeoff-relative approximation; absolute/GPS altitude is a datum height
+    # and must not be used directly as ground clearance.
     altitude_m = xmp_meta.get("relative_altitude")
-    if altitude_m is None:
-        altitude_m = xmp_meta.get("absolute_altitude")
-    if altitude_m is None:
-        altitude_m = alt_from_gps
 
     focal_length_mm = None
     focal_length_35mm = None
@@ -1460,7 +1427,7 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
 
     meters_per_pixel = _compute_meters_per_pixel(
         altitude_m, width, focal_length_mm, focal_length_35mm,
-        focal_plane_x_res, focal_plane_res_unit,
+        focal_plane_x_res, focal_plane_res_unit, height,
     )
 
     entry: Dict[str, Any] = {
@@ -1473,6 +1440,10 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         entry["lon"] = float(lon)
     if altitude_m is not None:
         entry["alt"] = float(altitude_m)
+    if xmp_meta.get("absolute_altitude") is not None:
+        entry["absolute_altitude"] = float(xmp_meta["absolute_altitude"])
+    elif alt_from_gps is not None:
+        entry["absolute_altitude"] = float(alt_from_gps)
     preferred_rot = None
     if gimbal_yaw is not None:
         entry["rotation_gimbal"] = float(gimbal_yaw)
@@ -1487,18 +1458,30 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         entry["rotation"] = float(preferred_rot)
     if meters_per_pixel is not None and meters_per_pixel > 0:
         entry["meters_per_pixel"] = float(meters_per_pixel)
+        entry["meters_per_pixel_status"] = "estimated"
+        entry["meters_per_pixel_model"] = "nadir_flat_plane"
+        if (
+            focal_length_mm
+            and focal_plane_x_res
+            and focal_plane_res_unit in (2, 3, 4, 5)
+        ):
+            entry["meters_per_pixel_method"] = "focal_plane_resolution"
+        elif focal_length_35mm and height:
+            entry["meters_per_pixel_method"] = "35mm_equivalent_diagonal"
+    else:
+        entry["meters_per_pixel_status"] = "unavailable"
+        entry["meters_per_pixel_warning"] = (
+            "relative_altitude_missing"
+            if altitude_m is None
+            else "usable_camera_optics_missing"
+        )
     if capture_ts is not None:
         entry["timestamp"] = float(capture_ts)
         entry["timestamp_source"] = "exif_datetime"
     if xmp_meta.get("relative_altitude") is not None:
         entry["alt_source"] = "relative_altitude"
-    elif alt_from_gps is not None:
-        entry["alt_source"] = "gps"
     if meters_per_pixel is not None:
-        if xmp_meta.get("relative_altitude") is not None:
-            entry["meters_per_pixel_source"] = "relative_altitude"
-        elif focal_length_mm is not None or focal_length_35mm is not None:
-            entry["meters_per_pixel_source"] = "exif_optics"
+        entry["meters_per_pixel_source"] = "relative_altitude_and_exif_optics"
     if xmp_meta.get("gimbal_yaw") is not None:
         entry["rotation_source"] = "gimbal_yaw"
     elif xmp_meta.get("flight_yaw") is not None:
@@ -1507,6 +1490,10 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         entry["rotation_source"] = "gps_img_direction"
     if xmp_meta.get("gimbal_pitch") is not None:
         entry["gimbal_pitch"] = float(xmp_meta["gimbal_pitch"])
+        off_nadir_deg = abs(90.0 - abs(float(xmp_meta["gimbal_pitch"])))
+        entry["off_nadir_deg"] = float(off_nadir_deg)
+        if meters_per_pixel is not None and off_nadir_deg > 5.0:
+            entry["meters_per_pixel_warning"] = "off_nadir_scale_varies_across_image"
     if xmp_meta.get("gimbal_roll") is not None:
         entry["gimbal_roll"] = float(xmp_meta["gimbal_roll"])
     return entry
@@ -3510,6 +3497,7 @@ async def api_test_upload_underscore(
 @app.post("/api/test_run")
 async def api_test_run(
     dataset: str = Form(...),
+    project_id: Optional[str] = Form(default=None),
     model: Optional[str] = Form(default=None),
     use_thermal: bool = Form(default=False),
     result_name: str = Form(default=""),
@@ -3535,7 +3523,11 @@ async def api_test_run(
     if requested_backend and requested_backend not in settings.enabled_backends:
         raise HTTPException(status_code=400, detail=f"Backend '{requested_backend}' is not available on this server.")
 
-    test_dir = get_project_test_dir()
+    project = project_manager.get_project(project_id) if project_id else get_active_project()
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+
+    test_dir = get_project_test_dir(project)
     ds_dir = test_dir / dataset
     
     if not ds_dir.exists() or not ds_dir.is_dir():
@@ -3544,14 +3536,14 @@ async def api_test_run(
     thermal_enabled = settings.enable_thermal_data_extraction
 
     if model:
-        model_dir = get_project_output_dir() / model
+        model_dir = get_project_output_dir(project) / model
         if not model_dir.exists():
             raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
     else:
-        models = _list_models()
+        models = _list_models(project=project)
         if not models:
             raise HTTPException(status_code=404, detail="No trained models found.")
-        model_dir = get_project_output_dir() / models[0]["name"]
+        model_dir = get_project_output_dir(project) / models[0]["name"]
 
     legacy_mosaic_request = bool(mosaic_enabled and inference_source is None)
     source_mode = str(inference_source or ("mosaic" if legacy_mosaic_request else "individual")).strip().lower()
@@ -3560,7 +3552,7 @@ async def api_test_run(
     mosaic_enabled = bool(create_mosaic or mosaic_enabled or source_mode == "mosaic")
 
     session = (_safe_name(result_name) or _now_stamp())
-    base = get_project_sessions_dir()
+    base = get_project_sessions_dir(project)
     ses = base / session
 
     active_run_key = str(ses.resolve())
@@ -3589,7 +3581,7 @@ async def api_test_run(
         except Exception as e:
             logger.warning(f"[test] Failed to clear existing session: {e}")
 
-    out_root = get_project_sessions_dir() / session
+    out_root = base / session
     out_root.mkdir(parents=True, exist_ok=True)
     _write_result_status(
         out_root,
@@ -4107,7 +4099,7 @@ async def api_test_run(
         pass
 
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
-    session_dir = get_project_sessions_dir() / session
+    session_dir = out_root
     
     if input_type == "tif":
         anom_gj, imgs_gj = _build_anomalies_geojson_from_tiles(

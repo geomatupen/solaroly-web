@@ -1753,6 +1753,8 @@ async function runTest(){
 
   const fd = new FormData();
   fd.append("dataset", ds);
+  const projectId = getProjectIdFromURL();
+  if(projectId) fd.append("project_id", projectId);
   if(model) fd.append("model", model);
   fd.append("use_thermal", useThermal ? "true":"false");
   // inform backend of the expected model channel count so it can prepare inputs correctly
