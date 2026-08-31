@@ -1160,6 +1160,7 @@ function onTestDatasetChange(){
     ? datasetsCache.find(item => item && item.name === ds)
     : null;
   const isOrthophoto = selectedDataset?.input_type === 'tif';
+  window.TestRowAlignment?.syncAvailability?.(selectedDataset?.input_type || null);
   const lensCheckbox = document.getElementById('chkUndistortThermal');
   const lensHint = document.getElementById('lensCorrectionHint');
   if(lensCheckbox){

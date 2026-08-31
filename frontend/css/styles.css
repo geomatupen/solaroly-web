@@ -243,6 +243,17 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
   cursor: pointer;
 }
 .solarolyMeasureRemove:hover { background: #e2e8f0; }
+.testAdvancedSubsection {
+  margin: 2px 0 14px 2em;
+  padding: 14px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.testAdvancedSubsection .modalContentField { margin: 0 0 12px; }
+.testAdvancedSubsection .modalContentField:last-child { margin-bottom: 0; }
+.rowAlignmentLimits { align-items: flex-start; gap: 14px; }
+.rowAlignmentLimits .modalContentField { flex: 1 1 220px; }
 @media (max-width:600px){
   .trainingUploadSources{ grid-template-columns:1fr; }
   .trainingUploadOr{ text-align:center; }

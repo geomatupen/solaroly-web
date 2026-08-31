@@ -1162,9 +1162,61 @@
     );
   }
 
+  function imageFootprintPoints(feature) {
+    const corners = feature?.properties?.corners;
+    if (!Array.isArray(corners) || corners.length < 4) return null;
+    const points = corners.map(point => window.L.latLng(Number(point[1]), Number(point[0])));
+    return points.every(point => Number.isFinite(point.lat) && Number.isFinite(point.lng)) ? points : null;
+  }
+
+  function imageOverlayPlacement(feature) {
+    const properties = feature?.properties || {};
+    const coordinates = feature?.geometry?.coordinates || [];
+    const longitude = Number(coordinates[0]);
+    const latitude = Number(coordinates[1]);
+    const width = Number(properties.width_m);
+    const height = Number(properties.height_m);
+    let bounds = null;
+    if (Number.isFinite(latitude) && Number.isFinite(longitude) && width > 0 && height > 0) {
+      const latitudeDelta = (height / 2) / 111320;
+      const longitudeDelta = (width / 2) / (111320 * Math.max(Math.cos(latitude * Math.PI / 180), 0.01));
+      bounds = window.L.latLngBounds(
+        [latitude - latitudeDelta, longitude - longitudeDelta],
+        [latitude + latitudeDelta, longitude + longitudeDelta],
+      );
+    }
+    return {
+      bounds: bounds || imageBounds(feature),
+      rotation: Number(properties.rotation ?? properties.rotation_heading ?? 0),
+    };
+  }
+
+  function applyReferenceImageRotation(overlay, rotationDegrees) {
+    const rotation = Number(rotationDegrees || 0);
+    const apply = () => {
+      const element = overlay?.getElement?.();
+      if (!element) return;
+      element.style.transformOrigin = "center center";
+      element.style.rotate = Math.abs(rotation) > 1e-6 ? `${rotation}deg` : "";
+    };
+    overlay?.on?.("load", apply);
+    requestAnimationFrame(apply);
+  }
+
+  function createReferenceImageOverlay(imageUrl, record, opacity) {
+    const image = window.L.imageOverlay(imageUrl, record.overlayBounds || record.bounds, {
+      pane: "ppRasterPane",
+      opacity,
+      interactive: false,
+    });
+    applyReferenceImageRotation(image, record.rotation);
+    return image;
+  }
+
   function imageOverlayUrl(properties, overlayByName) {
-    const direct = properties?.overlay;
-    if (typeof direct === "string" && (direct.startsWith("/") || /^https?:/i.test(direct))) return direct;
+    for (const direct of [properties?.prepared_image, properties?.overlay]) {
+      if (typeof direct === "string" && (direct.startsWith("/") || /^https?:/i.test(direct))) return direct;
+    }
     const source = properties?.src || properties?.image || properties?.file || properties?.name;
     const basename = String(source || "").split(/[\\/]/).pop();
     if (!basename) return null;
@@ -1241,11 +1293,7 @@
       if (!match?.imageUrl) throw new Error("No linked source image was found for this anomaly.");
       let image = match.item.imageLayers.get(match.imageUrl);
       if (!image) {
-        image = window.L.imageOverlay(match.imageUrl, match.record.bounds, {
-          pane: "ppRasterPane",
-          opacity: match.item.opacity,
-          interactive: false,
-        });
+        image = createReferenceImageOverlay(match.imageUrl, match.record, match.item.opacity);
         match.item.imageLayers.set(match.imageUrl, image);
       }
       if (linkedImageIsVisible(match)) {
@@ -1254,6 +1302,7 @@
         byId("ppReferenceStatus").textContent = "Linked anomaly image removed from the map.";
       } else {
         match.item.layer.addLayer(image);
+        applyReferenceImageRotation(image, match.record.rotation);
         if (!state.map.hasLayer(match.item.layer)) match.item.layer.addTo(state.map);
         button.textContent = "Remove image";
         byId("ppReferenceStatus").textContent = "Linked anomaly image is visible on the map.";
@@ -1303,14 +1352,32 @@
       if (!bounds) continue;
       const properties = feature.properties || {};
       const imageUrl = imageOverlayUrl(properties, overlayByName);
-      const footprint = window.L.rectangle(bounds, {
+      const placement = imageOverlayPlacement(feature);
+      const record = {
+        imageUrl,
+        bounds,
+        overlayBounds: placement.bounds,
+        rotation: placement.rotation,
+        matchTokens: imageMatchTokens(properties.image, properties.file, properties.src, properties.name),
+      };
+      const footprintPoints = imageFootprintPoints(feature);
+      const footprint = footprintPoints
+        ? window.L.polygon(footprintPoints, {
+          pane: "ppReferencePane",
+          color: "#38bdf8",
+          weight: 1,
+          opacity: 0.75,
+          fillOpacity: 0.04,
+          pmIgnore: true,
+        })
+        : window.L.rectangle(bounds, {
         pane: "ppReferencePane",
         color: "#38bdf8",
         weight: 1,
         opacity: 0.75,
         fillOpacity: 0.04,
         pmIgnore: true,
-      });
+        });
       footprint.on("mouseover", event => event.target.setStyle({ color: "#fff", weight: 2, fillOpacity: 0.12 }));
       footprint.on("mouseout", event => event.target.setStyle({ color: "#38bdf8", weight: 1, opacity: Math.max(item.opacity, 0.25), fillOpacity: 0.04 }));
       footprint.on("click", () => {
@@ -1320,7 +1387,7 @@
         }
         let image = item.imageLayers.get(imageUrl);
         if (!image) {
-          image = window.L.imageOverlay(imageUrl, bounds, { pane: "ppRasterPane", opacity: item.opacity, interactive: false });
+          image = createReferenceImageOverlay(imageUrl, record, item.opacity);
           item.imageLayers.set(imageUrl, image);
         }
         if (item.layer.hasLayer(image)) {
@@ -1328,14 +1395,11 @@
           byId("ppReferenceStatus").textContent = "Linked image hidden.";
         } else {
           item.layer.addLayer(image);
+          applyReferenceImageRotation(image, record.rotation);
           byId("ppReferenceStatus").textContent = "Linked image loaded. Click its footprint again to hide it.";
         }
       });
-      item.imageRecords.push({
-        imageUrl,
-        bounds,
-        matchTokens: imageMatchTokens(properties.image, properties.file, properties.src, properties.name),
-      });
+      item.imageRecords.push(record);
       item.layer.addLayer(footprint);
       count += 1;
     }

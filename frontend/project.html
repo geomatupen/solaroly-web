@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260831b" />
+  <link rel="stylesheet" href="css/styles.css?v=20260831c" />
   <link rel="stylesheet" href="css/postprocess.css?v=20260830c" />
 
   <!-- Leaflet -->
@@ -94,6 +94,41 @@
             <label for="testTargetSurfaceHeight">Target surface height above takeoff (m)</label>
             <input id="testTargetSurfaceHeight" type="number" value="4" min="0" step="0.1" inputmode="decimal" />
             <button id="btnTargetSurfaceHeightInfo" type="button" class="infoBtn" aria-label="Why target surface height is needed" aria-haspopup="dialog" aria-controls="targetSurfaceHeightInfoModal">i</button>
+          </div>
+          <div class="row wrap" id="rowAlignmentControls">
+            <label class="switchRow wide">
+              <input type="checkbox" id="chkAlignImagesToRows" />
+              <span>
+                Align images to existing solar rows
+                <span id="rowAlignmentHint" class="muted tiny hintLine">Refine prepared thermal-image positions and orientation before inference.</span>
+              </span>
+            </label>
+            <button id="btnRowAlignmentInfo" type="button" class="infoBtn" aria-label="How solar-row image alignment works" aria-haspopup="dialog" aria-controls="rowAlignmentInfoModal">i</button>
+          </div>
+          <div id="rowAlignmentOptions" class="testAdvancedSubsection" hidden>
+            <div class="modalContentField">
+              <label for="selRowAlignmentJob">Post-processing job</label>
+              <select id="selRowAlignmentJob" disabled>
+                <option value="">Select a post-processing job…</option>
+              </select>
+            </div>
+            <div class="modalContentField">
+              <label for="selRowAlignmentGeoJson">Rows GeoJSON</label>
+              <select id="selRowAlignmentGeoJson" disabled>
+                <option value="">Select a Rows GeoJSON…</option>
+              </select>
+            </div>
+            <div class="row wrap rowAlignmentLimits">
+              <div class="modalContentField">
+                <label for="rowAlignmentMaxPosition">Maximum position correction (m)</label>
+                <input id="rowAlignmentMaxPosition" type="number" value="8" min="0.5" max="50" step="0.5" />
+              </div>
+              <div class="modalContentField">
+                <label for="rowAlignmentMaxRotation">Maximum orientation correction (°)</label>
+                <input id="rowAlignmentMaxRotation" type="number" value="10" min="0" max="45" step="0.5" />
+              </div>
+            </div>
+            <div class="statusLine tiny" id="rowAlignmentSourceStatus"></div>
           </div>
           <div class="row wrap" id="thermalUndistortControls">
             <label class="switchRow wide">
@@ -1352,6 +1387,27 @@
     </div>
   </div>
 
+  <div id="rowAlignmentInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="rowAlignmentInfoTitle">
+    <div class="modalContent workflowInfoModalContent">
+      <div class="modalHeader">
+        <h3 id="rowAlignmentInfoTitle">Align thermal images to solar rows</h3>
+        <button id="btnCloseRowAlignmentInfo" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody workflowInfoBody">
+        <p>This uses the prepared images after lens correction and north-up rotation. Nearby mapped row boundaries refine each image’s GPS position and residual map orientation before anomaly inference.</p>
+        <div class="workflowNote"><b>How to create rows:</b> run a solar-panel segmentation test, create a Post-process job, combine and regularize the panels, then run <b>Assign panel and row IDs</b>.</div>
+        <ul>
+          <li>Only confident, unambiguous corrections are applied; otherwise the original image metadata is retained.</li>
+          <li>This first version aligns individual images and cannot be combined with approximate-mosaic creation.</li>
+          <li>Long rows primarily improve sideways position and orientation. GPS remains the anchor along repetitive rows.</li>
+        </ul>
+      </div>
+      <div class="modalFooter">
+        <button id="btnCloseRowAlignmentInfoFooter" class="secondary" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="lensCorrectionInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="lensCorrectionInfoTitle">
     <div class="modalContent workflowInfoModalContent">
       <div class="modalHeader">
@@ -1671,11 +1727,12 @@
 
   <script src="js/utils.js?v=20260825m"></script>
   <script src="js/measure-control.js?v=20260830b"></script>
-  <script src="js/map.js?v=20260827h"></script>
-  <script src="js/colmap.js?v=20260825o"></script>
+  <script src="js/map.js?v=20260831a"></script>
+  <script src="js/colmap.js?v=20260831a"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
-  <script src="js/main.js?v=20260831b"></script>
-  <script src="js/postprocess.js?v=20260830g"></script>
+  <script src="js/test-row-alignment.js?v=20260831c"></script>
+  <script src="js/main.js?v=20260831d"></script>
+  <script src="js/postprocess.js?v=20260831a"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260830a"></script>
   <script>

@@ -1750,6 +1750,12 @@ async function runTest(){
     setHidden($("#spinTest"), true);
     return;
   }
+  const rowAlignmentError = window.TestRowAlignment?.validate?.();
+  if(rowAlignmentError){
+    warn("test", rowAlignmentError);
+    setHidden($("#spinTest"), true);
+    return;
+  }
 
   setHidden($("#spinTest"), false);
   const runTestButton = document.getElementById('btnRunTest');
@@ -1774,6 +1780,7 @@ async function runTest(){
   fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append("test_threshold", testThreshold);
   fd.append("target_surface_height_m", String(targetSurfaceHeight));
+  window.TestRowAlignment?.appendFormData?.(fd);
   const correctLensDistortion = document.getElementById("chkUndistortThermal")?.checked === true;
   fd.append("undistort_thermal", correctLensDistortion ? "true" : "false");
   fd.append(
@@ -3047,11 +3054,25 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       const url = resolveFeatureOverlayUrl(f?.properties || {}, overlayByName, sessionRoot);
       if (!url) continue;
 
-      // If the backend provided true footprint corners, use them (and rotation)
+      // Place the prepared image at the corrected GeoJSON centre. Its residual
+      // row-alignment orientation is applied by the shared map overlay helper.
       let bounds = null;
-      let storedRotation = 0;
+      let storedRotation = Number(f?.properties?.rotation ?? f?.properties?.rotation_heading ?? 0);
       const corners = f?.properties?.corners;
-      if (Array.isArray(corners) && corners.length >= 4){
+      if (f?.properties?.width_m && f?.properties?.height_m){
+        try{
+          const halfW = Number(f.properties.width_m) / 2.0;
+          const halfH = Number(f.properties.height_m) / 2.0;
+          const top = lat + (halfH / 111320);
+          const bottom = lat - (halfH / 111320);
+          const left = lng - (halfW / (111320 * Math.cos(lat * Math.PI / 180)));
+          const right = lng + (halfW / (111320 * Math.cos(lat * Math.PI / 180)));
+          bounds = L.latLngBounds(L.latLng(bottom, left), L.latLng(top, right));
+        }catch(_){ bounds = null; }
+      }
+
+      // Older result files may only contain footprint corners.
+      if (!bounds && Array.isArray(corners) && corners.length >= 4){
         try{
           const lons = corners.map(c => Number(c[0]));
           const lats = corners.map(c => Number(c[1]));
@@ -3062,22 +3083,6 @@ async function loadImagesCatalog(sessionName, imagesUrl){
           const sw = L.latLng(minLat, minLon);
           const ne = L.latLng(maxLat, maxLon);
           bounds = L.latLngBounds(sw, ne);
-          storedRotation = Number(f?.properties?.rotation || 0);
-        }catch(_){ bounds = null; }
-      }
-
-      // If we didn't get corners, but backend wrote width/height in meters, build bbox
-      if (!bounds && f?.properties?.width_m && f?.properties?.height_m){
-        try{
-          const halfW = Number(f.properties.width_m) / 2.0;
-          const halfH = Number(f.properties.height_m) / 2.0;
-          // convert meters -> degrees at this latitude
-          const top = lat + (halfH / 111320);
-          const bottom = lat - (halfH / 111320);
-          const left = lng - (halfW / (111320 * Math.cos(lat * Math.PI / 180)));
-          const right = lng + (halfW / (111320 * Math.cos(lat * Math.PI / 180)));
-          bounds = L.latLngBounds(L.latLng(bottom, left), L.latLng(top, right));
-          storedRotation = Number(f?.properties?.rotation || 0);
         }catch(_){ bounds = null; }
       }
 
@@ -3393,6 +3398,13 @@ function connectLogs(){
       setText("#testStatus", "Finalizing prepared inputs…");
     }else if(line.includes("Starting model inference")){
       setText("#testStatus", "Running inference…");
+    }else if(line.includes("Aligning prepared images to solar rows")){
+      setText("#testStatus", "Aligning prepared images to solar rows…");
+    }else if(line.includes("Solar-row alignment progress:")){
+      const progress = line.split("Solar-row alignment progress:").pop().trim();
+      setText("#testStatus", `Aligning images to rows: ${progress}`);
+    }else if(line.includes("Solar-row alignment complete:")){
+      setText("#testStatus", "Solar-row alignment complete. Preparing inference…");
     }else if(line.includes("Inference complete")){
       setText("#testStatus", "Inference complete. Preparing result files…");
     }else if(line.includes("Preparing prediction manifest")){

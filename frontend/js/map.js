@@ -106,6 +106,18 @@ function clearImageOverlays(){
   imageOverlays.clear();
 }
 
+function applyImageOverlayRotation(overlay, rotationDegrees){
+  const rotation = Number(rotationDegrees || 0);
+  const apply = () => {
+    const element = overlay?.getElement?.();
+    if (!element) return;
+    element.style.transformOrigin = 'center center';
+    element.style.rotate = Math.abs(rotation) > 1e-6 ? `${rotation}deg` : '';
+  };
+  overlay?.on?.('load', apply);
+  requestAnimationFrame(apply);
+}
+
 // turn one image overlay on/off by id
 function toggleImageOverlay(id, on){
   const rec = imageCatalog.find(x => x.id === id);
@@ -116,16 +128,14 @@ function toggleImageOverlay(id, on){
     if (!ov){
       // create overlay using provided bounds (may be conservative bbox of corners)
       ov = L.imageOverlay(rec.url, rec.bounds, { opacity: imagesOpacity, interactive: false });
+      applyImageOverlayRotation(ov, rec.rotation);
       imageOverlays.set(id, ov);
     } else {
       try { ov.setOpacity(imagesOpacity); } catch(_){ }
     }
     ov.addTo(imagesLayerGroup);
+    applyImageOverlayRotation(ov, rec.rotation);
     rec.on = true;
-
-    // No client-side rotation or homography is applied. Backend supplies
-    // properly-oriented rotated images when available, and the frontend
-    // should simply overlay the provided PNG pixels at the geospatial bounds.
 
   } else {
     if (ov){ try{ imagesLayerGroup.removeLayer(ov); }catch(_){ } }
