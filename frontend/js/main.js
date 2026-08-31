@@ -1742,6 +1742,14 @@ async function runTest(){
   } catch (_) { }
   
   const testThreshold = (document.getElementById("testThreshold")?.value);
+  const targetSurfaceHeightInput = document.getElementById("testTargetSurfaceHeight");
+  const targetSurfaceHeightRaw = targetSurfaceHeightInput?.value?.trim() ?? "4";
+  const targetSurfaceHeight = Number(targetSurfaceHeightRaw);
+  if(!targetSurfaceHeightRaw || !Number.isFinite(targetSurfaceHeight) || targetSurfaceHeight < 0){
+    warn("test", "Target surface height must be zero or a positive number in metres.");
+    setHidden($("#spinTest"), true);
+    return;
+  }
 
   setHidden($("#spinTest"), false);
   const runTestButton = document.getElementById('btnRunTest');
@@ -1765,6 +1773,7 @@ async function runTest(){
   fd.append("result_name", resultName);
   fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append("test_threshold", testThreshold);
+  fd.append("target_surface_height_m", String(targetSurfaceHeight));
   const correctLensDistortion = document.getElementById("chkUndistortThermal")?.checked === true;
   fd.append("undistort_thermal", correctLensDistortion ? "true" : "false");
   fd.append(
@@ -3553,6 +3562,7 @@ function setupUI(){
     });
   };
   wireInfoModal('btnLensCorrectionInfo', 'lensCorrectionInfoModal');
+  wireInfoModal('btnTargetSurfaceHeightInfo', 'targetSurfaceHeightInfoModal');
   wireInfoModal('btnMosaicInfo', 'mosaicInfoModal');
   wireInfoModal('btnThermalTrainingInfo', 'thermalTrainingInfoModal');
 

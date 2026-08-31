@@ -155,6 +155,10 @@ MEDIA_DIR    = PROJECT_ROOT
 
 IMAGE_EXTS = {".jpg",".jpeg",".png",".tif",".tiff",".bmp",".webp",".JPG",".JPEG",".PNG",".TIF",".TIFF",".BMP",".WEBP"}
 
+# DJI RelativeAltitude is takeoff-relative, while GSD needs the distance to the
+# target plane. Rooftop tests can override this default from Advanced options.
+DEFAULT_TARGET_SURFACE_HEIGHT_M = 4.0
+
 # Common non-fatal exceptions we allow to be handled locally across web helpers.
 # This intentionally excludes BaseException-derived types such as KeyboardInterrupt
 # and SystemExit so they propagate.
@@ -1349,7 +1353,10 @@ def _read_dji_xmp_meta(info: dict) -> Dict[str, float]:
     return out
 
 
-def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
+def _extract_camera_meta_entry(
+    img_path: Path,
+    target_surface_height_m: float = 0.0,
+) -> Optional[Dict[str, Any]]:
     try:
         with Image.open(img_path) as img:
             width, height = img.size
@@ -1392,6 +1399,11 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
     # takeoff-relative approximation; absolute/GPS altitude is a datum height
     # and must not be used directly as ground clearance.
     altitude_m = xmp_meta.get("relative_altitude")
+    gsd_altitude_m = (
+        max(0.0, float(altitude_m) - float(target_surface_height_m))
+        if altitude_m is not None
+        else None
+    )
 
     focal_length_mm = None
     focal_length_35mm = None
@@ -1426,7 +1438,7 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
                     break
 
     meters_per_pixel = _compute_meters_per_pixel(
-        altitude_m, width, focal_length_mm, focal_length_35mm,
+        gsd_altitude_m, width, focal_length_mm, focal_length_35mm,
         focal_plane_x_res, focal_plane_res_unit, height,
     )
 
@@ -1440,6 +1452,8 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         entry["lon"] = float(lon)
     if altitude_m is not None:
         entry["alt"] = float(altitude_m)
+        entry["target_surface_height_m"] = float(target_surface_height_m)
+        entry["gsd_altitude_m"] = float(gsd_altitude_m)
     if xmp_meta.get("absolute_altitude") is not None:
         entry["absolute_altitude"] = float(xmp_meta["absolute_altitude"])
     elif alt_from_gps is not None:
@@ -1473,7 +1487,11 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
         entry["meters_per_pixel_warning"] = (
             "relative_altitude_missing"
             if altitude_m is None
-            else "usable_camera_optics_missing"
+            else (
+                "effective_camera_to_target_distance_nonpositive"
+                if not gsd_altitude_m or gsd_altitude_m <= 0
+                else "usable_camera_optics_missing"
+            )
         )
     if capture_ts is not None:
         entry["timestamp"] = float(capture_ts)
@@ -1481,7 +1499,7 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
     if xmp_meta.get("relative_altitude") is not None:
         entry["alt_source"] = "relative_altitude"
     if meters_per_pixel is not None:
-        entry["meters_per_pixel_source"] = "relative_altitude_and_exif_optics"
+        entry["meters_per_pixel_source"] = "relative_altitude_minus_target_surface_height_and_exif_optics"
     if xmp_meta.get("gimbal_yaw") is not None:
         entry["rotation_source"] = "gimbal_yaw"
     elif xmp_meta.get("flight_yaw") is not None:
@@ -1499,7 +1517,10 @@ def _extract_camera_meta_entry(img_path: Path) -> Optional[Dict[str, Any]]:
     return entry
 
 
-def _build_camera_meta_from_exif(images_dir: Path) -> Dict[str, Dict[str, Any]]:
+def _build_camera_meta_from_exif(
+    images_dir: Path,
+    target_surface_height_m: float = 0.0,
+) -> Dict[str, Dict[str, Any]]:
     meta: Dict[str, Dict[str, Any]] = {}
     if not images_dir or not images_dir.exists():
         return meta
@@ -1509,7 +1530,7 @@ def _build_camera_meta_from_exif(images_dir: Path) -> Dict[str, Dict[str, Any]]:
             continue
         if img_path.suffix not in IMAGE_EXTS:
             continue
-        entry = _extract_camera_meta_entry(img_path)
+        entry = _extract_camera_meta_entry(img_path, target_surface_height_m)
         if entry:
             meta[img_path.name] = entry
             order_idx[img_path.name] = order
@@ -3536,11 +3557,14 @@ async def api_test_run(
     refine_mosaic_alignment: bool = Form(default=False),
     undistort_thermal: bool = Form(default=False),
     export_undistorted_images: bool = Form(default=False),
+    target_surface_height_m: float = Form(default=DEFAULT_TARGET_SURFACE_HEIGHT_M),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
     if not settings.enabled_backends:
         raise HTTPException(status_code=400, detail="No inference backends are enabled on this server.")
+    if not math.isfinite(target_surface_height_m) or target_surface_height_m < 0:
+        raise HTTPException(status_code=400, detail="Target surface height must be zero or a positive number in metres.")
 
     requested_backend = backend or forced_backend
     if requested_backend and requested_backend not in settings.enabled_backends:
@@ -3616,11 +3640,17 @@ async def api_test_run(
         export_undistorted_images_requested=bool(export_undistorted_images and undistort_thermal),
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
+        target_surface_height_m=float(target_surface_height_m),
     )
     test_logger = logging.getLogger("pvrt.test")
     test_logger.info(
         "UI:INFO:test: Preparing test run '%s' with dataset '%s' and model '%s'…",
         session, dataset, model_dir.name,
+    )
+    test_logger.info(
+        "UI:INFO:test: Target surface height above takeoff: %.2f m%s.",
+        target_surface_height_m,
+        " (unadjusted relative altitude)" if target_surface_height_m == 0 else "",
     )
 
     # --- ADD: decide whether this dataset is a single GeoTIFF ---
@@ -3847,14 +3877,29 @@ async def api_test_run(
             meta_info["source"] = "colmap"
             meta_info["accurate_locations"] = True
         try:
-            base_meta = _build_camera_meta_from_exif(ds_dir)
+            base_meta = _build_camera_meta_from_exif(ds_dir, target_surface_height_m)
             for key, entry in base_meta.items():
-                camera_meta.setdefault(key, entry)
+                existing = _lookup_camera_meta_entry(camera_meta, key)
+                if existing is None:
+                    camera_meta[key] = entry
+                    continue
+                # Retain the optimized pose but use the target-plane GSD
+                # selected for this thermal test.
+                for field in (
+                    "alt", "alt_source", "absolute_altitude", "meters_per_pixel",
+                    "meters_per_pixel_method", "meters_per_pixel_model",
+                    "meters_per_pixel_source", "meters_per_pixel_status",
+                    "meters_per_pixel_warning", "target_surface_height_m", "gsd_altitude_m",
+                ):
+                    if field in entry:
+                        existing[field] = entry[field]
+                    else:
+                        existing.pop(field, None)
         except Exception:
             pass
     elif input_type == "images":
         try:
-            camera_meta = _build_camera_meta_from_exif(ds_dir)
+            camera_meta = _build_camera_meta_from_exif(ds_dir, target_surface_height_m)
         except Exception as e:
             logger.warning(f"Failed to derive camera metadata from EXIF: {e}")
             camera_meta = {}
@@ -4229,6 +4274,7 @@ async def api_test_run(
             metrics = json.loads(mpath.read_text(encoding="utf-8"))
         metrics["inference_source"] = source_mode
         metrics["mosaic_created"] = mosaic_enabled
+        metrics["target_surface_height_m"] = float(target_surface_height_m)
         if tif_src is not None:
             metrics.setdefault("source_tifs", [])
             if str(tif_src) not in metrics["source_tifs"]:
@@ -4252,6 +4298,7 @@ async def api_test_run(
         undistorted_images_exported=bool((out_root / "undistorted_images").is_dir()),
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
+        target_surface_height_m=float(target_surface_height_m),
     )
     logger.info(f"UI:OK:test: complete. results={preds_dir}")
     return {
@@ -4276,6 +4323,7 @@ async def api_test_run(
         "preprocessing": _media_url(preprocessing_path) if preprocessing_path.is_file() else None,
         "inference_source": source_mode,
         "mosaic_created": mosaic_enabled,
+        "target_surface_height_m": float(target_surface_height_m),
         "assets": assets,
         "backend": presp.get("used_backend"),
         "model_mode": presp.get("model_mode"),

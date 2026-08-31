@@ -37,6 +37,7 @@ html,body{ height:100%; margin:0; background:var(--bg); color:#e6edf3; font:14px
 .radioStack label{ display:inline-flex; align-items:center; gap:6px; margin:0; color:var(--text); }
 .wide{ flex:1 1 260px; }
 .hintLine{ display:block; margin-top:2px; }
+#testTargetSurfaceHeight{ width:110px; }
 
 input[type="number"], select{ background:#0b1117; border:1px solid var(--border); color:#e6edf3; padding:6px 8px; border-radius:8px; }
 button{ background:var(--accent); color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer; }
