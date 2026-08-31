@@ -1827,13 +1827,14 @@ async function runTest(){
       }
     }catch(_){ }
 
-    // console.log(js)
+    // The server-side run is complete; keep progress visible while its result is
+    // loaded into the map, result grid, and session selectors.
     currentSession = js.session;
-    // Add a more explicit status line with total predictions
-    ok("test", "Testing completed.");
-    setText("#testStatus", `Inference complete. ${totalPreds} predictions.`);
+    setText("#testStatus", "Loading completed test result…");
+    const loadingLine = "[test] Processing complete. Loading map and result assets…";
+    appendMiniLog("#testMiniLog", loadingLine);
+    appendLog(loadingLine);
 
-    // load into map & results
     await applySessionToMap(currentSession);
     renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
     loadResultsInfo(currentSession);
@@ -1841,6 +1842,8 @@ async function runTest(){
     await loadSessions(true);
     $("#selResults").value = currentSession;
     $("#selMapSession").value = currentSession;
+    ok("test", "Testing completed.");
+    setText("#testStatus", `Test complete. ${totalPreds} predictions.`);
     switchToTab("tab-results");
   }catch(ex){
     if(ex.name === "AbortError"){
@@ -3390,6 +3393,16 @@ function connectLogs(){
       setText("#testStatus", "Finalizing prepared inputs…");
     }else if(line.includes("Starting model inference")){
       setText("#testStatus", "Running inference…");
+    }else if(line.includes("Inference complete")){
+      setText("#testStatus", "Inference complete. Preparing result files…");
+    }else if(line.includes("Preparing prediction manifest")){
+      setText("#testStatus", "Preparing prediction manifest…");
+    }else if(line.includes("Generating prediction and image GeoJSON")){
+      setText("#testStatus", "Generating map GeoJSON…");
+    }else if(line.includes("GeoJSON outputs ready")){
+      setText("#testStatus", "Map GeoJSON ready. Finalizing result…");
+    }else if(line.includes("Finalizing result metadata")){
+      setText("#testStatus", "Finalizing result metadata…");
     }
 
     // Surface server-side warnings to the frontend warning panels so users
@@ -3425,10 +3438,9 @@ function connectLogs(){
     }
 
     if(line.includes("UI:OK:test: Test complete")){
-      setText("#testStatus","Inference complete.");
-      setHidden($("#spinTest"), true);
-      ok("test","Testing completed.");
-      wireAlertClose();
+      // The request handler still loads the completed result into the UI. Its
+      // finally block owns the spinner and its success path sets final status.
+      setText("#testStatus","Test processing complete. Loading result…");
     }
     if(line.includes("UI:ERR:test:")){
       setHidden($("#spinTest"), true);

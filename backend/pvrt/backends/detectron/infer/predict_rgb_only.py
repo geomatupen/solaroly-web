@@ -300,7 +300,8 @@ def predict_folder(images_dir, weights_dir, out_dir, score_thresh: float = 0.5) 
     }
     write_metrics_json(out_dir, metrics)
 
-    # ONE summary line + completion line
+    # This function completes inference only. The web request still prepares
+    # manifests, GeoJSON, assets, and final run metadata afterward.
     log.info(f"UI:INFO:test: predictions_total={total}")
-    log.info("UI:OK:test: Test complete")
+    log.info("UI:INFO:test: Inference complete. Preparing result files…")
     return out_dir

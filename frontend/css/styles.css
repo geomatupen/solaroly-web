@@ -225,7 +225,11 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 }
 .solarolyMeasureMenu .solarolyMeasureMenuItem:hover,
 .solarolyMeasureMenu .solarolyMeasureMenuItem:focus-visible { background: #e2e8f0; }
-.solarolyMeasureActive { cursor: crosshair; }
+.leaflet-container.solarolyMeasureActive,
+.leaflet-container.solarolyMeasureActive.leaflet-grab,
+.leaflet-container.solarolyMeasureActive.leaflet-crosshair {
+  cursor: crosshair !important;
+}
 .solarolyMeasureActive .leaflet-interactive { pointer-events: none; }
 .solarolyMeasureResult { min-width: 120px; color: #1f2937; line-height: 1.45; }
 .solarolyMeasureRemove {

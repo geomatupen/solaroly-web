@@ -3545,7 +3545,7 @@ async def api_test_run(
     model: Optional[str] = Form(default=None),
     use_thermal: bool = Form(default=False),
     result_name: str = Form(default=""),
-    test_threshold: str = Form(default=""),
+    test_threshold: str = Form(default="0.8"),
     forced_backend: Optional[str] = Form(default=None),
     backend: Optional[str] = Form(default=None),
     selected_bands: str = Form(None),
@@ -4002,6 +4002,7 @@ async def api_test_run(
     preds_dir = Path(presp["results_dir"])
     manifest_path = out_root / "manifest.json"
     class_names = (_read_model_meta(model_dir).get("class_names") or [])
+    test_logger.info("UI:INFO:test: Inference complete. Preparing prediction manifest…")
     # Overlays are generated during inference, no post-processing needed
     logger.info(f"UI:INFO:post: Overlays were generated during inference")
     # gj, _ = _preds_to_geojson(ds_dir, preds_dir, out_root, class_names)
@@ -4011,6 +4012,7 @@ async def api_test_run(
         th_num = 0.0
 
     # Build EXIF(GPS) + image-size indices once, then merge into manifest.json
+    test_logger.info("UI:INFO:test: Preparing prediction manifest and image metadata…")
     if camera_meta:
         gps_index = {
             fname: (float(entry.get("lat")), float(entry.get("lon")))
@@ -4167,6 +4169,7 @@ async def api_test_run(
         pass
 
     # Build GeoJSONs (TIF branch stitches tiles; images branch uses EXIF/GSD)
+    test_logger.info("UI:INFO:test: Generating prediction and image GeoJSON…")
     session_dir = out_root
     
     if input_type == "tif":
@@ -4244,6 +4247,8 @@ async def api_test_run(
         ov_dir = out_root / "overlays"
         th_dir = out_root / "thumbs"
 
+    test_logger.info("UI:INFO:test: GeoJSON outputs ready. Finalizing result metadata…")
+
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):
         mp = Path(manifest_path)
@@ -4287,6 +4292,7 @@ async def api_test_run(
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
 
+    test_logger.info("UI:INFO:test: Finalizing result metadata…")
     preprocessing_path = out_root / "preprocessing.json"
     _write_result_status(
         out_root,
@@ -4300,7 +4306,7 @@ async def api_test_run(
         mosaic_created=mosaic_enabled,
         target_surface_height_m=float(target_surface_height_m),
     )
-    logger.info(f"UI:OK:test: complete. results={preds_dir}")
+    logger.info(f"UI:OK:test: Test complete. results={preds_dir}")
     return {
         "ok": True,
         "session": session,
