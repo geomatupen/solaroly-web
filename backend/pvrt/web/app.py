@@ -37,6 +37,7 @@ import math
 from io import BytesIO
 from ..dataops.camera_geometry import compute_meters_per_pixel as _compute_meters_per_pixel
 from ..dataops.row_sequence_alignment import align_images_with_lightglue
+from ..dataops.photogrammetry_export import finalize_webodm_export
 _TILER_STATS = {}
 
 # --- Optional tiler deps (best-effort) ---
@@ -3600,6 +3601,7 @@ async def api_test_run(
     refine_mosaic_alignment: bool = Form(default=False),
     undistort_thermal: bool = Form(default=False),
     export_undistorted_images: bool = Form(default=False),
+    embed_aligned_gps_for_webodm: bool = Form(default=False),
     target_surface_height_m: float = Form(default=DEFAULT_TARGET_SURFACE_HEIGHT_M),
     image_alignment_mode: str = Form(default=""),
     image_alignment_max_position_m: float = Form(default=8.0),
@@ -3658,6 +3660,16 @@ async def api_test_run(
             status_code=400,
             detail="Image alignment supports individual-image inference only. Disable approximate mosaic creation.",
         )
+    if embed_aligned_gps_for_webodm and not (
+        alignment_enabled and undistort_thermal and export_undistorted_images
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Corrected WebODM GPS export requires LightGlue image alignment, automatic lens correction, "
+                "and ‘Export undistorted originals for photogrammetry’."
+            ),
+        )
     session = (_safe_name(result_name) or _now_stamp())
     base = get_project_sessions_dir(project)
     ses = base / session
@@ -3698,6 +3710,7 @@ async def api_test_run(
         lens_correction_requested=bool(undistort_thermal),
         undistort_thermal=bool(undistort_thermal),
         export_undistorted_images_requested=bool(export_undistorted_images and undistort_thermal),
+        webodm_aligned_gps_requested=bool(embed_aligned_gps_for_webodm),
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
         target_surface_height_m=float(target_surface_height_m),
@@ -4034,6 +4047,7 @@ async def api_test_run(
     tif_src = rotation_result.tif_src
 
     image_alignment_report: Optional[dict[str, Any]] = None
+    webodm_export_summary: Optional[dict[str, Any]] = None
     if alignment_enabled:
         if input_type != "images" or Path(run_images_dir).name != "rotated_images":
             raise HTTPException(
@@ -4082,6 +4096,27 @@ async def api_test_run(
             total_alignment_images,
             int(visual_matching.get("verified_pairs") or 0),
         )
+        if embed_aligned_gps_for_webodm:
+            test_logger.info("UI:INFO:test: Embedding corrected horizontal GPS into WebODM export copies…")
+            try:
+                webodm_export_summary = await asyncio.to_thread(
+                    finalize_webodm_export,
+                    export_dir=out_root / "undistorted_images",
+                    camera_meta=camera_meta,
+                    alignment_report=image_alignment_report,
+                    camera_meta_path=out_root / "camera_meta.json",
+                    alignment_report_path=out_root / "image_alignment.json",
+                )
+            except Exception as exc:
+                _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=str(exc))
+                test_logger.error("UI:ERR:test: WebODM export finalization failed: %s", exc)
+                raise HTTPException(status_code=400, detail=f"WebODM export finalization failed: {exc}") from exc
+            test_logger.info(
+                "UI:OK:test: WebODM export ready: corrected GPS embedded in %s images; "
+                "%s retained original GPS; geo.txt written.",
+                int(webodm_export_summary.get("corrected_gps_embedded") or 0),
+                int(webodm_export_summary.get("original_gps_retained") or 0),
+            )
     prepared_count = sum(
         1 for path in run_images_dir.iterdir()
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS
@@ -4409,6 +4444,9 @@ async def api_test_run(
         metrics["lens_correction_checked"] = correction_checked
         metrics["undistort_thermal"] = correction_checked  # backward compatibility
         metrics["undistorted_images_exported"] = bool((out_root / "undistorted_images").is_dir())
+        metrics["webodm_aligned_gps_exported"] = webodm_export_summary is not None
+        if webodm_export_summary is not None:
+            metrics["webodm_export"] = webodm_export_summary
         mpath.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
@@ -4423,6 +4461,8 @@ async def api_test_run(
         lens_correction_checked=bool(preprocessing_path.is_file()),
         undistort_thermal=bool(preprocessing_path.is_file()),
         undistorted_images_exported=bool((out_root / "undistorted_images").is_dir()),
+        webodm_aligned_gps_exported=webodm_export_summary is not None,
+        webodm_export=webodm_export_summary,
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
         target_surface_height_m=float(target_surface_height_m),
@@ -4445,6 +4485,8 @@ async def api_test_run(
         "lens_correction_checked": bool(preprocessing_path.is_file()),
         "undistort_thermal": bool(preprocessing_path.is_file()),
         "undistorted_images_exported": bool((out_root / "undistorted_images").is_dir()),
+        "webodm_aligned_gps_exported": webodm_export_summary is not None,
+        "webodm_export": webodm_export_summary,
         "undistorted_images": (
             _media_url(out_root / "undistorted_images")
             if (out_root / "undistorted_images").is_dir()

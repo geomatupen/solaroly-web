@@ -28,11 +28,13 @@
         : "Individual-image alignment is unavailable while approximate mosaic creation is enabled.";
       checkbox.title = reason;
       if(hint) hint.textContent = reason;
+      window.updateWebodmExportVisibility?.();
       return;
     }
 
     checkbox.title = "";
     if(hint) hint.textContent = "Refine prepared-image positions and orientation with LightGlue before generating prediction coordinates.";
+    window.updateWebodmExportVisibility?.();
   }
 
   function validate(){
@@ -65,6 +67,7 @@
     const options = byId("imageAlignmentOptions");
     checkbox?.addEventListener("change", () => {
       if(options) options.hidden = !checkbox.checked;
+      window.updateWebodmExportVisibility?.();
     });
     byId("chkMosaicImages")?.addEventListener("change", () => syncAvailability());
     byId("btnImageAlignmentInfo")?.addEventListener("click", () => setInfoOpen(true));

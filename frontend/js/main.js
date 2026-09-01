@@ -1787,6 +1787,12 @@ async function runTest(){
     "export_undistorted_images",
     correctLensDistortion && document.getElementById("chkExportUndistortedImages")?.checked ? "true" : "false"
   );
+  const exportAlignedGpsForWebODM = correctLensDistortion
+    && document.getElementById("chkExportUndistortedImages")?.checked === true
+    && document.getElementById("chkAlignImages")?.checked === true
+    && document.getElementById("chkAlignImages")?.disabled !== true
+    && document.getElementById("chkEmbedAlignedGpsForWebODM")?.checked === true;
+  fd.append("embed_aligned_gps_for_webodm", exportAlignedGpsForWebODM ? "true" : "false");
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
   const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;
@@ -3721,12 +3727,21 @@ function setupUI(){
 
   const lensCorrectionToggle = document.getElementById('chkUndistortThermal');
   const undistortedExportToggle = document.getElementById('chkExportUndistortedImages');
+  const imageAlignmentToggle = document.getElementById('chkAlignImages');
   const updateUndistortedExportVisibility = () => {
     const enabled = lensCorrectionToggle?.checked === true;
     setHidden(document.getElementById('undistortedExportControls'), !enabled);
     if(!enabled && undistortedExportToggle) undistortedExportToggle.checked = false;
+    const webodmEligible = enabled
+      && undistortedExportToggle?.checked === true
+      && imageAlignmentToggle?.checked === true
+      && imageAlignmentToggle?.disabled !== true;
+    setHidden(document.getElementById('webodmAlignedGpsControls'), !webodmEligible);
   };
   lensCorrectionToggle?.addEventListener('change', updateUndistortedExportVisibility);
+  undistortedExportToggle?.addEventListener('change', updateUndistortedExportVisibility);
+  imageAlignmentToggle?.addEventListener('change', updateUndistortedExportVisibility);
+  window.updateWebodmExportVisibility = updateUndistortedExportVisibility;
   updateUndistortedExportVisibility();
 
   const mosaicToggle = document.getElementById('chkMosaicImages');
