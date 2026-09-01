@@ -33,23 +33,13 @@ class MosaicSourceCatalogTests(unittest.TestCase):
                 json.dumps({"type": "FeatureCollection", "features": []}),
                 encoding="utf-8",
             )
-            (session / "mosaic_alignment.json").write_text(
-                json.dumps({
-                    "resolution_m_per_px": 0.2,
-                    "images": {
-                        prepared.name: {
-                            "status": "refined",
-                            "final_lat_lon": [47.5, 17.25],
-                        }
-                    }
-                }),
-                encoding="utf-8",
-            )
             camera_meta = {
                 "frame_001.jpeg": {
-                    "lat": 47.0,
-                    "lon": 17.0,
+                    "lat": 47.5,
+                    "lon": 17.25,
                     "meters_per_pixel": 0.1,
+                    "row_alignment_rotation_deg": 2.0,
+                    "row_alignment": {"status": "aligned"},
                 }
             }
 
@@ -64,7 +54,8 @@ class MosaicSourceCatalogTests(unittest.TestCase):
         self.assertFalse(props["inference_performed"])
         self.assertEqual((props["w"], props["h"]), (120, 80))
         self.assertEqual(props["meters_per_pixel"], 0.1)
-        self.assertEqual(props["rotation"], 0.0)
+        self.assertEqual(props["rotation"], 2.0)
+        self.assertEqual(props["alignment_status"], "aligned")
         self.assertIn("rotated_images", props["prepared_image"])
 
 

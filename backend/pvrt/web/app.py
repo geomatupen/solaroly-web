@@ -98,7 +98,7 @@ else:
 
     def _merge_optical_metadata(*_args, **_kwargs):  # type: ignore
         raise RuntimeError("COLMAP support is disabled on this server.")
-from .mosaic import prepare_rotation_and_mosaic
+from .mosaic import create_approximate_mosaic_from_prepared_images, prepare_rotation_and_mosaic
 
 # --- Reuse data helpers (RJPEG decode & scanning) ---
 from ..dataops.scan_decode_split import (
@@ -159,7 +159,7 @@ IMAGE_EXTS = {".jpg",".jpeg",".png",".tif",".tiff",".bmp",".webp",".JPG",".JPEG"
 
 # DJI RelativeAltitude is takeoff-relative, while GSD needs the distance to the
 # target plane. Rooftop tests can override this default from Advanced options.
-DEFAULT_TARGET_SURFACE_HEIGHT_M = 4.0
+DEFAULT_TARGET_SURFACE_HEIGHT_M = 0.0
 
 # Common non-fatal exceptions we allow to be handled locally across web helpers.
 # This intentionally excludes BaseException-derived types such as KeyboardInterrupt
@@ -1774,20 +1774,6 @@ def _preds_to_geojson(
         for path in (out_session / "rotated_images").glob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS
     }
-    aligned_centres_by_stem: Dict[str, Tuple[float, float]] = {}
-    alignment_path = out_session / "mosaic_alignment.json"
-    if alignment_path.is_file():
-        try:
-            alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8"))
-            for image_name, record in (alignment_payload.get("images") or {}).items():
-                final_lat_lon = record.get("final_lat_lon") if isinstance(record, dict) else None
-                if isinstance(final_lat_lon, list) and len(final_lat_lon) >= 2:
-                    aligned_centres_by_stem[Path(image_name).stem] = (
-                        float(final_lat_lon[0]), float(final_lat_lon[1])
-                    )
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            logger.warning("Could not read mosaic image alignment centres from %s", alignment_path)
-
     # ---------------- images.geojson (points + optional footprint corners) ----------------
     imgs_fc = {"type": "FeatureCollection", "features": []}
     camera_meta = camera_meta or {}
@@ -1838,9 +1824,6 @@ def _preds_to_geojson(
                 latlon = (float(e["lat"]), float(e["lon"]))
         if latlon is None:
             latlon = gps_index.get(fname)
-        if source_stem in aligned_centres_by_stem:
-            latlon = aligned_centres_by_stem[source_stem]
-
         props: Dict[str, object] = {}
         props["image"] = fname
         if prepared_rotated is not None:
@@ -2196,19 +2179,6 @@ def _append_mosaic_source_images_geojson(
         for path in (out_session / "rotated_images").glob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS
     }
-    alignment_images: Dict[str, Dict[str, Any]] = {}
-    alignment_resolution: Optional[float] = None
-    try:
-        alignment_payload = json.loads((out_session / "mosaic_alignment.json").read_text(encoding="utf-8"))
-        parsed_resolution = _coerce_float(alignment_payload.get("resolution_m_per_px"))
-        alignment_resolution = parsed_resolution if parsed_resolution is not None and parsed_resolution > 0 else None
-        alignment_images = {
-            Path(name).stem: record
-            for name, record in (alignment_payload.get("images") or {}).items()
-            if isinstance(record, dict)
-        }
-    except (OSError, json.JSONDecodeError, TypeError):
-        pass
     preprocessing_images: Dict[str, Dict[str, Any]] = {}
     try:
         preprocessing_payload = json.loads((out_session / "preprocessing.json").read_text(encoding="utf-8"))
@@ -2229,10 +2199,6 @@ def _append_mosaic_source_images_geojson(
             continue
         lat = meta.get("lat", meta.get("latitude"))
         lon = meta.get("lon", meta.get("longitude"))
-        alignment_record = alignment_images.get(stem, {})
-        final_lat_lon = alignment_record.get("final_lat_lon")
-        if isinstance(final_lat_lon, list) and len(final_lat_lon) >= 2:
-            lat, lon = final_lat_lon[:2]
         if lat is None or lon is None:
             continue
         lat = float(lat)
@@ -2246,7 +2212,7 @@ def _append_mosaic_source_images_geojson(
             # Display the full prepared frame at its metadata-derived ground
             # footprint. The mosaic output resolution may be coarser and causes
             # an in-memory resize during composition, not a source-image crop.
-            meters_per_pixel = float(meta.get("meters_per_pixel") or alignment_resolution or 0.05)
+            meters_per_pixel = float(meta.get("meters_per_pixel") or 0.05)
         except (TypeError, ValueError):
             meters_per_pixel = 0.05
         if meters_per_pixel <= 0:
@@ -2254,11 +2220,24 @@ def _append_mosaic_source_images_geojson(
         deg_per_m_lon, deg_per_m_lat = _meters_to_deg(lat)
         half_width_m = width * meters_per_pixel / 2.0
         half_height_m = height * meters_per_pixel / 2.0
-        left = lon - half_width_m * deg_per_m_lon
-        right = lon + half_width_m * deg_per_m_lon
-        top = lat + half_height_m * deg_per_m_lat
-        bottom = lat - half_height_m * deg_per_m_lat
+        rotation = _coerce_float(meta.get("row_alignment_rotation_deg")) or 0.0
+        angle = math.radians(rotation)
+        cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+        corners = []
+        for dx_m, dy_m in (
+            (-half_width_m, -half_height_m),
+            (half_width_m, -half_height_m),
+            (half_width_m, half_height_m),
+            (-half_width_m, half_height_m),
+        ):
+            rotated_x = dx_m * cos_angle - dy_m * sin_angle
+            rotated_y = dx_m * sin_angle + dy_m * cos_angle
+            corners.append([
+                lon + rotated_x * deg_per_m_lon,
+                lat - rotated_y * deg_per_m_lat,
+            ])
         correction_record = preprocessing_images.get(stem, {})
+        alignment_record = meta.get("row_alignment") if isinstance(meta.get("row_alignment"), dict) else {}
         props: Dict[str, Any] = {
             "src": source_name,
             "image": source_name,
@@ -2266,16 +2245,16 @@ def _append_mosaic_source_images_geojson(
             "display_source": "prepared_source_image",
             "source_role": "mosaic_input",
             "inference_performed": False,
-            "alignment_status": alignment_record.get("status", "gps_only"),
+            "alignment_status": alignment_record.get("status", "retained_original"),
             "w": int(width),
             "h": int(height),
             "meters_per_pixel": meters_per_pixel,
             "width_m": width * meters_per_pixel,
             "height_m": height * meters_per_pixel,
-            "rotation": 0.0,
-            "rotation_heading": 0.0,
-            "rotation_overlay": 0.0,
-            "corners": [[left, top], [right, top], [right, bottom], [left, bottom]],
+            "rotation": rotation,
+            "rotation_heading": rotation,
+            "rotation_overlay": _camera_heading_to_overlay_rotation(rotation),
+            "corners": corners,
             "lens_correction_status": correction_record.get("status", "not_requested"),
             "lens_displacement_px": correction_record.get("maximum_displacement_px"),
         }
@@ -3598,7 +3577,6 @@ async def api_test_run(
     mosaic_enabled: bool = Form(default=False),
     create_mosaic: bool = Form(default=False),
     inference_source: Optional[str] = Form(default=None),
-    refine_mosaic_alignment: bool = Form(default=False),
     undistort_thermal: bool = Form(default=False),
     export_undistorted_images: bool = Form(default=False),
     embed_aligned_gps_for_webodm: bool = Form(default=False),
@@ -3655,11 +3633,6 @@ async def api_test_run(
     if alignment_mode not in {"none", "lightglue"}:
         raise HTTPException(status_code=400, detail="Image alignment mode must be none or lightglue.")
     alignment_enabled = alignment_mode != "none"
-    if alignment_enabled and mosaic_enabled:
-        raise HTTPException(
-            status_code=400,
-            detail="Image alignment supports individual-image inference only. Disable approximate mosaic creation.",
-        )
     if embed_aligned_gps_for_webodm and not (
         alignment_enabled and undistort_thermal and export_undistorted_images
     ):
@@ -4025,13 +3998,10 @@ async def api_test_run(
             out_root=out_root,
             camera_meta=camera_meta,
             mosaic_enabled=mosaic_enabled,
-            inference_source=source_mode,
-            refine_mosaic_alignment=refine_mosaic_alignment,
             ds_dir=ds_dir,
             model_is_thermal=model_is_thermal,
             undistort_thermal=bool(undistort_thermal),
             export_undistorted_images=bool(export_undistorted_images and undistort_thermal),
-            tile_tif_func=_tile_tif_to_dir,
             run_images_dir=run_images_dir,
             tiles_dir=tiles_dir,
             tif_src=tif_src,
@@ -4117,6 +4087,25 @@ async def api_test_run(
                 int(webodm_export_summary.get("corrected_gps_embedded") or 0),
                 int(webodm_export_summary.get("original_gps_retained") or 0),
             )
+    if mosaic_enabled:
+        try:
+            mosaic_result = await asyncio.to_thread(
+                create_approximate_mosaic_from_prepared_images,
+                rotated_images_dir=Path(run_images_dir),
+                out_root=out_root,
+                camera_meta=camera_meta,
+                inference_source=source_mode,
+                tile_tif_func=_tile_tif_to_dir,
+            )
+        except Exception as exc:
+            message = str(exc) or "Approximate mosaic creation failed."
+            _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=message)
+            test_logger.error("UI:ERR:test: Approximate mosaic creation failed: %s", message)
+            raise HTTPException(status_code=400, detail=message) from exc
+        input_type = mosaic_result.input_type
+        run_images_dir = mosaic_result.run_images_dir
+        tiles_dir = mosaic_result.tiles_dir
+        tif_src = mosaic_result.tif_src
     prepared_count = sum(
         1 for path in run_images_dir.iterdir()
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS

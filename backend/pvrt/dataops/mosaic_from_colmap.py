@@ -37,7 +37,6 @@ Notes:
 
 """
 import argparse
-import json
 import math
 import os
 from pathlib import Path
@@ -45,11 +44,6 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 from PIL import Image
-
-try:
-    from .fast_mosaic_alignment import ImagePlacement, refine_mosaic_placements
-except ImportError:  # Direct execution for the documented command-line workflow.
-    from fast_mosaic_alignment import ImagePlacement, refine_mosaic_placements
 
 # Optional: use OpenCV for faster IO if available
 try:
@@ -347,7 +341,6 @@ def create_mosaic_from_rotated_images(
     plane_z: float = 0.0,
     resolution: float = 0.1,
     camera_meta: dict = None,
-    refine_alignment: bool = False,
     log: Optional[Callable[[str], None]] = None,
 ) -> Path:
     """
@@ -359,8 +352,7 @@ def create_mosaic_from_rotated_images(
         plane_z: Reference plane Z coordinate (default 0.0 m).
         resolution: Mosaic resolution in meters per pixel.
         camera_meta: Camera metadata dict with lat/lon for georeferencing (optional).
-        refine_alignment: Refine GPS centres from validated visual overlap matches.
-        log: Optional callback for detailed overlap-alignment decisions.
+        log: Optional callback for mosaic construction details.
     
     Returns:
         Path to the generated mosaic file.
@@ -472,75 +464,16 @@ def create_mosaic_from_rotated_images(
             # Create canvas with transparency support
             canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
 
-            initial_placements = []
+            final_centers = {}
             for img_path in image_files:
                 if img_path.name not in img_to_coords:
                     continue
                 lat, lon = img_to_coords[img_path.name]
-                center_x = ((lon - min_lon) / canvas_width_deg) * canvas_width
-                center_y = ((max_lat - lat) / canvas_height_deg) * canvas_height
-                try:
-                    with Image.open(img_path) as placement_image:
-                        width, height = placement_image.size
-                except Exception as exc:
-                    print(f"Warning: Failed to inspect {img_path} for alignment: {exc}")
-                    continue
-                initial_placements.append(
-                    ImagePlacement(
-                        name=img_path.name,
-                        path=img_path,
-                        center_x=float(center_x),
-                        center_y=float(center_y),
-                        width=footprint_sizes[img_path.name][0],
-                        height=footprint_sizes[img_path.name][1],
-                    )
+                final_centers[img_path.name] = (
+                    ((lon - min_lon) / canvas_width_deg) * canvas_width,
+                    ((max_lat - lat) / canvas_height_deg) * canvas_height,
                 )
-
-            if refine_alignment:
-                refined_centers, alignment_report = refine_mosaic_placements(
-                    initial_placements,
-                    log=alignment_emit,
-                )
-            else:
-                refined_centers = {
-                    item.name: (item.center_x, item.center_y) for item in initial_placements
-                }
-                alignment_report = {
-                    "status": "disabled",
-                    "method": "GPS and heading placement only",
-                    "image_count": len(initial_placements),
-                    "reason": "Visual overlap refinement was disabled by the user.",
-                    "images": {
-                        item.name: {
-                            "status": "gps_only",
-                            "initial_center_px": [item.center_x, item.center_y],
-                            "final_center_px": [item.center_x, item.center_y],
-                            "correction_px": 0.0,
-                        }
-                        for item in initial_placements
-                    },
-                }
-                alignment_emit("Visual overlap refinement disabled; using GPS/heading placement only.")
-            alignment_report["resolution_m_per_px"] = float(resolution)
-            alignment_report["metadata_gsd_median_m_per_px"] = float(np.median(metadata_mpp))
-            alignment_report["metadata_gsd_range_m_per_px"] = [float(min(metadata_mpp)), float(max(metadata_mpp))]
-            placement_by_name = {item.name: item for item in initial_placements}
-            for image_name, image_record in alignment_report.get("images", {}).items():
-                placement = placement_by_name.get(image_name)
-                source_coords = img_to_coords.get(image_name)
-                final_center = refined_centers.get(image_name)
-                if placement is None or source_coords is None or final_center is None:
-                    continue
-                source_lat, source_lon = source_coords
-                dx_px = float(final_center[0] - placement.center_x)
-                dy_px = float(final_center[1] - placement.center_y)
-                final_lon = float(source_lon + (dx_px * resolution) / meters_per_deg_lon)
-                final_lat = float(source_lat - (dy_px * resolution) / meters_per_deg_lat)
-                image_record["initial_lat_lon"] = [float(source_lat), float(source_lon)]
-                image_record["final_lat_lon"] = [final_lat, final_lon]
-            alignment_path = out_mosaic_path.parent / "mosaic_alignment.json"
-            alignment_path.write_text(json.dumps(alignment_report, indent=2), encoding="utf-8")
-            alignment_emit(f"Alignment report written: {alignment_path}")
+            alignment_emit("Placing images from final camera metadata; no separate mosaic matcher is run.")
             
             # Voronoi nearest-center with Gaussian blending at edges only
             distance_map = np.full((canvas_height, canvas_width), np.inf, dtype=np.float32)
@@ -561,9 +494,16 @@ def create_mosaic_from_rotated_images(
                     target_w, target_h = footprint_sizes[img_path.name]
                     if img.size != (target_w, target_h):
                         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-                        img_array = np.array(img)
+                    rotation_correction = float(
+                        (img_to_meta.get(img_path.name) or {}).get("row_alignment_rotation_deg") or 0.0
+                    )
+                    if abs(rotation_correction) > 1e-6:
+                        # GeoJSON uses positive corrections clockwise because image Y
+                        # grows downward. Pillow's positive angle is counter-clockwise.
+                        img = img.rotate(-rotation_correction, resample=Image.Resampling.BICUBIC, expand=True)
+                    img_array = np.array(img)
                     h, w = img_array.shape[:2]
-                    center_x, center_y = refined_centers.get(
+                    center_x, center_y = final_centers.get(
                         img_path.name,
                         (
                             ((img_to_coords[img_path.name][1] - min_lon) / canvas_width_deg) * canvas_width,

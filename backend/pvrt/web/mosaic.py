@@ -32,20 +32,15 @@ def prepare_rotation_and_mosaic(
     out_root: Path,
     camera_meta: Dict[str, Any],
     mosaic_enabled: bool,
-    inference_source: str = "mosaic",
-    refine_mosaic_alignment: bool = False,
     ds_dir: Path,
     model_is_thermal: bool,
     undistort_thermal: bool,
     export_undistorted_images: bool = False,
-    tile_tif_func: Callable[[Path, Path, int, Optional[int]], None],
     run_images_dir: Path,
     tiles_dir: Optional[Path],
     tif_src: Optional[Path],
-    tile_size: int = 1024,
-    tile_stride: Optional[int] = 1024,
 ) -> RotationResult:
-    """Rotate images via regenerate script and optionally create/Tile a mosaic."""
+    """Prepare north-up images; mosaicing happens after optional LightGlue alignment."""
     log = logging.getLogger("pvrt.test")
     log.info(
         "UI:INFO:test: Rotation check - mosaic_enabled=%s, input_type=%s, camera_meta_count=%s",
@@ -74,10 +69,8 @@ def prepare_rotation_and_mosaic(
                 "Untick ‘Create approximate mosaic before inference’ or use geotagged images."
             )
         log.info(
-            "UI:INFO:test: Creating an approximate mosaic from EXIF/GPS positions and image headings; "
-            "COLMAP is not required. Geolocated images=%s, visual_refinement=%s",
+            "UI:INFO:test: Approximate mosaic requested. Preparing %s geolocated images before optional LightGlue alignment.",
             geolocated_count,
-            "enabled" if refine_mosaic_alignment else "disabled",
         )
 
     if input_type != "images" or (not camera_meta and not undistort_thermal):
@@ -197,80 +190,19 @@ def prepare_rotation_and_mosaic(
         log.info("UI:INFO:test: session_dir after rotation: %s", session_contents_after)
 
         if rotated_images_dir.exists() and rotated_files:
-            if mosaic_enabled:
-                mosaic_path = out_root / "mosaic.tif"
-                log.info(
-                    "UI:INFO:test: Creating mosaic from %s rotated images...",
-                    len(rotated_files),
-                )
-                create_mosaic_from_rotated_images(
-                    rotated_images_dir=rotated_images_dir,
-                    out_mosaic_path=mosaic_path,
-                    plane_z=0.0,
-                    resolution=0.1,
-                    camera_meta=camera_meta,
-                    refine_alignment=refine_mosaic_alignment,
-                    log=lambda message: log.info("Mosaic alignment: %s", message),
-                )
-                alignment_path = out_root / "mosaic_alignment.json"
-                if alignment_path.exists():
-                    try:
-                        alignment = json.loads(alignment_path.read_text(encoding="utf-8"))
-                        alignment_status = alignment.get("status", "unknown")
-                        if alignment_status == "refined":
-                            log.info(
-                                "UI:OK:test: Mosaic overlap refinement complete: %s accepted pair(s), "
-                                "%s image(s) refined, %s retained GPS placement.",
-                                alignment.get("accepted_pair_count", 0),
-                                alignment.get("refined_image_count", 0),
-                                alignment.get("gps_only_image_count", 0),
-                            )
-                        elif alignment_status == "gps_only":
-                            log.info(
-                                "UI:WARN:test: No visual overlap passed validation; mosaic uses GPS/heading placement only."
-                            )
-                        else:
-                            log.info(
-                                "UI:INFO:test: Mosaic visual refinement disabled; using GPS/heading placement only."
-                            )
-                    except Exception as exc:
-                        log.warning("Could not read mosaic alignment report: %s", exc)
-                log.info("UI:INFO:test: \u2713 Mosaic created: %s", mosaic_path)
-                tiles_dir = out_root / "tiles"
-                log.info("UI:INFO:test: Tiling mosaic from %s to %s", mosaic_path, tiles_dir)
-                tile_tif_func(mosaic_path, tiles_dir, tile_size=tile_size, stride=tile_stride)
-                tif_src = mosaic_path
-                tile_count = len(list(tiles_dir.glob("*")))
-                if inference_source == "mosaic":
-                    run_images_dir = tiles_dir
-                    input_type = "tif"
-                    log.info(
-                        "UI:INFO:test: \u2713 Mosaic tiled; inference source=mosaic (%s tiles). "
-                        "Individual source images will be available for map review but will not be predicted.",
-                        tile_count,
-                    )
-                else:
-                    run_images_dir = rotated_images_dir
-                    input_type = "images"
-                    log.info(
-                        "UI:INFO:test: \u2713 Mosaic created for map review; inference source=individual images (%s prepared images). "
-                        "Mosaic tiles will not be predicted.",
-                        len(rotated_files),
-                    )
-            else:
-                run_images_dir = rotated_images_dir
-                log.info(
-                    "UI:INFO:test: \u2713 Using rotated images for per-image inference: %s",
-                    run_images_dir,
-                )
+            run_images_dir = rotated_images_dir
+            log.info(
+                "UI:INFO:test: \u2713 Prepared north-up images: %s",
+                run_images_dir,
+            )
         else:
             log.warning(
                 "\u2717 Rotated images not found or empty; proceeding with original images (alignment may be incorrect)"
             )
     except Exception as exc:
-        log.warning("\u2717 Failed to generate rotation/mosaic: %s", exc)
+        log.warning("\u2717 Failed to prepare north-up images: %s", exc)
         log.warning("Traceback: %s", traceback.format_exc())
-        if undistort_thermal:
+        if undistort_thermal or mosaic_enabled:
             raise
 
     return RotationResult(
@@ -279,3 +211,52 @@ def prepare_rotation_and_mosaic(
         tiles_dir=tiles_dir,
         tif_src=tif_src,
     )
+
+
+def create_approximate_mosaic_from_prepared_images(
+    *,
+    rotated_images_dir: Path,
+    out_root: Path,
+    camera_meta: Dict[str, Any],
+    inference_source: str,
+    tile_tif_func: Callable[[Path, Path, int, Optional[int]], None],
+    tile_size: int = 1024,
+    tile_stride: Optional[int] = 1024,
+) -> RotationResult:
+    """Build and tile a mosaic from the final GPS/LightGlue-corrected camera poses."""
+    log = logging.getLogger("pvrt.test")
+    rotated_images_dir = Path(rotated_images_dir)
+    rotated_files = [path for path in rotated_images_dir.iterdir() if path.is_file()]
+    if not rotated_files:
+        raise RuntimeError("No prepared images are available for approximate mosaicing.")
+    mosaic_path = Path(out_root) / "mosaic.tif"
+    alignment_source = "LightGlue-corrected poses" if any(
+        isinstance(entry, dict) and entry.get("location_source") == "gps_refined_with_lightglue_image_matches"
+        for key, entry in camera_meta.items() if not str(key).startswith("__")
+    ) else "original GPS poses"
+    log.info(
+        "UI:INFO:test: Creating approximate mosaic from %s prepared images using %s…",
+        len(rotated_files),
+        alignment_source,
+    )
+    create_mosaic_from_rotated_images(
+        rotated_images_dir=rotated_images_dir,
+        out_mosaic_path=mosaic_path,
+        plane_z=0.0,
+        resolution=0.1,
+        camera_meta=camera_meta,
+        log=lambda message: log.info("Mosaic: %s", message),
+    )
+    log.info("UI:OK:test: Approximate mosaic created from final image poses: %s", mosaic_path)
+    tiles_dir = Path(out_root) / "tiles"
+    log.info("UI:INFO:test: Tiling mosaic from %s to %s", mosaic_path, tiles_dir)
+    tile_tif_func(mosaic_path, tiles_dir, tile_size=tile_size, stride=tile_stride)
+    tile_count = len(list(tiles_dir.glob("*")))
+    if inference_source == "mosaic":
+        log.info("UI:OK:test: Mosaic tiled for inference (%s tiles).", tile_count)
+        return RotationResult("tif", tiles_dir, tiles_dir, mosaic_path)
+    log.info(
+        "UI:OK:test: Mosaic retained for map review; inference will use %s aligned individual images.",
+        len(rotated_files),
+    )
+    return RotationResult("images", rotated_images_dir, tiles_dir, mosaic_path)

@@ -16,16 +16,13 @@
     if(!checkbox) return;
 
     const orthophotoSelected = inputType === "tif";
-    const mosaicSelected = byId("chkMosaicImages")?.checked === true;
-    const unavailable = orthophotoSelected || mosaicSelected;
+    const unavailable = orthophotoSelected;
     checkbox.disabled = unavailable;
 
     if(unavailable){
       checkbox.checked = false;
       if(options) options.hidden = true;
-      const reason = orthophotoSelected
-        ? "Individual-image alignment is unavailable for orthophoto input."
-        : "Individual-image alignment is unavailable while approximate mosaic creation is enabled.";
+      const reason = "Individual-image alignment is unavailable for orthophoto input.";
       checkbox.title = reason;
       if(hint) hint.textContent = reason;
       window.updateWebodmExportVisibility?.();
@@ -39,9 +36,6 @@
 
   function validate(){
     if(!byId("chkAlignImages")?.checked) return null;
-    if(byId("chkMosaicImages")?.checked){
-      return "Disable approximate mosaic creation before aligning individual images.";
-    }
     const maximumPosition = Number(byId("imageAlignmentMaxPosition")?.value);
     const maximumRotation = Number(byId("imageAlignmentMaxRotation")?.value);
     if(!Number.isFinite(maximumPosition) || maximumPosition < 0.5 || maximumPosition > 50){
@@ -69,7 +63,6 @@
       if(options) options.hidden = !checkbox.checked;
       window.updateWebodmExportVisibility?.();
     });
-    byId("chkMosaicImages")?.addEventListener("change", () => syncAvailability());
     byId("btnImageAlignmentInfo")?.addEventListener("click", () => setInfoOpen(true));
     byId("btnCloseImageAlignmentInfo")?.addEventListener("click", () => setInfoOpen(false));
     byId("btnCloseImageAlignmentInfoFooter")?.addEventListener("click", () => setInfoOpen(false));

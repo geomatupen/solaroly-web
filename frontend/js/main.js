@@ -1743,7 +1743,7 @@ async function runTest(){
   
   const testThreshold = (document.getElementById("testThreshold")?.value);
   const targetSurfaceHeightInput = document.getElementById("testTargetSurfaceHeight");
-  const targetSurfaceHeightRaw = targetSurfaceHeightInput?.value?.trim() ?? "4";
+  const targetSurfaceHeightRaw = targetSurfaceHeightInput?.value?.trim() ?? "0";
   const targetSurfaceHeight = Number(targetSurfaceHeightRaw);
   if(!targetSurfaceHeightRaw || !Number.isFinite(targetSurfaceHeight) || targetSurfaceHeight < 0){
     warn("test", "Target surface height must be zero or a positive number in metres.");
@@ -1803,10 +1803,6 @@ async function runTest(){
   fd.append('create_mosaic', createMosaic ? 'true' : 'false');
   if(createMosaic){
     fd.append("mosaic_enabled", "true");
-    fd.append(
-      "refine_mosaic_alignment",
-      document.getElementById("chkRefineMosaicAlignment")?.checked ? "true" : "false"
-    );
   }
   const backend = getSelectedBackend();
   fd.append('backend', backend);

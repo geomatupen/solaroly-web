@@ -2938,10 +2938,6 @@ async function runTest(){
   fd.append('create_mosaic', createMosaic ? 'true' : 'false');
   if(createMosaic){
     fd.append("mosaic_enabled", "true");
-    fd.append(
-      "refine_mosaic_alignment",
-      document.getElementById("chkRefineMosaicAlignment")?.checked ? "true" : "false"
-    );
   }
   const backend = getSelectedBackend();
   fd.append('backend', backend);

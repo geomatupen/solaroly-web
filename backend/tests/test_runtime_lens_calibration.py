@@ -19,7 +19,7 @@ from pvrt.dataops.lens_distortion import (
 )
 from pvrt.dataops.plumb_line_calibration import estimate_runtime_calibration
 from pvrt.dataops.plumb_line_calibration import CurveTrace
-from pvrt.web.mosaic import prepare_rotation_and_mosaic
+from pvrt.web.mosaic import create_approximate_mosaic_from_prepared_images, prepare_rotation_and_mosaic
 
 
 class RuntimeLensCalibrationTests(unittest.TestCase):
@@ -162,7 +162,6 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
                         model_is_thermal=False,
                         undistort_thermal=True,
                         export_undistorted_images=True,
-                        tile_tif_func=lambda *_args, **_kwargs: None,
                         run_images_dir=source,
                         tiles_dir=None,
                         tif_src=None,
@@ -184,7 +183,6 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
                     ds_dir=root,
                     model_is_thermal=False,
                     undistort_thermal=True,
-                    tile_tif_func=lambda *_args, **_kwargs: None,
                     run_images_dir=root,
                     tiles_dir=root / "tiles",
                     tif_src=root / "orthophoto.tif",
@@ -205,7 +203,6 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
                     ds_dir=root,
                     model_is_thermal=False,
                     undistort_thermal=False,
-                    tile_tif_func=lambda *_args, **_kwargs: None,
                     run_images_dir=root,
                     tiles_dir=None,
                     tif_src=None,
@@ -239,20 +236,26 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
             with patch("pvrt.web.mosaic.subprocess.run", return_value=completed), patch(
                 "pvrt.web.mosaic.create_mosaic_from_rotated_images", side_effect=create_mosaic
             ):
-                result = prepare_rotation_and_mosaic(
+                prepared_result = prepare_rotation_and_mosaic(
                     input_type="images",
                     session_dir=root,
                     out_root=root,
                     camera_meta=camera_meta,
                     mosaic_enabled=True,
-                    inference_source="individual",
                     ds_dir=source,
                     model_is_thermal=False,
                     undistort_thermal=False,
-                    tile_tif_func=create_tiles,
                     run_images_dir=source,
                     tiles_dir=None,
                     tif_src=None,
+                )
+
+                result = create_approximate_mosaic_from_prepared_images(
+                    rotated_images_dir=prepared_result.run_images_dir,
+                    out_root=root,
+                    camera_meta=camera_meta,
+                    inference_source="individual",
+                    tile_tif_func=create_tiles,
                 )
 
             self.assertEqual(result.input_type, "images")
