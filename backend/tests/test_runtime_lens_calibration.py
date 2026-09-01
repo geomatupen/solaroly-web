@@ -228,7 +228,10 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
                 output.touch()
                 return output
 
+            tiled_destinations = []
+
             def create_tiles(_source, destination, **_kwargs):
+                tiled_destinations.append(destination)
                 destination.mkdir(parents=True, exist_ok=True)
                 (destination / "tile.png").touch()
 
@@ -260,7 +263,10 @@ class RuntimeLensCalibrationTests(unittest.TestCase):
 
             self.assertEqual(result.input_type, "images")
             self.assertEqual(result.run_images_dir, rotated)
+            self.assertIsNone(result.tiles_dir)
             self.assertEqual(result.tif_src, root / "mosaic.tif")
+            self.assertEqual(tiled_destinations, [])
+            self.assertFalse((root / "tiles").exists())
 
 
 if __name__ == "__main__":

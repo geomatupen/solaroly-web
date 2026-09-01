@@ -223,7 +223,7 @@ def create_approximate_mosaic_from_prepared_images(
     tile_size: int = 1024,
     tile_stride: Optional[int] = 1024,
 ) -> RotationResult:
-    """Build and tile a mosaic from the final GPS/LightGlue-corrected camera poses."""
+    """Build a mosaic and tile it only when the mosaic is the inference source."""
     log = logging.getLogger("pvrt.test")
     rotated_images_dir = Path(rotated_images_dir)
     rotated_files = [path for path in rotated_images_dir.iterdir() if path.is_file()]
@@ -248,15 +248,15 @@ def create_approximate_mosaic_from_prepared_images(
         log=lambda message: log.info("Mosaic: %s", message),
     )
     log.info("UI:OK:test: Approximate mosaic created from final image poses: %s", mosaic_path)
-    tiles_dir = Path(out_root) / "tiles"
-    log.info("UI:INFO:test: Tiling mosaic from %s to %s", mosaic_path, tiles_dir)
-    tile_tif_func(mosaic_path, tiles_dir, tile_size=tile_size, stride=tile_stride)
-    tile_count = len(list(tiles_dir.glob("*")))
     if inference_source == "mosaic":
+        tiles_dir = Path(out_root) / "tiles"
+        log.info("UI:INFO:test: Tiling mosaic from %s to %s", mosaic_path, tiles_dir)
+        tile_tif_func(mosaic_path, tiles_dir, tile_size=tile_size, stride=tile_stride)
+        tile_count = len(list(tiles_dir.glob("*")))
         log.info("UI:OK:test: Mosaic tiled for inference (%s tiles).", tile_count)
         return RotationResult("tif", tiles_dir, tiles_dir, mosaic_path)
     log.info(
-        "UI:OK:test: Mosaic retained for map review; inference will use %s aligned individual images.",
+        "UI:OK:test: Mosaic retained for map review without inference tiles; inference will use %s aligned individual images.",
         len(rotated_files),
     )
-    return RotationResult("images", rotated_images_dir, tiles_dir, mosaic_path)
+    return RotationResult("images", rotated_images_dir, None, mosaic_path)

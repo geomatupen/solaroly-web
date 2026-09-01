@@ -1797,7 +1797,7 @@ async function runTest(){
   fd.append("embed_aligned_gps_for_photogrammetry", exportAlignedGpsForPhotogrammetry ? "true" : "false");
   const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;
   const inferenceSource = createMosaic
-    ? (document.querySelector('input[name="inferenceSource"]:checked')?.value || 'mosaic')
+    ? (document.querySelector('input[name="inferenceSource"]:checked')?.value || 'individual')
     : 'individual';
   fd.append('inference_source', inferenceSource);
   fd.append('create_mosaic', createMosaic ? 'true' : 'false');

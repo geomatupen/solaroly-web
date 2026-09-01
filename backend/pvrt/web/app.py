@@ -3588,8 +3588,7 @@ async def api_test_run(
             raise HTTPException(status_code=404, detail="No trained models found.")
         model_dir = get_project_output_dir(project) / models[0]["name"]
 
-    legacy_mosaic_request = bool(mosaic_enabled and inference_source is None)
-    source_mode = str(inference_source or ("mosaic" if legacy_mosaic_request else "individual")).strip().lower()
+    source_mode = str(inference_source or "individual").strip().lower()
     if source_mode not in {"individual", "mosaic"}:
         raise HTTPException(status_code=400, detail="Inference source must be ‘individual’ or ‘mosaic’.")
     mosaic_enabled = bool(create_mosaic or mosaic_enabled or source_mode == "mosaic")

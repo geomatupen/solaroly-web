@@ -179,8 +179,8 @@
             <div class="row wrap">
               <label>Run inference on</label>
               <div class="radioStack" role="radiogroup" aria-label="Inference source">
-                <label><input type="radio" name="inferenceSource" value="mosaic" checked /> Approximate mosaic only</label>
-                <label><input type="radio" name="inferenceSource" value="individual" /> Individual images only</label>
+                <label><input type="radio" name="inferenceSource" value="individual" checked /> Individual images only</label>
+                <label><input type="radio" name="inferenceSource" value="mosaic" /> Approximate mosaic only</label>
               </div>
             </div>
           </div>
@@ -1329,7 +1329,7 @@
           <li><b>Use final image poses.</b> If <em>Align individual images before inference</em> is enabled, LightGlue runs once on the prepared images and the mosaic uses those corrected positions and residual orientations. Otherwise it uses the original GPS/heading poses.</li>
           <li><b>Keep safe fallbacks.</b> Images without a verified LightGlue correction remain at their original GPS position.</li>
           <li><b>Run one inference source.</b> <em>Individual images</em> predicts each prepared frame. <em>Approximate mosaic only</em> builds the mosaic, cuts only the completed mosaic into model-sized tiles, and predicts those tiles. The two modes never run together in one result.</li>
-          <li><b>Blend, then cut.</b> Blend the prepared images at their final poses first. Only after the mosaic is complete is its GeoTIFF cut into model-sized inference tiles. LightGlue decisions and corrections are recorded in <code>image_alignment.json</code>.</li>
+          <li><b>Blend, then optionally cut.</b> Blend the prepared images at their final poses first. The completed GeoTIFF is cut into model-sized inference tiles only when <em>Approximate mosaic only</em> is selected; individual-image inference keeps the mosaic solely for map review. LightGlue decisions and corrections are recorded in <code>image_alignment.json</code>.</li>
         </ol>
         <div class="workflowNote"><b>Limitations:</b> a fast 2-D mosaic cannot fully correct terrain relief, strong camera tilt, parallax, poor GPS, missing overlap or large viewpoint changes. Use a full photogrammetry workflow when those effects are significant.</div>
       </div>
@@ -1465,7 +1465,7 @@
   <script src="js/map.js?v=20260901b"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/test-image-alignment.js?v=20260901e"></script>
-  <script src="js/main.js?v=20260901i"></script>
+  <script src="js/main.js?v=20260901j"></script>
   <script src="js/postprocess.js?v=20260831b"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260830a"></script>
