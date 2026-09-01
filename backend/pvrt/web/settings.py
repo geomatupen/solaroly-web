@@ -2,7 +2,7 @@
 
 Example: set ``PVRT_ENABLE_YOLO=1`` before starting the server to show YOLO UI
 and endpoints. Leave it unset (or 0) to hide those pieces.
-This enables users to avoid installing heavy dependencies like Detectron2, yolo, colmap if they don't need it for now. eg. just use detectron and dont install yolo and colmap (for location and orientation optimization for individual images)
+This enables users to avoid installing heavy dependencies like Detectron2 or YOLO when they are not needed.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ class WebSettings:
     def __init__(self) -> None:
         self.enable_detectron = _env_flag("PVRT_ENABLE_DETECTRON", True)  # Change this to turn on or off Detectron
         self.enable_yolo = _env_flag("PVRT_ENABLE_YOLO", False)  # Change this to turn on or off YOLO
-        self.enable_colmap = _env_flag("PVRT_ENABLE_COLMAP", False) # Change this to turn on or off COLMAP (for location and orientation optimization for individual images)
         self.enable_thermal_data_extraction = _env_flag(
             "PVRT_ENABLE_THERMAL",
             True,
@@ -42,7 +41,6 @@ class WebSettings:
 
     def as_feature_payload(self) -> dict:
         return {
-            "colmap": self.enable_colmap,
             "detectron": self.enable_detectron,
             "yolo": self.enable_yolo,
             "thermal": self.enable_thermal_data_extraction,

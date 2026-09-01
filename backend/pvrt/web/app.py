@@ -78,26 +78,6 @@ from .sse import LogBroker, SSELogHandler, set_event_loop, sse_response
 _ACTIVE_TEST_RUNS: set[str] = set()
 _ACTIVE_TEST_RUNS_GUARD = asyncio.Lock()
 
-if settings.enable_colmap:
-    from .colmap import (
-        router as colmap_router,
-        configure_colmap_dependencies,
-        _colmap_ready,
-        _load_colmap_meta,
-        _merge_optical_metadata,
-    )
-else:
-    colmap_router = None
-    configure_colmap_dependencies = None
-
-    def _colmap_ready(*_args, **_kwargs) -> bool:  # type: ignore
-        return False
-
-    def _load_colmap_meta(*_args, **_kwargs):  # type: ignore
-        raise RuntimeError("COLMAP support is disabled on this server.")
-
-    def _merge_optical_metadata(*_args, **_kwargs):  # type: ignore
-        raise RuntimeError("COLMAP support is disabled on this server.")
 from .mosaic import create_approximate_mosaic_from_prepared_images, prepare_rotation_and_mosaic
 
 # --- Reuse data helpers (RJPEG decode & scanning) ---
@@ -281,13 +261,6 @@ def get_project_overlays_dir(project: Optional[Project] = None) -> Path:
     if project is None:
         project = get_active_project()
     return project.get_overlays_dir()
-
-
-def get_project_colmap_dir(project: Optional[Project] = None) -> Path:
-    """COLMAP workspace directory for project."""
-    if project is None:
-        project = get_active_project()
-    return project.get_colmap_dir()
 
 
 def _resolve_thermal_directory(value: str, *, must_exist: bool) -> Path:
@@ -1632,21 +1605,6 @@ def _lookup_camera_meta_entry(camera_meta: Dict[str, Dict[str, Any]], name: str)
             continue
     return None
 
-if settings.enable_colmap and configure_colmap_dependencies and colmap_router:
-    configure_colmap_dependencies(
-        get_project_test_dir=get_project_test_dir,
-        get_project_colmap_dir=get_project_colmap_dir,
-        now_stamp=_now_stamp,
-        is_image=_is_image,
-        build_camera_meta_from_exif=_build_camera_meta_from_exif,
-        scan_image_sizes=_scan_image_sizes,
-        lookup_camera_meta_entry=_lookup_camera_meta_entry,
-    )
-    app.include_router(colmap_router)
-else:
-    logger.info("COLMAP integration disabled via settings; skipping router setup.")
-
-
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> Optional[float]:
     try:
         lat1_rad = math.radians(float(lat1))
@@ -2492,7 +2450,6 @@ def _list_datasets() -> list[dict]:
             "display_name": _asset_display_name(p, ".dataset_meta.json"),
             "count": _count_top_level_images(p),
             "mtime": int(p.stat().st_mtime),
-            "colmap_ready": _colmap_ready(p.name),
             "input_type": _detect_image_input_type(p),
         })
     return items
@@ -3573,7 +3530,6 @@ async def api_test_run(
     backend: Optional[str] = Form(default=None),
     selected_bands: str = Form(None),
     channel_count: int = Form(3),
-    accurate_locations: bool = Form(default=False),
     mosaic_enabled: bool = Form(default=False),
     create_mosaic: bool = Form(default=False),
     inference_source: Optional[str] = Form(default=None),
@@ -3587,7 +3543,6 @@ async def api_test_run(
     image_alignment_temporal_neighbors: int = Form(default=3),
     image_alignment_lateral_neighbors: int = Form(default=4),
     image_alignment_max_pair_rotation_deg: float = Form(default=6.0),
-    optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
     if not settings.enabled_backends:
@@ -3730,10 +3685,6 @@ async def api_test_run(
         undistort_thermal = False
     if alignment_enabled and input_type != "images":
         raise HTTPException(status_code=400, detail="Image alignment requires a folder of individual images.")
-
-    accurate_locations = bool(accurate_locations)
-    if accurate_locations and input_type != "images":
-        raise HTTPException(status_code=400, detail="Accurate locations are only supported for image datasets.")
 
     # Default run directory is the original dataset
     run_images_dir = ds_dir
@@ -3922,76 +3873,19 @@ async def api_test_run(
 
     session_dir = out_root
     camera_meta: Dict[str, Any] = {}
-    if accurate_locations:
-        if not settings.enable_colmap:
-            raise HTTPException(status_code=400, detail="Accurate locations require COLMAP support, which is disabled on this server.")
-        if not _colmap_ready(dataset):
-            raise HTTPException(status_code=400, detail="Dataset has not been optimized yet. Run Optimize Locations first.")
-        camera_meta = _load_colmap_meta(dataset)
-        if not camera_meta:
-            raise HTTPException(status_code=400, detail="COLMAP metadata missing. Rerun optimization before enabling accurate locations.")
-        
-        img_count = sum(1 for k in camera_meta.keys() if not k.startswith("__"))
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test: Using COLMAP Accurate Locations")
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test:   - Dataset: {dataset}")
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test:   - Images with poses: {img_count}")
-        logging.getLogger("pvrt.test").info(f"UI:INFO:test: ══════════════════════════════════════════════════════")
-        
-        meta_info = camera_meta.setdefault("__meta__", {})
-        if isinstance(meta_info, dict):
-            meta_info["source"] = "colmap"
-            meta_info["accurate_locations"] = True
-        try:
-            base_meta = _build_camera_meta_from_exif(ds_dir, target_surface_height_m)
-            for key, entry in base_meta.items():
-                existing = _lookup_camera_meta_entry(camera_meta, key)
-                if existing is None:
-                    camera_meta[key] = entry
-                    continue
-                # Retain the optimized pose but use the target-plane GSD
-                # selected for this thermal test.
-                for field in (
-                    "alt", "alt_source", "absolute_altitude", "meters_per_pixel",
-                    "meters_per_pixel_method", "meters_per_pixel_model",
-                    "meters_per_pixel_source", "meters_per_pixel_status",
-                    "meters_per_pixel_warning", "target_surface_height_m", "gsd_altitude_m",
-                ):
-                    if field in entry:
-                        existing[field] = entry[field]
-                    else:
-                        existing.pop(field, None)
-        except Exception:
-            pass
-    elif input_type == "images":
+    if input_type == "images":
         try:
             camera_meta = _build_camera_meta_from_exif(ds_dir, target_surface_height_m)
         except Exception as e:
             logger.warning(f"Failed to derive camera metadata from EXIF: {e}")
             camera_meta = {}
-    
-    # Apply optimization_project merge if provided (thermal + optical geometry)
-    if optimization_project and input_type == "images" and camera_meta and not accurate_locations:
-        if not settings.enable_colmap:
-            logging.getLogger("pvrt.test").info("UI:INFO:test: COLMAP disabled; skipping optimization project merge.")
-        else:
-            try:
-                camera_meta = _merge_optical_metadata(camera_meta, optimization_project)
-            except ValueError as e:
-                # Match rate too low - this is expected, just use EXIF
-                logging.getLogger("pvrt.test").warning(f"UI:WARN:test: Optical sync failed: {e}")
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
-            except Exception as e:
-                logging.getLogger("pvrt.test").error(f"UI:ERROR:test: Failed to merge optimization_project metadata: {e}")
-                logging.getLogger("pvrt.test").info(f"UI:INFO:test: Falling back to standard EXIF metadata")
 
     if camera_meta:
         try:
             cm_path = session_dir / "camera_meta.json"
             cm_path.write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
-            source_label = "colmap" if accurate_locations else "exif"
             logging.getLogger("pvrt.test").info(
-                f"UI:INFO:test: Camera metadata entries={len(camera_meta)} source={source_label}, written to {cm_path}"
+                f"UI:INFO:test: Camera metadata entries={len(camera_meta)} source=exif, written to {cm_path}"
             )
         except Exception as e:
             import traceback

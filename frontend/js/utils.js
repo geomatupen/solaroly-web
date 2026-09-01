@@ -15,17 +15,12 @@ window.api = {
   results: "/api/results",
   sessionSummary: "/api/session_summary",
   sessionTiles: "/api/session_tiles",
-  colmapState: "/api/colmap/state",
-  colmapCameras: "/api/colmap/cameras",
-  colmapStart: "/api/colmap/start",
-  colmapFinish: "/api/colmap/finish",
   projects: "/api/projects",
   activeProject: "/api/active-project",
   features: "/api/features"
 };
 
 const featureDefaults = {
-  colmap: false,
   detectron: true,
   yolo: false,
   thermal_data_extraction: true,
@@ -123,52 +118,6 @@ window.applyFeatureFlags = function applyFeatureFlags(){
     });
   }
 
-  const colmapEnabled = !!(window.featureFlags && window.featureFlags.colmap);
-  const btnOptimize = document.getElementById('btnOptimize');
-  if(btnOptimize){
-    btnOptimize.style.display = colmapEnabled ? 'inline-block' : 'none';
-    if(!colmapEnabled && btnOptimize.classList.contains('active') && typeof window.switchToTab === 'function'){
-      window.switchToTab('tab-test');
-    }
-  }
-  const tabOptimize = document.getElementById('tab-optimize');
-  if(tabOptimize){
-    tabOptimize.style.display = colmapEnabled ? '' : 'none';
-  }
-  const goOptimizeBtn = document.getElementById('btnGoOptimize');
-  if(goOptimizeBtn){
-    goOptimizeBtn.style.display = colmapEnabled ? '' : 'none';
-  }
-  const accurateControls = document.getElementById('accurateControls');
-  if(accurateControls){
-    accurateControls.style.display = colmapEnabled ? '' : 'none';
-  }
-  const chkAccurate = document.getElementById('chkAccurateLocations');
-  if(chkAccurate){
-    if(!colmapEnabled){
-      chkAccurate.checked = false;
-    }
-    chkAccurate.disabled = !colmapEnabled;
-  }
-  const accurateRows = [
-    document.getElementById('accurateModeRow'),
-    document.getElementById('useOptimizationFromRow')
-  ];
-  if(!colmapEnabled){
-    accurateRows.forEach(row => row && setHidden(row, true));
-    const badge = document.getElementById('accurateStatusBadge');
-    if(badge){
-      badge.className = 'pill pill-muted';
-      badge.textContent = 'Disabled';
-    }
-    const hint = document.getElementById('accurateHint');
-    if(hint){
-      hint.textContent = 'Accurate poses disabled on this server.';
-    }
-    if(typeof window.clearColmapPoll === 'function'){
-      window.clearColmapPoll();
-    }
-  }
   const thermalEnabled = window.isThermalExtractionEnabled ? window.isThermalExtractionEnabled() : true;
   const toggleThermalInput = (inputId) => {
     const input = document.getElementById(inputId);
@@ -184,9 +133,6 @@ window.applyFeatureFlags = function applyFeatureFlags(){
   };
   toggleThermalInput('chkUseThermalTrain');
   toggleThermalInput('chkUseThermalTest');
-  if(typeof window.updateAccurateUI === 'function'){
-    window.updateAccurateUI();
-  }
 };
 
 window.$ = (sel) => document.querySelector(sel);

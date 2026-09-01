@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from ..dataops.mosaic_from_colmap import create_mosaic_from_rotated_images
+from ..dataops.approximate_mosaic import create_mosaic_from_rotated_images
 
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = ROOT.parent

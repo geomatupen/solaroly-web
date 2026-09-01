@@ -193,7 +193,7 @@ function updateProjectUI() {
 // runtime caches & UI flags
 let testAbort = null;
 let modelsCache = {};                // name -> model metadata returned by /api/models
-let datasetsCache = [];              // cached dataset list with colmap_ready flag
+let datasetsCache = [];              // cached test dataset metadata
 let testResultsCache = [];            // cached inference result sessions
 let userToggledThermalTrain = false; // whether user manually toggled the train thermal checkbox
 let userToggledThermalTest = false;  // whether user manually toggled the test thermal checkbox
@@ -494,6 +494,43 @@ async function _fetchSessionsOnce(){
   });
 }
 
+function onTestDatasetChange(){
+  const dataset = getSelectedDataset();
+  const selectedDataset = Array.isArray(datasetsCache)
+    ? datasetsCache.find(item => item && item.name === dataset)
+    : null;
+  const isOrthophoto = selectedDataset?.input_type === 'tif';
+  window.TestImageAlignment?.syncAvailability?.(selectedDataset?.input_type || null);
+
+  const lensCheckbox = document.getElementById('chkUndistortThermal');
+  const lensHint = document.getElementById('lensCorrectionHint');
+  if(lensCheckbox){
+    lensCheckbox.disabled = isOrthophoto;
+    lensCheckbox.title = isOrthophoto ? 'Lens correction is skipped for orthophotos.' : '';
+  }
+  if(lensHint){
+    lensHint.textContent = isOrthophoto
+      ? 'Skipped for orthophotos because they are already geometrically corrected products.'
+      : 'Optional runtime calibration from repeated straight structures; stops safely if correction cannot be proven.';
+  }
+
+  const mosaicCheckbox = document.getElementById('chkMosaicImages');
+  const mosaicHint = document.getElementById('mosaicHint');
+  if(mosaicCheckbox){
+    mosaicCheckbox.disabled = isOrthophoto;
+    mosaicCheckbox.title = isOrthophoto ? 'Approximate mosaicing is unavailable for orthophoto input.' : '';
+    if(isOrthophoto && mosaicCheckbox.checked){
+      mosaicCheckbox.checked = false;
+      mosaicCheckbox.dispatchEvent(new Event('change'));
+    }
+  }
+  if(mosaicHint){
+    mosaicHint.textContent = isOrthophoto
+      ? 'Unavailable for orthophotos because they are already mosaicked geospatial products.'
+      : 'Available for folders of geotagged individual images.';
+  }
+}
+
 async function loadDatasets(){
   const js = await _fetchDatasetsOnce();
   if(js.ok){
@@ -501,11 +538,6 @@ async function loadDatasets(){
     populateFolders(js.datasets);
     renderTestDatasets(datasetsCache);
     onTestDatasetChange();
-    if(window.featureFlags?.colmap){
-      onOptimizeDatasetChange();
-    }else if(typeof updateOptimizePanel === 'function'){
-      updateOptimizePanel(null);
-    }
   }
 }
 
@@ -550,7 +582,7 @@ function testAssetCard(asset, kind){
   const resultComplete = asset.complete !== false && asset.status !== 'incomplete';
   const details = isResult
     ? [resultComplete ? 'Complete' : 'Incomplete', asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null]
-    : [`${asset.count || 0} images`, asset.colmap_ready ? 'Optimized poses' : null, asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null];
+    : [`${asset.count || 0} images`, asset.mtime ? new Date(asset.mtime * 1000).toLocaleDateString() : null];
   if(isResult) item.classList.add(resultComplete ? 'complete' : 'incomplete');
   details.filter(Boolean).forEach(value => {
     const span = document.createElement('span');
@@ -1672,36 +1704,6 @@ async function runTest(){
     return;
   }
   const model = getSelectedModel();
-  const wantsAccurate = document.getElementById("chkAccurateLocations")?.checked;
-  let accurateMode = null;
-  let optimizationProject = "";
-  
-  if(wantsAccurate){
-    if(document.getElementById("radAccurateColmap")?.checked){
-      accurateMode = "colmap";
-    }else if(document.getElementById("radAccurateOptical")?.checked){
-      accurateMode = "optical";
-      optimizationProject = document.getElementById("selUseOptimizationFrom")?.value || "";
-    }
-    
-    if(!accurateMode){
-      warn("test","Choose COLMAP or optical sync for accurate poses.");
-      return;
-    }
-    
-    if(accurateMode === "colmap"){
-      const state = getColmapState(ds);
-      if(!state || !state.ready){
-        warn("test","Run Optimize Locations and finish before enabling COLMAP mode.");
-        return;
-      }
-    }else if(accurateMode === "optical"){
-      if(!optimizationProject){
-        warn("test","Select an optimized project for optical sync.");
-        return;
-      }
-    }
-  }
   // Decide channels based solely on the selected model's metadata.
   // The frontend will send the model's expected channel_count to the server so the backend
   // can decide whether to decode/use the thermal band. If model metadata is missing,
@@ -1793,8 +1795,6 @@ async function runTest(){
     && document.getElementById("chkAlignImages")?.disabled !== true
     && document.getElementById("chkEmbedAlignedGpsForPhotogrammetry")?.checked === true;
   fd.append("embed_aligned_gps_for_photogrammetry", exportAlignedGpsForPhotogrammetry ? "true" : "false");
-  if(accurateMode === "colmap") fd.append("accurate_locations", "true");
-  if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
   const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;
   const inferenceSource = createMosaic
     ? (document.querySelector('input[name="inferenceSource"]:checked')?.value || 'mosaic')
@@ -1864,8 +1864,7 @@ async function runTest(){
   }finally{
     setHidden($("#spinTest"), true);
     testAbort = null;
-    if(typeof updateAccurateUI === 'function') updateAccurateUI();
-    else if(runTestButton) runTestButton.disabled = false;
+    if(runTestButton) runTestButton.disabled = false;
   }
 }
 function cancelTest(){ if(testAbort){ testAbort.abort(); } }
@@ -3871,9 +3870,6 @@ function setupUI(){
     });
   }
 
-  if (typeof initOptimizeTabControls === 'function') {
-    initOptimizeTabControls();
-  }
   renderLegend();
 }
 

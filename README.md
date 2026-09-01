@@ -2,23 +2,23 @@
 
 SolarOly is an end-to-end inspection console for Solar PV. It ingests DJI thermal flights and orthophotos, then turns them into actionable anomaly reports that can be reviewed, exported, or pushed into downstream GIS tools.
 
-This repository packages the FastAPI backend that drives thermal decoding, Detectron2/YOLO inference, LightGlue image-overlap alignment, optional COLMAP workflows, and batch utilities, plus the single-page frontend that manages uploads, project workspaces, training knobs, and map reviews. Feature flags (`PVRT_ENABLE_*`) keep heavy integrations opt-in so the same codebase runs on a laptop or a GPU workstation without code changes.
+This repository packages the FastAPI backend that drives thermal decoding, Detectron2/YOLO inference, LightGlue image-overlap alignment, and batch utilities, plus the single-page frontend that manages uploads, project workspaces, training knobs, and map reviews. Feature flags (`PVRT_ENABLE_*`) keep heavy integrations opt-in so the same codebase runs on a laptop or a GPU workstation without code changes.
 
 **Use SolarOly to:**
 - Create isolated projects for different sites and keep train/test data, outputs, overlays, and logs neatly partitioned.
 - Decode DJI radiometric frames, fine-tune Detectron2 or YOLO models, and launch inference or orthophoto tiling jobs from the browser.
-- Align imagery with COLMAP or metadata-based rotations, regenerate GeoJSON overlays, and stream results into Leaflet maps for QA before exporting.
+- Align overlapping imagery with LightGlue, regenerate GeoJSON overlays, and stream results into Leaflet maps for QA before exporting.
 - Monitor every job via Server-Sent Events, download artifacts (weights, logs, overlays), and hand off the deliverables to ops teams without leaving the app.
 
 ---
 
 ## 1. Project Snapshot
 - Multi-project workspace rooted at `backend/projects/<project_id>` with isolated train/test data, outputs, overlays, and logs per session.
-- Dual inference engines (Detectron2 and YOLOv8) plus optional COLMAP pose refinement exposed through feature flags so heavy integrations stay opt-in.
+- Dual inference engines (Detectron2 and YOLOv8) exposed through feature flags so heavy integrations stay opt-in.
 - Server-Sent Events stream live logs for training, testing, mosaicking, and ZIP uploads directly into the browser.
 - DJI Thermal SDK integration decodes 16-bit radiometric frames, preserves metadata, and falls back to RGB thermal renders when raw extraction is unavailable.
 - Optional SIFT + LightGlue matching refines the horizontal position and residual in-plane orientation of overlapping individual images before prediction GeoJSON is generated.
-- Built-in tools regenerate GeoJSON, rotate/align frames, tile orthophotos, and rebuild thermal mosaics directly from COLMAP camera poses.
+- Built-in tools regenerate GeoJSON, rotate or align frames, tile orthophotos, and build approximate mosaics from final image metadata.
 
 ---
 
@@ -31,23 +31,22 @@ This repository packages the FastAPI backend that drives thermal decoding, Detec
    source venv/bin/activate
    python -m pip install --upgrade pip wheel
    ```
-2. Decide which heavy integrations you need (Detectron2 or YOLO, COLMAP helpers). Use Section 3 to comment blocks in `requirements.txt` **before** installing.
+2. Decide which inference integrations you need (Detectron2 or YOLO). Use Section 3 to comment blocks in `requirements.txt` **before** installing.
 3. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-4. Install native extras (COLMAP, GDAL, GPU drivers) if your workflow requires them.
+4. Install native extras such as GDAL and GPU drivers if your workflow requires them.
 5. Complete the DJI Thermal SDK steps in Section 4 so thermal decoding works end-to-end.
 
 ### 2.2 Docker Container (deployment / reproducibility)
-1. Review the `Dockerfile` at the repository root. It installs the base requirements, Torch/Detectron2/YOLO, and exports the `PVRT_ENABLE_*` flags. Swap the base image (e.g., `nvidia/cuda`) or add apt packages if you need GPU builds or COLMAP inside the container.
+1. Review the `Dockerfile` at the repository root. It installs the base requirements, Torch/Detectron2/YOLO, and exports the `PVRT_ENABLE_*` flags. Swap the base image (e.g., `nvidia/cuda`) or add apt packages if you need GPU builds inside the container.
 2. Build and run:
    ```bash
    docker build -t solaroly-web .
    docker run --rm -p 8001:8001 \
      -e PVRT_ENABLE_DETECTRON=1 \
      -e PVRT_ENABLE_YOLO=1 \
-     -e PVRT_ENABLE_COLMAP=0 \
      solaroly-web
    ```
 3. Mount external datasets/models with `-v /host/path:/app/backend/projects` and override feature flags per run as needed.
@@ -63,9 +62,8 @@ The committed `requirements.txt` lists *all* integrations. Comment out the lines
 | Detectron2-based training/testing | `detectron2 @ git+...`, `fvcore`, `iopath`, `hydra-core`, `omegaconf`, `yacs`, `pycocotools`, `tensorboard`, `tabulate`, `matplotlib` | Comment the entire block if you only plan to run YOLO. | `PVRT_ENABLE_DETECTRON=0/1` |
 | YOLOv8 pipeline | `ultralytics>=8.3.0,<9.0.0` plus the shared OpenCV/numpy stack already present | Comment `ultralytics` if Detectron2 is the only backend you ship. | `PVRT_ENABLE_YOLO=0/1` |
 | CUDA accelerators | All `nvidia-*` wheels plus CUDA-specific Torch builds | Comment GPU wheels and install CPU Torch (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) when no CUDA-capable device exists. | Not flag-controlled; match your hardware |
-| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | `PVRT_ENABLE_THERMAL=0/1` (drives the shared `thermal_data_extraction` flag; when 0 the UI hides "Use thermal" toggles and the backend rejects decode/train/test requests that require DJI payloads) + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
+| DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction and temperature metadata. | `PVRT_ENABLE_THERMAL=0/1` (drives the shared `thermal_data_extraction` flag; when 0 the UI hides "Use thermal" toggles and the backend rejects decode/train/test requests that require DJI payloads) + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
 | [LightGlue image alignment](https://github.com/cvg/LightGlue) | `lightglue @ git+https://github.com/cvg/LightGlue.git@edb2b8...`, `kornia`, `torch`, `torchvision`, `opencv-python-headless` | Keep these when raw thermal-image GPS/orientation is not accurate enough and prediction GeoJSON or an approximate mosaic must use refined poses. Without LightGlue, leave **Align individual images before inference** disabled. | Selected per test run under **Test → Advanced**; CUDA is used when available and CPU remains supported. LightGlue is an open-source project from the CVG team; see its repository for its license and attribution. |
-| COLMAP-assisted alignment | Installed separately via `conda install -c conda-forge colmap` or system packages | Skip entirely if you only need per-frame inference. | `PVRT_ENABLE_COLMAP=0/1` |
 
 **Base requirement:** PyTorch (`torch`, `torchvision`, `torchaudio`, `triton`) is always needed because both Detectron2 and YOLO sit on top of it. Install the CUDA wheels shown in `requirements.txt` or swap in the CPU-only wheels before enabling either backend.
 
@@ -132,7 +130,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
   └── logs/
   ```
 - **Configuration file:** Each project writes an `outputs/config.yaml` capturing the last-used backend, weights folder, score thresholds, and thermal extraction preferences. The UI overwrites this file whenever you submit the Training or Testing forms.
-- **Feature flags:** `backend/pvrt/web/settings.py` reads `PVRT_ENABLE_DETECTRON`, `PVRT_ENABLE_YOLO`, `PVRT_ENABLE_COLMAP`, and `PVRT_ENABLE_THERMAL`. Export them before launching uvicorn or set them inside Docker. Disabled integrations disappear from the UI and the backend guards routes accordingly.
+- **Feature flags:** `backend/pvrt/web/settings.py` reads `PVRT_ENABLE_DETECTRON`, `PVRT_ENABLE_YOLO`, and `PVRT_ENABLE_THERMAL`. Export them before launching uvicorn or set them inside Docker. Disabled integrations disappear from the UI and the backend guards routes accordingly.
    - The thermal flag surfaces to the SPA as `thermal`/`thermal_data_extraction`. When off, the frontend disables "Use thermal" checkboxes automatically and the API refuses dataset decodes, thermal-aware training, and thermal-only inference to prevent accidental DJI SDK calls.
 - **Camera metadata:** `camera_meta.json` stores alignment hints (heading offsets, reference elevations) and is used by the rotation/mosaic pipeline plus the orthophoto tiler.
 
@@ -144,7 +142,6 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
    source venv/bin/activate
    export PVRT_ENABLE_DETECTRON=1
    export PVRT_ENABLE_YOLO=1
-   export PVRT_ENABLE_COLMAP=0
    export PVRT_ENABLE_THERMAL=1
    ```
 2. Start FastAPI:
@@ -187,7 +184,7 @@ When **Align individual images before inference** and the photogrammetry export 
 
 LightGlue alignment defaults to **Standard** quality (768 px analysis, 1,024 SIFT features), **Balanced** strictness, 3 temporal neighbours, 4 lateral neighbours and a 6° maximum pair rotation difference. High quality uses 1,024 px and 2,048 features. Strict and Lenient presets jointly adjust LightGlue score filtering, minimum verified matches, RANSAC inlier agreement and reprojection tolerance. GPS/scale consistency and final pose-displacement safeguards remain fixed internally.
 
-#### Approximate image mosaic without COLMAP
+#### Approximate image mosaic
 
 Enable **Test → Create approximate mosaic** for a folder containing at least two geotagged images. Its inference-source options remain hidden until mosaicing is enabled. The runtime first performs any selected lens correction and rotates each complete image north-up from camera/gimbal heading. When **Align individual images before inference** is enabled, LightGlue then refines the prepared image poses once and the approximate mosaic is built from those corrected positions and residual orientations; unmatched images retain their original GPS pose. Without LightGlue, the mosaic uses the original GPS/heading metadata. Each full image is placed at its metadata-derived GSD without pre-cropping, images are blended, and only the completed mosaic is cut into inference tiles. Alignment decisions remain in `image_alignment.json`; the older separate mosaic-overlap refinement is no longer used.
 
@@ -200,7 +197,7 @@ The revealed inference-source choices are exclusive: **Individual images only** 
 ### 7.2 Orthophoto Pipeline
 1. Upload or reference a georeferenced orthophoto (single GeoTIFF) through *Test → Uploads*. The backend stores it under `test/data/uploads` for the active project.
 2. The orthophoto worker (`backend/pvrt/web/mosaic.py`) splits the GeoTIFF into patches/tiles sized per the UI form and writes them to `test/outputs/<session>/tiles`.
-3. Each tile runs through whichever backend you enabled (Detectron2 or YOLO). Because the tiles are already north-up and geo-aligned, **no COLMAP step is required**.
+3. Each tile runs through whichever backend you enabled (Detectron2 or YOLO). The tiles are already north-up and geo-aligned.
 4. Post-processing reprojects detections into the orthophoto CRS, merges them into `images.geojson`/`anomalies.geojson`, and exposes a ready-to-download GeoTIFF via `/api/download_ortho`.
 5. Overlay upload/download endpoints let you bring the orthophoto detections back into the map tab alongside manual overlays.
 
@@ -220,19 +217,7 @@ The standalone **Image to grayscale** button on the Projects page works independ
 PYTHONPATH=backend python -m pvrt.dataops.thermal_convert INPUT_DIR OUTPUT_DIR --format jpg
 ```
 
-### 7.4 COLMAP Workflows
-
-#### 7.4.1 Pose Optimization for Single Images
-- `PVRT_ENABLE_COLMAP=1` unlocks pose uploads inside the single-image testing form. COLMAP-derived intrinsics/extrinsics refine each camera’s latitude/longitude/heading before inference so detections line up with site plans even when EXIF yaw is noisy.
-- Optimized poses live beside the session under `test/outputs/<session>/colmap_pose.json` and are referenced whenever rotated imagery, GeoJSON footprints, or overlays are generated.
-- If COLMAP stays disabled, the backend simply relies on EXIF yaw plus `camera_meta.json`, so location/orientation updates are skipped but inference still runs.
-
-#### 7.4.2 Thermal Mosaic Builder
-- `backend/pvrt/dataops/mosaic_from_colmap.py` can optionally re-project raw thermal frames onto a flat plane using the COLMAP poses you uploaded, producing radiometrically faithful mosaics (`mosaic.tif`).
-- The resulting mosaic tiles plus `images.geojson` entries allow you to review COLMAP-derived mosaics separately from the orthophoto pipeline (which never calls COLMAP). This workflow assumes you have the DJI SDK installed and `PVRT_ENABLE_THERMAL=1` so radiometric frames can be decoded.
-- If you only need per-frame inference, skip this workflow entirely—nothing else in the system depends on the mosaic artifacts.
-
-### 7.5 Frontend Highlights
+### 7.4 Frontend Highlights
 - **Results tab:** lists sessions with confidence histograms, download buttons (GeoJSON, overlays, logs), and backend metadata.
 - **Map tab:** Leaflet map layers for imagery, anomalies, user overlays, and orthophoto tiles; filter chips toggle anomaly types and confidence thresholds.
 - **Lightbox:** Keyboard/pointer navigation across rotated images with bounding-box callouts kept in sync with map selections.
@@ -244,7 +229,7 @@ PYTHONPATH=backend python -m pvrt.dataops.thermal_convert INPUT_DIR OUTPUT_DIR -
 - **YOLO weights missing:** Pre-download with `python -c "from ultralytics import YOLO; YOLO('yolov8m.pt')"` if your environment blocks outbound downloads.
 - **Thermal SDK errors:** Verify `DIRP_SDK_PATH` and `LD_LIBRARY_PATH` echo correctly. If empty, re-activate the venv or ensure Docker `ENV` entries exist.
 - **Map zoom glitches or blank overlays:** Hard-refresh (`Ctrl+Shift+R`). Confirm `camera_meta.json` contains lat/lon for every rotated image and that `images.geojson` is present in the session outputs.
-- **Mosaic failures:** Approximate mosaics require `rotated_images/` and at least two images with readable EXIF GPS coordinates; heading and altitude metadata improve placement. Install `rasterio` for GeoTIFF writing and tiling. COLMAP is required only when you explicitly request optimized camera poses.
+- **Mosaic failures:** Approximate mosaics require `rotated_images/` and at least two images with readable EXIF GPS coordinates; heading and altitude metadata improve placement. Install `rasterio` for GeoTIFF writing and tiling.
 - **FastAPI errors:** Run uvicorn with `--log-level debug` and capture `fastapi.log`, then share the traceback when asking for help.
 
 ---
@@ -263,7 +248,7 @@ PYTHONPATH=backend python -m pvrt.dataops.thermal_convert INPUT_DIR OUTPUT_DIR -
   Produces `rotated_images/`, `images.geojson`, and `anomalies.geojson` for a past run.
 - **Thermal mosaic creation:**
   ```python
-  from backend.pvrt.dataops.mosaic_from_colmap import create_mosaic_from_rotated_images
+  from backend.pvrt.dataops.approximate_mosaic import create_mosaic_from_rotated_images
   from pathlib import Path
 
   create_mosaic_from_rotated_images(
@@ -275,4 +260,4 @@ PYTHONPATH=backend python -m pvrt.dataops.thermal_convert INPUT_DIR OUTPUT_DIR -
   )
   ```
 
-With these steps documented in one place, you can choose the minimal dependency set, enable only the needed feature flags, and understand how each pipeline (single-frame, orthophoto, training, and COLMAP-assisted mosaics) flows through the system. Fire up uvicorn or Docker, point your browser to the frontend, and start exploring new solar anomaly datasets.
+With these steps documented in one place, you can choose the minimal dependency set, enable only the needed feature flags, and understand how each pipeline (single-frame, orthophoto, training, and approximate mosaics) flows through the system. Fire up uvicorn or Docker, point your browser to the frontend, and start exploring new solar anomaly datasets.

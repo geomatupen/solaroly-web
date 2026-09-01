@@ -27,8 +27,7 @@ COPY . .
 ENV DIRP_SDK_PATH="/app/third_party/utility/bin/linux/release_x64/libdirp.so"
 ENV LD_LIBRARY_PATH="/app/third_party/utility/bin/linux/release_x64"
 ENV PVRT_ENABLE_DETECTRON=1 \
-    PVRT_ENABLE_YOLO=1 \
-    PVRT_ENABLE_COLMAP=0
+    PVRT_ENABLE_YOLO=1
 
 EXPOSE 8001
 

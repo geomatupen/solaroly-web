@@ -5,7 +5,6 @@ Each project has a nested structure:
   - train/ (contains data/train, data/valid, and outputs/)
   - test/ (contains data/test and outputs/)
   - overlays/
-  - colmap/
 """
 
 from pathlib import Path
@@ -38,10 +37,6 @@ class Project(BaseModel):
         """Get project's overlays directory."""
         return Path(self.root_path) / "overlays"
 
-    def get_colmap_dir(self) -> Path:
-        """Get project's colmap working directory."""
-        return Path(self.root_path) / "colmap"
-    
     # --- Train subdirectories ---
     def get_train_data_dir(self) -> Path:
         """Get project's training data directory (train/valid subfolders)."""
@@ -66,7 +61,6 @@ class Project(BaseModel):
         self.get_train_dir().mkdir(parents=True, exist_ok=True)
         self.get_test_dir().mkdir(parents=True, exist_ok=True)
         self.get_overlays_dir().mkdir(parents=True, exist_ok=True)
-        self.get_colmap_dir().mkdir(parents=True, exist_ok=True)
         
         # Create train subdirectories
         self.get_train_data_dir().mkdir(parents=True, exist_ok=True)

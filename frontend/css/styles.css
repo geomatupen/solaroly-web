@@ -48,8 +48,6 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 .iconDots{ background:transparent; border:1px solid var(--border); color:#cdd6df; border-radius:6px; padding:2px 8px; cursor:pointer; }
 
 .actions{ display:flex; align-items:center; gap:10px; margin-top:8px; }
-.actionsColmap{ justify-content:space-between; flex-wrap:wrap; }
-.actionsColmap .buttonCluster{ display:flex; gap:10px; align-items:center; }
 .progressWrap.mini{ flex:1 1 260px; min-width:240px; margin-top:0; }
 .progressWrap.mini .progressText{ text-align:right; }
 
@@ -333,35 +331,10 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
   padding:4px 6px; border-radius:6px;
 }
 
-.optGrid{ display:flex; flex-direction:column; gap:12px; margin-top:12px; }
-.optParamsHead{ display:flex; align-items:center; justify-content:space-between; }
-.optParams{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; }
-.optParams label{ display:block; margin-bottom:4px; font-size:13px; color:var(--muted); }
-.optLayout{ display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:18px; }
-.optCard{ background:#0b1117; border:1px solid var(--border); border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:10px; }
-.optCardHeader{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.jobInfo{ display:grid; grid-template-columns:1fr; gap:6px; margin:0; }
-.jobInfo div{ display:flex; justify-content:space-between; gap:12px; font-size:13px; }
-.jobInfo dt{ font-weight:600; color:var(--muted); }
-.jobInfo dd{ margin:0; text-align:right; color:#e6edf3; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
-.cameraList{ max-height:320px; overflow:auto; display:flex; flex-direction:column; gap:10px; }
-.cameraRow{ border:1px dashed var(--border); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:4px; }
-.cameraRow strong{ font-size:0.95rem; }
-.cameraRowHead{ display:flex; align-items:center; gap:8px; }
-.cameraRowHeadMain{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-.cameraRowHead .camZoomBtn{ margin-left:auto; }
 .camZoomBtn{ display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; border:1px solid var(--border); background:transparent; color:#e6edf3; cursor:pointer; padding:0; }
 .camZoomBtn svg{ display:block; }
 .camZoomBtn:hover:not(:disabled){ border-color:var(--accent); color:var(--accent); }
 .camZoomBtn:disabled{ opacity:0.4; cursor:not-allowed; }
-.camMeta{ font-size:0.85rem; color:#9aa6b2; display:flex; flex-wrap:wrap; gap:8px; }
-.tag{ display:inline-flex; align-items:center; gap:4px; border-radius:999px; padding:2px 8px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; border:1px solid transparent; }
-.tag-ready{ background:rgba(24,183,106,.15); border-color:rgba(24,183,106,.4); color:#18b76a; }
-.tag-warn{ background:rgba(244,180,0,.15); border-color:rgba(244,180,0,.4); color:#f4b400; }
-.tag-muted{ background:rgba(148,163,184,.15); border-color:rgba(148,163,184,.3); color:#cdd6df; }
-
-.optimizeMap{ width:100%; height:320px; border:1px solid var(--border); border-radius:10px; background:#0b1117; }
-.optMapCard{ min-height:360px; }
 .listScroll{ max-height:220px; overflow:auto; }
 .infoBtn{
   width:28px;

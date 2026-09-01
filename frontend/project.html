@@ -5,7 +5,7 @@
   <title>SolarOly</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link rel="stylesheet" href="css/styles.css?v=20260831c" />
+  <link rel="stylesheet" href="css/styles.css?v=20260901a" />
   <link rel="stylesheet" href="css/postprocess.css?v=20260830c" />
 
   <!-- Leaflet -->
@@ -23,7 +23,6 @@
       <a href="index.html" style="display: flex; align-items: center; gap: 4px; padding: 8px 16px; text-decoration: none; color: inherit; font-weight: 500; cursor: pointer;">← Projects</a>
       <button id="btnTest" class="active" data-tab="tab-test">Test</button>
       <button id="btnTrain" data-tab="tab-train">Train</button>
-      <button id="btnOptimize" data-tab="tab-optimize">Optimize</button>
       <button id="btnResults" data-tab="tab-results">Results</button>
       <button id="btnMap" data-tab="tab-map">Map</button>
       <button id="btnPostprocess" data-tab="tab-postprocess">Post-process</button>
@@ -164,41 +163,6 @@
                 <span class="muted tiny hintLine">Updates latitude/longitude only in the exported copies, preserves absolute altitude, and writes <code>geo.txt</code>.</span>
               </span>
             </label>
-          </div>
-
-          <div class="row wrap" id="accurateControls">
-            <label class="switchRow wide">
-              <input type="checkbox" id="chkAccurateLocations" />
-              <span>
-                Accurate poses
-                <span id="accurateHint" class="muted tiny hintLine">Requires optimized poses</span>
-              </span>
-            </label>
-            <span id="accurateStatusBadge" class="pill pill-muted">No dataset</span>
-            <button id="btnGoOptimize" class="secondary tiny">Optimize…</button>
-          </div>
-
-          <div class="row" id="accurateModeRow" hidden>
-            <div style="margin-left: 2em;">
-              <div style="margin-bottom: 0.5em;">
-                <label>
-                  <input type="radio" name="accurateMode" id="radAccurateColmap" value="colmap" />
-                  <span>Accurate locations (COLMAP)</span>
-                </label>
-              </div>
-              <div>
-                <label>
-                  <input type="radio" name="accurateMode" id="radAccurateOptical" value="optical" />
-                  <span>Use optimization from (thermal/optical sync)</span>
-                </label>
-                <div id="useOptimizationFromRow" hidden style="margin-left: 2em; margin-top: 0.5em;">
-                  <select id="selUseOptimizationFrom" style="width: 100%; max-width: 400px;">
-                    <option value="">-- Select optimized dataset --</option>
-                  </select>
-                  <div class="muted tiny" style="margin-top: 0.25em;">Uses calibrated poses from optical images. Images matched by name (e.g., IMG_001_V.jpg ↔ IMG_001_T.jpg).</div>
-                </div>
-              </div>
-            </div>
           </div>
 
           <div class="row wrap" id="mosaicControls">
@@ -408,99 +372,6 @@
             </div>
           </section>
         </aside>
-        </div>
-      </div>
-    </section>
-
-    <!-- OPTIMIZE TAB -->
-    <section id="tab-optimize" class="tabPanel">
-      <div class="card">
-        <div class="row between">
-          <div>
-            <h2>Optimize Locations</h2>
-            <p class="muted">Run COLMAP alignment to upgrade GPS before testing with accurate overlays.</p>
-          </div>
-          <span id="optimizeReadyPill" class="pill pill-muted">Select dataset</span>
-        </div>
-
-        <div class="optGrid">
-          <div class="row">
-            <label for="selOptimizeDataset">Dataset</label>
-            <select id="selOptimizeDataset"></select>
-            <button id="btnSyncOptimizeDataset" class="secondary tiny">Use test selection</button>
-            <button id="btnRefreshColmap" class="secondary tiny">Refresh</button>
-          </div>
-          <div class="optParamsHead">
-            <span class="muted tiny">Parameters</span>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <button id="btnColmapConfig" class="secondary tiny" type="button">Advanced config</button>
-              <button id="btnColmapInfo" class="infoBtn" type="button" aria-label="About COLMAP parameters">i</button>
-            </div>
-          </div>
-          <div class="optParams">
-            <div>
-              <label for="selColmapMatcher">Matcher</label>
-              <select id="selColmapMatcher">
-                <option value="sequential" selected>Sequential</option>
-                <option value="exhaustive">Exhaustive</option>
-              </select>
-            </div>
-            <div>
-              <label for="inpColmapSeqOverlap">Sequential overlap</label>
-              <input id="inpColmapSeqOverlap" type="number" min="1" step="1" value="4" />
-              <small class="muted tiny">Used only with sequential matching.</small>
-            </div>
-            <div>
-              <label for="inpColmapMaxImage">Max feature image size</label>
-              <input id="inpColmapMaxImage" type="number" min="256" step="64" value="1400" />
-            </div>
-            <div class="switchRow" style="align-items:center;">
-              <input type="checkbox" id="chkColmapUseGpu" checked />
-              <span>Use GPU for SIFT</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="actions actionsColmap">
-          <div class="buttonCluster">
-            <button id="btnStartColmap">Start optimization</button>
-            <button id="btnFinishColmap" class="secondary" disabled>Mark finished</button>
-          </div>
-          <div class="progressWrap mini" id="colmapProgressWrap" hidden>
-            <div class="progressBar"><span id="colmapProgressBar" style="width:0%"></span></div>
-            <div class="progressText tiny" id="colmapProgressText">Idle</div>
-          </div>
-        </div>
-
-        <div id="colmapStatusLine" class="statusLine"></div>
-
-        <div class="optLayout">
-          <div class="optCard">
-            <div class="optCardHeader">
-              <h3>Job status</h3>
-              <div class="muted tiny" id="colmapJobId">—</div>
-            </div>
-            <dl class="jobInfo">
-              <div><dt>Status</dt><dd id="colmapJobStatus">–</dd></div>
-              <div><dt>Step</dt><dd id="colmapJobStep">–</dd></div>
-              <div><dt>Metadata</dt><dd id="colmapMetaLink">–</dd></div>
-            </dl>
-            <pre id="colmapLogs" class="logPane tinyLog"></pre>
-          </div>
-          <div class="optCard">
-            <div class="optCardHeader">
-              <h3>Cameras</h3>
-              <div id="colmapCameraSummary" class="muted tiny">–</div>
-            </div>
-            <div id="colmapCameraList" class="cameraList"></div>
-          </div>
-          <div class="optCard optMapCard">
-            <div class="optCardHeader">
-              <h3>Camera map</h3>
-              <div id="colmapMapSummary" class="muted tiny">No dataset</div>
-            </div>
-            <div id="optimizeMap" class="optimizeMap" aria-label="Optimized camera map"></div>
-          </div>
         </div>
       </div>
     </section>
@@ -1450,7 +1321,7 @@
         <button class="iconBtn" data-close-info-modal type="button" aria-label="Close">&times;</button>
       </div>
       <div class="modalBody infoBody workflowInfoBody">
-        <p>This optional workflow creates a quick geolocated mosaic from individual images without COLMAP. It is intended for visual review and inference, not survey-grade orthorectification.</p>
+        <p>This optional workflow creates a quick geolocated mosaic from individual images. It is intended for visual review and inference, not survey-grade orthorectification.</p>
         <ol class="workflowSteps">
           <li><b>Prepare images.</b> Apply selected lens correction first, then rotate every image north-up from its heading metadata.</li>
           <li><b>Place from metadata.</b> Use EXIF GPS centres and estimated ground resolution for the initial layout. At least two geotagged images are required.</li>
@@ -1460,7 +1331,7 @@
           <li><b>Run one inference source.</b> <em>Individual images</em> predicts each prepared frame. <em>Approximate mosaic only</em> builds the mosaic, cuts only the completed mosaic into model-sized tiles, and predicts those tiles. The two modes never run together in one result.</li>
           <li><b>Blend, then cut.</b> Blend the prepared images at their final poses first. Only after the mosaic is complete is its GeoTIFF cut into model-sized inference tiles. LightGlue decisions and corrections are recorded in <code>image_alignment.json</code>.</li>
         </ol>
-        <div class="workflowNote"><b>Limitations:</b> a fast 2-D mosaic cannot fully correct terrain relief, strong camera tilt, parallax, poor GPS, missing overlap or large viewpoint changes. Use COLMAP or a photogrammetry workflow when those effects are significant.</div>
+        <div class="workflowNote"><b>Limitations:</b> a fast 2-D mosaic cannot fully correct terrain relief, strong camera tilt, parallax, poor GPS, missing overlap or large viewpoint changes. Use a full photogrammetry workflow when those effects are significant.</div>
       </div>
       <div class="modalFooter">
         <button class="secondary" data-close-info-modal type="button">Close</button>
@@ -1487,145 +1358,6 @@
       </div>
       <div class="modalFooter">
         <button class="secondary" data-close-info-modal type="button">Close</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- COLMAP Info Modal -->
-  <div id="colmapInfoModal" class="modal hidden">
-    <div class="modalContent">
-      <div class="modalHeader">
-        <h3>COLMAP parameters</h3>
-        <button class="iconBtn" id="btnCloseColmapInfo" aria-label="Close">&times;</button>
-      </div>
-      <div class="modalBody infoBody">
-        <p>These controls tune how COLMAP estimates camera poses:</p>
-        <ul>
-          <li><b>Matcher</b>: <i>Sequential</i> links neighboring images (ideal for drone flights). <i>Exhaustive</i> compares every pair (slower but can recover unordered sets).</li>
-          <li><b>Sequential overlap</b>: Number of neighboring frames to compare when using sequential matching. Increase to strengthen weak overlaps.</li>
-          <li><b>Min triangulation angle</b>: Rejects points with small viewing angle. Higher values improve accuracy but may drop matches. Default 5° works for most flights.</li>
-          <li><b>Min model size</b>: Smallest number of registered images required before COLMAP keeps a reconstruction. Raise this to ignore tiny, fragmented models.</li>
-          <li><b>Max feature image size</b>: Downsamples large frames before feature extraction. Helpful for noisy thermal sensors; leave blank to use the original size.</li>
-          <li><b>Use GPU for SIFT</b>: Disable if the GPU driver causes instability; COLMAP will fall back to CPU features.</li>
-          <li><b>Camera model</b>: Choose the projection model COLMAP assumes when reading EXIF. Thermal DJI frames usually work with <i>SIMPLE_RADIAL</i>.</li>
-          <li><b>Min matches / inliers</b>: Tune the minimum matches per image plus the inlier thresholds COLMAP uses when seeding models or registering new views.</li>
-          <li><b>Model overlap / count</b>: Limit how many reconstructions COLMAP keeps and how much overlap they can share so it stays focused on your main flight.</li>
-        </ul>
-      </div>
-      <div class="modalFooter">
-        <button class="secondary" id="btnColmapInfoDone">Close</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- COLMAP Config Modal -->
-  <div id="colmapConfigModal" class="modal hidden">
-    <div class="modalContent" style="max-width:720px; max-height:80vh; display:flex; flex-direction:column;">
-      <div class="modalHeader">
-        <h3>Advanced COLMAP config</h3>
-        <button class="iconBtn" id="btnCloseColmapConfig" aria-label="Close">&times;</button>
-      </div>
-      <div class="modalBody infoBody" style="display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start;overflow-y:auto;max-height:calc(80vh - 140px);">
-        <div class="formGrid" style="grid-template-columns:1fr 1fr;gap:14px;">
-          <div>
-            <label for="selColmapCameraModel">Camera model</label>
-            <select id="selColmapCameraModel">
-              <option value="SIMPLE_RADIAL" selected>Simple radial (default)</option>
-              <option value="RADIAL">Radial (wide FOV)</option>
-              <option value="SIMPLE_PINHOLE">Simple pinhole</option>
-              <option value="PINHOLE">Pinhole</option>
-            </select>
-          </div>
-          <div>
-            <label for="inpColmapTriangulation">Min triangulation angle</label>
-            <input id="inpColmapTriangulation" type="number" min="0" max="60" step="1" value="5" />
-          </div>
-          <div>
-            <label for="inpColmapMinMatches">Min matches per image</label>
-            <input id="inpColmapMinMatches" type="number" min="3" step="1" value="15" />
-          </div>
-          <div>
-            <label for="inpColmapMinSize">Min model size</label>
-            <input id="inpColmapMinSize" type="number" min="50" step="50" value="500" />
-          </div>
-          <div>
-            <label for="inpColmapInitInliers">Init min inliers</label>
-            <input id="inpColmapInitInliers" type="number" min="10" step="5" value="60" />
-          </div>
-          <div>
-            <label for="inpColmapAbsInliers">Abs pose min inliers</label>
-            <input id="inpColmapAbsInliers" type="number" min="5" step="5" value="20" />
-          </div>
-          <div>
-            <label for="inpColmapMaxOverlap">Max model overlap</label>
-            <input id="inpColmapMaxOverlap" type="number" min="0" step="5" value="20" />
-          </div>
-          <div>
-            <label for="inpColmapMaxModels">Max number of models</label>
-            <input id="inpColmapMaxModels" type="number" min="1" step="1" value="10" />
-          </div>
-          <div>
-            <label for="inpColmapPeakThresh">SIFT peak threshold</label>
-            <input id="inpColmapPeakThresh" type="number" min="0.0005" step="0.0005" value="0.004" />
-          </div>
-          <div>
-            <label for="inpColmapEdgeThresh">SIFT edge threshold</label>
-            <input id="inpColmapEdgeThresh" type="number" min="1" step="1" value="8" />
-          </div>
-          <div>
-            <label for="inpColmapMaxFeatures">Max SIFT features</label>
-            <input id="inpColmapMaxFeatures" type="number" min="512" step="512" value="12000" />
-          </div>
-          <div>
-            <label for="inpColmapThreads">SIFT threads</label>
-            <input id="inpColmapThreads" type="number" min="1" step="1" placeholder="auto" />
-          </div>
-          <div>
-            <label for="inpColmapExhBlock">Exhaustive block size</label>
-            <input id="inpColmapExhBlock" type="number" min="10" step="10" placeholder="e.g. 200" />
-            <small class="muted tiny">Only for exhaustive matcher.</small>
-          </div>
-          <div class="switchRow" style="align-items:center;">
-            <input type="checkbox" id="chkColmapBaFocal" checked />
-            <span>Refine focal length (BA)</span>
-          </div>
-          <div class="switchRow" style="align-items:center;">
-            <input type="checkbox" id="chkColmapBaPpoint" checked />
-            <span>Refine principal point (BA)</span>
-          </div>
-          <div class="switchRow" style="align-items:center;">
-            <input type="checkbox" id="chkColmapBaExtra" checked />
-            <span>Refine extra params (BA)</span>
-          </div>
-          <div>
-            <label for="inpColmapMaxReprojError">Max reproj error (thermal)</label>
-            <input id="inpColmapMaxReprojError" type="number" min="4" step="1" placeholder="12 for thermal, blank for default" />
-            <small class="muted tiny">Set 12+ for thermal to prevent de-registration.</small>
-          </div>
-          <div>
-            <label for="inpColmapBaGlobalIter">BA global max iterations</label>
-            <input id="inpColmapBaGlobalIter" type="number" min="5" step="5" placeholder="15 for thermal, blank for default" />
-          </div>
-          <div>
-            <label for="inpColmapBaLocalIter">BA local max iterations</label>
-            <input id="inpColmapBaLocalIter" type="number" min="5" step="5" placeholder="10 for thermal, blank for default" />
-          </div>
-        </div>
-        <div class="muted tiny" style="line-height:1.5;">
-          <strong>Parameter notes</strong>
-          <ul style="padding-left:16px; margin:6px 0;">
-            <li><b>Camera model</b>: SIMPLE_RADIAL for most thermal DJI flights.</li>
-            <li><b>Triangulation</b>: Higher prunes weak geometry; lower accepts more points.</li>
-            <li><b>Matches / inliers</b>: Tighten to reject weak registrations; loosen for low-texture.</li>
-            <li><b>SIFT thresholds</b>: Lower peak → more features; edge≈8 suits thermal.</li>
-            <li><b>Block size</b>: Exhaustive only; smaller reduces RAM at cost of more steps.</li>
-            <li><b>BA refine</b>: Keep ON unless you have strong prior intrinsics.</li>
-            <li><b>Thermal BA</b>: Set max reproj error 12+, BA iters 15/10 to prevent crash.</li>
-          </ul>
-        </div>
-      </div>
-      <div class="modalFooter">
-        <button class="secondary" id="btnColmapConfigDone">Close</button>
       </div>
     </div>
   </div>
@@ -1717,7 +1449,7 @@
           <button id="projectBrowseBtn" class="secondary" style="flex:0;">Browse</button>
         </div>
         <div class="muted" style="font-size:11px; margin-top:4px;">
-          Where to store train/, test/, overlays/, and colmap/ folders for this project
+          Where to store train/, test/, and overlays/ folders for this project
         </div>
       </div>
       <div class="modalActions">
@@ -1727,14 +1459,13 @@
     </div>
   </div>
 
-  <script src="js/utils.js?v=20260825m"></script>
+  <script src="js/utils.js?v=20260901a"></script>
   <script src="js/measure-control.js?v=20260830b"></script>
   <script src="js/georeferenced-image-overlay.js?v=20260901b"></script>
   <script src="js/map.js?v=20260901b"></script>
-  <script src="js/colmap.js?v=20260901c"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
   <script src="js/test-image-alignment.js?v=20260901e"></script>
-  <script src="js/main.js?v=20260901h"></script>
+  <script src="js/main.js?v=20260901i"></script>
   <script src="js/postprocess.js?v=20260831b"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260830a"></script>
