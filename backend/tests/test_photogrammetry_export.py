@@ -6,7 +6,7 @@ from pathlib import Path
 import piexif
 from PIL import Image
 
-from pvrt.dataops.photogrammetry_export import finalize_webodm_export
+from pvrt.dataops.photogrammetry_export import finalize_photogrammetry_export
 
 
 def _gps_decimal(gps, coordinate_key, ref_key):
@@ -53,7 +53,7 @@ class PhotogrammetryExportTests(unittest.TestCase):
             camera_meta_path.write_text(json.dumps(camera_meta), encoding="utf-8")
             alignment_path.write_text(json.dumps(report), encoding="utf-8")
 
-            summary = finalize_webodm_export(
+            summary = finalize_photogrammetry_export(
                 export_dir=export_dir,
                 camera_meta=camera_meta,
                 alignment_report=report,
@@ -80,6 +80,8 @@ class PhotogrammetryExportTests(unittest.TestCase):
             )
             self.assertTrue((export_dir / "camera_meta.json").is_file())
             self.assertTrue((export_dir / "image_alignment.json").is_file())
+            self.assertTrue((export_dir / "photogrammetry_export.json").is_file())
+            self.assertEqual(summary["files"]["summary"], "photogrammetry_export.json")
 
     def test_retained_image_is_listed_without_rewriting_gps(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -89,7 +91,7 @@ class PhotogrammetryExportTests(unittest.TestCase):
             original = image_path.read_bytes()
             camera_meta = {"DJI_0002.jpg": {"lat": 51.0, "lon": 9.0, "absolute_altitude": 100.0}}
 
-            summary = finalize_webodm_export(
+            summary = finalize_photogrammetry_export(
                 export_dir=export_dir,
                 camera_meta=camera_meta,
                 alignment_report={"images": {"DJI_0002.jpg": {"status": "retained_original"}}},

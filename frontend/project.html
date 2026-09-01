@@ -152,15 +152,15 @@
               <input type="checkbox" id="chkExportUndistortedImages" />
               <span>
                 Export undistorted originals for photogrammetry
-                <span class="muted tiny hintLine">Creates a separate metadata-preserving <code>undistorted_images</code> folder for WebODM.</span>
+                <span class="muted tiny hintLine">Creates a separate metadata-preserving <code>undistorted_images</code> folder for photogrammetry software.</span>
               </span>
             </label>
           </div>
-          <div class="row wrap" id="webodmAlignedGpsControls" hidden style="margin-left: 4em;">
+          <div class="row wrap" id="photogrammetryAlignedGpsControls" hidden style="margin-left: 4em;">
             <label class="switchRow wide">
-              <input type="checkbox" id="chkEmbedAlignedGpsForWebODM" checked />
+              <input type="checkbox" id="chkEmbedAlignedGpsForPhotogrammetry" checked />
               <span>
-                Embed LightGlue-corrected GPS for WebODM
+                Embed LightGlue-corrected GPS for photogrammetry
                 <span class="muted tiny hintLine">Updates latitude/longitude only in the exported copies, preserves absolute altitude, and writes <code>geo.txt</code>.</span>
               </span>
             </label>
@@ -204,7 +204,10 @@
           <div class="row wrap" id="mosaicControls">
             <label class="switchRow wide">
               <input type="checkbox" id="chkMosaicImages" />
-              <span>Create approximate mosaic</span>
+              <span>
+                Create approximate mosaic
+                <span id="mosaicHint" class="muted tiny hintLine">Available for folders of geotagged individual images.</span>
+              </span>
             </label>
             <button id="btnMosaicInfo" type="button" class="infoBtn" aria-label="How approximate mosaicing works" aria-haspopup="dialog" aria-controls="mosaicInfoModal">i</button>
           </div>
@@ -960,18 +963,6 @@
               <ul id="imagesList" class="layersList"></ul>
             </div>
 
-            <!-- Camera positions upload (WebODM) -->
-            <div style="margin-top:8px; padding:8px; border-top:1px solid var(--border);">
-              <label class="fileDrop tiny">
-                <input id="fileCameraPositions" type="file" accept=".json,.geojson" />
-                <span>+ Camera positions (WebODM JSON)</span>
-              </label>
-              <div id="cameraPositionsInfo" style="margin-top:6px; font-size:0.9rem; color:var(--muted)"></div>
-              <div style="margin-top:6px; display:flex; gap:.5rem;">
-                <button id="btnClearCameraPositions" class="secondary tiny">Clear overrides</button>
-              </div>
-            </div>
-
             <div id="legend" class="legend"></div>
           </aside>
 
@@ -1402,7 +1393,7 @@
       </div>
       <div class="modalBody infoBody workflowInfoBody">
         <p>Alignment runs after lens correction and north-up rotation, and before inference. Corrected positions and residual orientation are saved in camera metadata and used to generate image footprints and prediction GeoJSON.</p>
-        <div class="workflowNote"><b>LightGlue image overlaps:</b> matches overlapping neighboring images and jointly refines their relative positions and orientation. GPS provides the soft absolute map anchor. No segmentation or reference GeoJSON is used.</div>
+        <div class="workflowNote"><b>LightGlue image overlaps:</b> uses the open-source <a href="https://github.com/cvg/LightGlue" target="_blank" rel="noopener noreferrer">LightGlue project by the CVG team</a> to match overlapping neighboring images and jointly refine their relative positions and orientation. GPS provides the soft absolute map anchor. No segmentation or reference GeoJSON is used.</div>
         <ul>
           <li>Images without sufficient verified overlap retain their original metadata.</li>
           <li>When approximate mosaicing is enabled, the mosaic is created from these final corrected poses.</li>
@@ -1442,7 +1433,7 @@
           <li><b>Retry one inconsistent sample safely.</b> If exactly one best-three image disagrees, replace it with the fourth-ranked usable image and validate three images again. If that still fails, make one final fit from the two originally consistent images. The result is applied only when every image in the accepted attempt independently supports it.</li>
           <li><b>Fail without changing images.</b> If evidence is missing, inconsistent, already straight, or unsafe, preparation stops before writing corrected images. Untick this option to run without correction.</li>
           <li><b>Apply and record.</b> An accepted model is applied to every image in its matching group at the original width and height. Decisions and fitted values are logged and saved in <code>preprocessing.json</code>.</li>
-          <li><b>Optional photogrammetry export.</b> When the nested export option is checked, write a separate <code>undistorted_images</code> folder before north-up rotation. Files keep their original name, format, dimensions, EXIF/GPS, XMP, ICC profile and timestamps where supported. When both this export and LightGlue alignment are enabled, an additional option can embed corrected latitude/longitude into these copies and write a WebODM-compatible <code>geo.txt</code>. Absolute altitude is preserved because LightGlue only refines horizontal pose.</li>
+          <li><b>Optional photogrammetry export.</b> When the nested export option is checked, write a separate <code>undistorted_images</code> folder before north-up rotation. Files keep their original name, format, dimensions, EXIF/GPS, XMP, ICC profile and timestamps where supported. When both this export and LightGlue alignment are enabled, an additional option can embed corrected latitude/longitude into these copies and write a portable <code>geo.txt</code> sidecar. Absolute altitude is preserved because LightGlue only refines horizontal pose.</li>
         </ol>
         <div class="workflowNote"><b>Important:</b> automatic calibration cannot be guaranteed for arbitrary natural scenes. Eight evenly spaced candidates are checked and the best three are used. One or two images can still be sufficient for a smaller folder when they contain several long structures across the frame. The images do not need to overlap. When evidence is insufficient, no correction is guessed.</div>
       </div>
@@ -1739,11 +1730,11 @@
   <script src="js/utils.js?v=20260825m"></script>
   <script src="js/measure-control.js?v=20260830b"></script>
   <script src="js/georeferenced-image-overlay.js?v=20260901b"></script>
-  <script src="js/map.js?v=20260901a"></script>
-  <script src="js/colmap.js?v=20260901b"></script>
+  <script src="js/map.js?v=20260901b"></script>
+  <script src="js/colmap.js?v=20260901c"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
-  <script src="js/test-image-alignment.js?v=20260901d"></script>
-  <script src="js/main.js?v=20260901g"></script>
+  <script src="js/test-image-alignment.js?v=20260901e"></script>
+  <script src="js/main.js?v=20260901h"></script>
   <script src="js/postprocess.js?v=20260831b"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260830a"></script>

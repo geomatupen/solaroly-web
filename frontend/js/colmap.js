@@ -1174,6 +1174,23 @@ function onTestDatasetChange(){
       ? 'Skipped for orthophotos because they are already geometrically corrected products.'
       : 'Optional runtime calibration from repeated straight structures; stops safely if correction cannot be proven.';
   }
+  const mosaicCheckbox = document.getElementById('chkMosaicImages');
+  const mosaicHint = document.getElementById('mosaicHint');
+  if(mosaicCheckbox){
+    mosaicCheckbox.disabled = isOrthophoto;
+    mosaicCheckbox.title = isOrthophoto
+      ? 'Approximate mosaicing is unavailable for orthophoto input.'
+      : '';
+    if(isOrthophoto && mosaicCheckbox.checked){
+      mosaicCheckbox.checked = false;
+      mosaicCheckbox.dispatchEvent(new Event('change'));
+    }
+  }
+  if(mosaicHint){
+    mosaicHint.textContent = isOrthophoto
+      ? 'Unavailable for orthophotos because they are already mosaicked geospatial products.'
+      : 'Available for folders of geotagged individual images.';
+  }
   const sel = document.getElementById('selOptimizeDataset');
   if(ds && sel){
     sel.value = ds;

@@ -359,7 +359,7 @@ try:
                         undistorted_output = undistorted_dir / fname
                         if use_thermal_for_rotation and fname in src_thermal_pairs:
                             # The inference image is a decoded preview in thermal mode.
-                            # Export the corrected original file pixels separately for WebODM.
+                            # Export the corrected original file pixels separately for photogrammetry.
                             with Image.open(p) as original_for_export:
                                 export_image, _export_record = correct_pil_image(
                                     original_for_export, current_group, calibration

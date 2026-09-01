@@ -1,4 +1,4 @@
-"""Finalize metadata-preserving undistorted exports for WebODM."""
+"""Finalize metadata-preserving undistorted exports for photogrammetry software."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _finite_number(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
-def finalize_webodm_export(
+def finalize_photogrammetry_export(
     *,
     export_dir: Path,
     camera_meta: dict[str, Any],
@@ -42,7 +42,7 @@ def finalize_webodm_export(
     camera_meta_path: Optional[Path] = None,
     alignment_report_path: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Embed corrected horizontal poses and write a WebODM-compatible ``geo.txt``."""
+    """Embed corrected horizontal poses and write a portable ``geo.txt`` sidecar."""
     export_dir = Path(export_dir)
     if not export_dir.is_dir():
         raise FileNotFoundError("The undistorted photogrammetry export was not created.")
@@ -109,6 +109,7 @@ def finalize_webodm_export(
             "geo": geo_path.name,
             "camera_metadata": "camera_meta.json",
             "alignment_report": "image_alignment.json",
+            "summary": "photogrammetry_export.json",
         },
         "notes": [
             "LightGlue corrections update horizontal latitude/longitude only.",
@@ -116,5 +117,5 @@ def finalize_webodm_export(
             "Original dataset images were not modified.",
         ],
     }
-    (export_dir / "webodm_export.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (export_dir / "photogrammetry_export.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary

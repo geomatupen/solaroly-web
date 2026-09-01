@@ -1787,12 +1787,12 @@ async function runTest(){
     "export_undistorted_images",
     correctLensDistortion && document.getElementById("chkExportUndistortedImages")?.checked ? "true" : "false"
   );
-  const exportAlignedGpsForWebODM = correctLensDistortion
+  const exportAlignedGpsForPhotogrammetry = correctLensDistortion
     && document.getElementById("chkExportUndistortedImages")?.checked === true
     && document.getElementById("chkAlignImages")?.checked === true
     && document.getElementById("chkAlignImages")?.disabled !== true
-    && document.getElementById("chkEmbedAlignedGpsForWebODM")?.checked === true;
-  fd.append("embed_aligned_gps_for_webodm", exportAlignedGpsForWebODM ? "true" : "false");
+    && document.getElementById("chkEmbedAlignedGpsForPhotogrammetry")?.checked === true;
+  fd.append("embed_aligned_gps_for_photogrammetry", exportAlignedGpsForPhotogrammetry ? "true" : "false");
   if(accurateMode === "colmap") fd.append("accurate_locations", "true");
   if(accurateMode === "optical" && optimizationProject) fd.append("optimization_project", optimizationProject);
   const createMosaic = document.getElementById('chkMosaicImages')?.checked === true;
@@ -2404,7 +2404,7 @@ async function loadGeoJSON(url){
   // response against freshly generated image placement metadata.
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to load prediction GeoJSON (${res.status})`);
-  const gj = applyCameraPositionOverridesToPredictions(await res.json());
+  const gj = await res.json();
 
   const base = overlayRegistry["Predictions"]?.style || {
     color: "#ff5722", weight: 1, opacity: 1,
@@ -2632,118 +2632,6 @@ function populateImagesList(features){
     });
   });
 }
-
-// ---------------- Camera positions overrides (frontend-only) ----------------
-function normalizeBasename(name){
-  if(!name) return '';
-  // strip path and extension, lower-case
-  const b = name.split(/[/\\]/).pop();
-  const noext = b.replace(/\.[^.]+$/, '');
-  return noext.trim().toLowerCase();
-}
-
-function findOverrideForName(name){
-  const stem = normalizeBasename(name);
-  if(!stem) return null;
-  // direct match
-  if(cameraPositionOverrides[stem]) return cameraPositionOverrides[stem];
-
-  // swap _v <-> _t suffix (common naming: *_V / *_T)
-  const swap = (s) => {
-    if(/[_\-]v$/.test(s)) return s.replace(/[_\-]v$/, (m)=> m[0] + 't');
-    if(/[_\-]t$/.test(s)) return s.replace(/[_\-]t$/, (m)=> m[0] + 'v');
-    return null;
-  };
-  const s2 = swap(stem);
-  if(s2 && cameraPositionOverrides[s2]) return cameraPositionOverrides[s2];
-
-  // try removing trailing _v/_t
-  const s3 = stem.replace(/[_\-][vt]$/, '');
-  if(s3 && cameraPositionOverrides[s3]) return cameraPositionOverrides[s3];
-
-  return null;
-}
-
-function parseCameraPositionsFeatureCollection(gj){
-  const out = {};
-  if(!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return out;
-  for(const f of gj.features){
-    try{
-      const fn = f?.properties?.filename || f?.properties?.name || f?.properties?.image || f?.properties?.file;
-      if(!fn) continue;
-      const key = normalizeBasename(fn);
-      const coords = f?.geometry?.coordinates;
-      if(!coords || !Array.isArray(coords) || coords.length < 2) continue;
-      // store as object { lon, lat, alt }
-      out[key] = { lon: Number(coords[0]), lat: Number(coords[1]), alt: coords.length>2 ? Number(coords[2]) : null };
-    }catch(_){ continue; }
-  }
-  return out;
-}
-
-function cameraMetadataForImage(name){
-  const metadata = lastLoadedSessionSummary?.camera_meta;
-  if(!metadata || typeof metadata !== 'object') return null;
-  const target = normalizeBasename(name);
-  if(!target) return null;
-  for(const [key, value] of Object.entries(metadata)){
-    if(!key.startsWith('__') && value && typeof value === 'object' && normalizeBasename(key) === target){
-      return value;
-    }
-  }
-  return null;
-}
-
-function translateGeoJsonCoordinates(value, deltaLongitude, deltaLatitude){
-  if(!Array.isArray(value)) return value;
-  if(value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))){
-    return [
-      Number(value[0]) + deltaLongitude,
-      Number(value[1]) + deltaLatitude,
-      ...value.slice(2),
-    ];
-  }
-  return value.map(item => translateGeoJsonCoordinates(item, deltaLongitude, deltaLatitude));
-}
-
-function applyCameraPositionOverridesToPredictions(featureCollection){
-  if(!featureCollection || !Array.isArray(featureCollection.features)) return featureCollection;
-  if(!Object.keys(cameraPositionOverrides).length) return featureCollection;
-  for(const feature of featureCollection.features){
-    const properties = feature?.properties || {};
-    const imageName = properties.image || properties.file || properties.name || properties.src;
-    const override = findOverrideForName(imageName);
-    const metadata = cameraMetadataForImage(imageName);
-    const originalLongitude = Number(metadata?.lon);
-    const originalLatitude = Number(metadata?.lat);
-    if(!override || !feature?.geometry || !Array.isArray(feature.geometry.coordinates)
-      || !Number.isFinite(originalLongitude) || !Number.isFinite(originalLatitude)) continue;
-    feature.geometry.coordinates = translateGeoJsonCoordinates(
-      feature.geometry.coordinates,
-      Number(override.lon) - originalLongitude,
-      Number(override.lat) - originalLatitude,
-    );
-    properties.camera_position_override_applied = true;
-  }
-  return featureCollection;
-}
-
-function updateCameraPositionsInfo(matched, total){
-  const el = document.getElementById('cameraPositionsInfo');
-  if(!el) return;
-  if(!total){ el.textContent = '' ; return; }
-  el.textContent = `Camera positions: ${total} features; matched images: ${matched}. Using locations from uploaded file.`;
-}
-
-async function clearCameraPositions(){
-  cameraPositionOverrides = {};
-  updateCameraPositionsInfo(0,0);
-  // Reload both image and prediction layers so they share one coordinate frame.
-  if(lastLoadedSessionName){
-    await applySessionToMap(lastLoadedSessionName);
-  }
-}
-
 
 // function renderLegend(){
 //   const st = overlayRegistry["Anomalies"]?.style || { color:"#ff5722", fillColor:"#ff5722" };
@@ -3098,10 +2986,8 @@ async function loadImagesCatalog(sessionName, imagesUrl){
 
   try {
     const gj = await (await fetch(imagesUrl, { cache: 'no-store' })).json();
-    // store original and session info so overrides can be reapplied later
+    // Retain the loaded collection for map summary/status rendering.
     lastLoadedImagesGJ = gj;
-    lastLoadedSessionName = sessionName;
-    lastLoadedImagesUrl = imagesUrl;
 
     // Build manifest lookup for detection counts
     const manifestLookup = {};
@@ -3116,40 +3002,10 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       }
     }
 
-    // Build modified copy of gj where we apply any cameraPositionOverrides
-    const modifiedGJ = JSON.parse(JSON.stringify(gj));
-    let matched = 0;
-    if (Array.isArray(modifiedGJ.features)){
-      for (const f of modifiedGJ.features){
-        try{
-          const file = f?.properties?.image || f?.properties?.file || f?.properties?.name;
-          if(!file) continue;
-          const ov = findOverrideForName(file);
-          if (ov){
-            // replace geometry coordinates [lon, lat, (alt)]
-            const previousCoordinates = Array.isArray(f?.geometry?.coordinates)
-              ? f.geometry.coordinates.slice()
-              : null;
-            f.geometry = f.geometry || { type: 'Point', coordinates: [ov.lon, ov.lat] };
-            f.geometry.coordinates = [ov.lon, ov.lat].concat(ov.alt != null ? [ov.alt] : []);
-            const deltaLongitude = previousCoordinates ? ov.lon - Number(previousCoordinates[0]) : 0;
-            const deltaLatitude = previousCoordinates ? ov.lat - Number(previousCoordinates[1]) : 0;
-            if(Array.isArray(f?.properties?.corners)){
-              f.properties.corners = f.properties.corners.map(corner => [
-                Number(corner[0]) + deltaLongitude,
-                Number(corner[1]) + deltaLatitude,
-              ]);
-            }
-            matched++;
-          }
-        }catch(_){ }
-      }
-    }
+    // 2a) populate the “Image markers” layer using persisted result coordinates.
+    installImageMarkers(gj);
 
-    // 2a) populate the “Image markers” layer using modified coordinates
-    installImageMarkers(modifiedGJ);
-
-    // 2b) build imageCatalog for actual image overlays (use modifiedGJ)
+    // 2b) build imageCatalog for actual image overlays.
     imageCatalog = [];
     const overlaysFromSummary = Array.isArray(lastLoadedSessionSummary?.assets?.overlays)
       ? lastLoadedSessionSummary.assets.overlays
@@ -3170,7 +3026,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       const idx = clean.lastIndexOf('/');
       return idx > 0 ? clean.slice(0, idx + 1) : null;
     })();
-    const feats = Array.isArray(modifiedGJ?.features) ? modifiedGJ.features : [];
+    const feats = Array.isArray(gj?.features) ? gj.features : [];
     for (const f of feats){
       if (f?.geometry?.type !== 'Point') continue;
 
@@ -3254,9 +3110,6 @@ async function loadImagesCatalog(sessionName, imagesUrl){
     }
 
     applyMapDetectionFilter();
-    // update info UI if camera positions present
-    const totalOverrides = Object.keys(cameraPositionOverrides).length;
-    updateCameraPositionsInfo(matched, totalOverrides);
   } catch (e) {
     console.warn('images_geojson parse failed:', e);
     if (listEl) listEl.innerHTML = '<li class="err">Failed to load images</li>';
@@ -3465,32 +3318,6 @@ if (btnApply) btnApply.style.display = 'none';  // hide the button
   el.addEventListener('change', applyStyleLive);
 });
 
-
-// Camera positions upload (WebODM) - frontend-only overrides
-$("#fileCameraPositions")?.addEventListener("change", async (e)=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  try{
-    const text = await f.text();
-    const gj = JSON.parse(text);
-    const parsed = parseCameraPositionsFeatureCollection(gj);
-    cameraPositionOverrides = parsed;
-    const total = Object.keys(parsed).length;
-    // Reload both image and prediction layers so the override moves them together.
-    if(lastLoadedSessionName && lastLoadedImagesUrl){
-      await applySessionToMap(lastLoadedSessionName);
-    } else {
-      updateCameraPositionsInfo(0, total);
-    }
-  }catch(ex){
-    alert('Invalid JSON');
-    console.warn('camera positions parse failed', ex);
-  }finally{
-    e.target.value = "";
-  }
-});
-
-$("#btnClearCameraPositions")?.addEventListener('click', async (e)=>{ e.preventDefault(); await clearCameraPositions(); });
 
 // ---------- logs (SSE) ----------
 let evtSource = null;
@@ -3728,16 +3555,16 @@ function setupUI(){
     const enabled = lensCorrectionToggle?.checked === true;
     setHidden(document.getElementById('undistortedExportControls'), !enabled);
     if(!enabled && undistortedExportToggle) undistortedExportToggle.checked = false;
-    const webodmEligible = enabled
+    const photogrammetryEligible = enabled
       && undistortedExportToggle?.checked === true
       && imageAlignmentToggle?.checked === true
       && imageAlignmentToggle?.disabled !== true;
-    setHidden(document.getElementById('webodmAlignedGpsControls'), !webodmEligible);
+    setHidden(document.getElementById('photogrammetryAlignedGpsControls'), !photogrammetryEligible);
   };
   lensCorrectionToggle?.addEventListener('change', updateUndistortedExportVisibility);
   undistortedExportToggle?.addEventListener('change', updateUndistortedExportVisibility);
   imageAlignmentToggle?.addEventListener('change', updateUndistortedExportVisibility);
-  window.updateWebodmExportVisibility = updateUndistortedExportVisibility;
+  window.updatePhotogrammetryExportVisibility = updateUndistortedExportVisibility;
   updateUndistortedExportVisibility();
 
   const mosaicToggle = document.getElementById('chkMosaicImages');

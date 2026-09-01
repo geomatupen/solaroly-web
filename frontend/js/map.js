@@ -56,17 +56,11 @@ let imageCatalog = [];              // [{ id, name, url, bounds, on }]
 let imageOverlays = new Map();      // id -> L.ImageOverlay
 let imagesOpacity = 0.85;           // global opacity for image overlays
 
-// last loaded images.geojson and session info (used to reapply overrides)
+// Last loaded images.geojson and session information.
 let lastLoadedImagesGJ = null;
-let lastLoadedSessionName = null;
-let lastLoadedImagesUrl = null;
 let lastLoadedSessionSummary = null;
 let rotatedImagesLookup = null;     // cached map of basename -> rotated URL
 let mapAssetCacheVersion = "";      // changes whenever a result is loaded/reloaded
-
-// camera position overrides loaded from an uploaded WebODM camera-positions JSON
-// keyed by normalized basename (no extension), value: { lon, lat, alt }
-let cameraPositionOverrides = {};
 
 // fallback sizing if images.geojson has only a Point
 const DEFAULT_IMAGE_HALF_SIZE_M = 25; // ~25 m half-width/half-height (adjust if needed)

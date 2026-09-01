@@ -25,13 +25,13 @@
       const reason = "Individual-image alignment is unavailable for orthophoto input.";
       checkbox.title = reason;
       if(hint) hint.textContent = reason;
-      window.updateWebodmExportVisibility?.();
+      window.updatePhotogrammetryExportVisibility?.();
       return;
     }
 
     checkbox.title = "";
     if(hint) hint.textContent = "Refine prepared-image positions and orientation with LightGlue before generating prediction coordinates.";
-    window.updateWebodmExportVisibility?.();
+    window.updatePhotogrammetryExportVisibility?.();
   }
 
   function validate(){
@@ -72,7 +72,7 @@
     const options = byId("imageAlignmentOptions");
     checkbox?.addEventListener("change", () => {
       if(options) options.hidden = !checkbox.checked;
-      window.updateWebodmExportVisibility?.();
+      window.updatePhotogrammetryExportVisibility?.();
     });
     byId("btnImageAlignmentInfo")?.addEventListener("click", () => setInfoOpen(true));
     byId("btnCloseImageAlignmentInfo")?.addEventListener("click", () => setInfoOpen(false));
