@@ -21,15 +21,21 @@ import numpy as np
 from PIL import Image
 
 
-PAIR_ANALYSIS_MAX_DIMENSION = 768
-PAIR_MAX_FEATURES = 1024
-PAIR_MIN_MATCHES = 8
-PAIR_MAX_TEMPORAL_GPS_ERROR_M = 1.5
-PAIR_MAX_LATERAL_GPS_ERROR_M = 2.0
-LIGHTGLUE_FILTER_THRESHOLD = 0.15
+ALIGNMENT_QUALITY_PRESETS = {
+    "standard": {"analysis_max_dimension": 768, "maximum_features": 1024},
+    "high": {"analysis_max_dimension": 1024, "maximum_features": 2048},
+}
+ALIGNMENT_STRICTNESS_PRESETS = {
+    "strict": {"filter_threshold": 0.25, "minimum_matches": 12, "minimum_inlier_ratio": 0.50, "ransac_px": 2.5},
+    "balanced": {"filter_threshold": 0.15, "minimum_matches": 8, "minimum_inlier_ratio": 0.35, "ransac_px": 3.0},
+    "lenient": {"filter_threshold": 0.10, "minimum_matches": 6, "minimum_inlier_ratio": 0.25, "ransac_px": 4.0},
+}
+PAIR_MAXIMUM_GPS_ERROR_M = 8.0
+FINAL_MAXIMUM_POSITION_CORRECTION_M = 8.0
+FINAL_MAXIMUM_ORIENTATION_CORRECTION_DEG = 10.0
 
 
-_LIGHTGLUE_RUNTIME: dict[str, Any] | None = None
+_LIGHTGLUE_RUNTIMES: dict[tuple[int, float], dict[str, Any]] = {}
 _LIGHTGLUE_RUNTIME_LOCK = threading.Lock()
 
 
@@ -47,14 +53,14 @@ def _empty_features() -> _FrameFeatures:
     return _FrameFeatures(np.empty((0, 2), np.float32), None, 0, 0, 1.0, 0.0)
 
 
-def _lightglue_runtime() -> dict[str, Any]:
-    """Load the official SIFT+LightGlue models once per backend process."""
-    global _LIGHTGLUE_RUNTIME
-    if _LIGHTGLUE_RUNTIME is not None:
-        return _LIGHTGLUE_RUNTIME
+def _lightglue_runtime(maximum_features: int, filter_threshold: float) -> dict[str, Any]:
+    """Load each requested SIFT+LightGlue preset once per backend process."""
+    runtime_key = (int(maximum_features), float(filter_threshold))
+    if runtime_key in _LIGHTGLUE_RUNTIMES:
+        return _LIGHTGLUE_RUNTIMES[runtime_key]
     with _LIGHTGLUE_RUNTIME_LOCK:
-        if _LIGHTGLUE_RUNTIME is not None:
-            return _LIGHTGLUE_RUNTIME
+        if runtime_key in _LIGHTGLUE_RUNTIMES:
+            return _LIGHTGLUE_RUNTIMES[runtime_key]
         try:
             import torch
             from lightglue import LightGlue, SIFT
@@ -63,18 +69,22 @@ def _lightglue_runtime() -> dict[str, Any]:
                 "Image alignment requires the LightGlue dependency. Reinstall the backend requirements."
             ) from exc
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        _LIGHTGLUE_RUNTIME = {
+        runtime = {
             "torch": torch,
             "device": device,
-            "extractor": SIFT(max_num_keypoints=PAIR_MAX_FEATURES, backend="opencv").eval(),
+            "extractor": SIFT(max_num_keypoints=int(maximum_features), backend="opencv").eval(),
             "matcher": LightGlue(
                 features="sift",
                 depth_confidence=0.9,
                 width_confidence=0.95,
-                filter_threshold=LIGHTGLUE_FILTER_THRESHOLD,
+                filter_threshold=float(filter_threshold),
             ).eval().to(device),
         }
-    return _LIGHTGLUE_RUNTIME
+        # Keep GPU memory bounded when users choose a different preset on a
+        # later run. The active preset is reused; stale model instances are not.
+        _LIGHTGLUE_RUNTIMES.clear()
+        _LIGHTGLUE_RUNTIMES[runtime_key] = runtime
+    return runtime
 
 
 def _lat_lon(entry: dict[str, Any]) -> tuple[float, float] | None:
@@ -108,7 +118,14 @@ def _timestamp(entry: dict[str, Any]) -> float:
         return 0.0
 
 
-def _load_features(path: Path, entry: dict[str, Any]) -> _FrameFeatures:
+def _load_features(
+    path: Path,
+    entry: dict[str, Any],
+    *,
+    analysis_max_dimension: int,
+    maximum_features: int,
+    filter_threshold: float,
+) -> _FrameFeatures:
     source = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if source is None:
         return _empty_features()
@@ -119,7 +136,7 @@ def _load_features(path: Path, entry: dict[str, Any]) -> _FrameFeatures:
         gray = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2GRAY)
         valid = source[:, :, 3] if source.shape[2] >= 4 else np.full(gray.shape, 255, dtype=np.uint8)
     original_height, original_width = gray.shape
-    resize_scale = min(1.0, PAIR_ANALYSIS_MAX_DIMENSION / max(original_height, original_width))
+    resize_scale = min(1.0, int(analysis_max_dimension) / max(original_height, original_width))
     if resize_scale < 1.0:
         size = (
             max(1, int(round(original_width * resize_scale))),
@@ -137,7 +154,7 @@ def _load_features(path: Path, entry: dict[str, Any]) -> _FrameFeatures:
     # gradient-dominant descriptor would make every repeated panel seam look
     # distinctive and could verify the same one-row jump we are trying to stop.
     feature_image = cv2.addWeighted(enhanced, 0.75, gradient, 0.25, 0.0)
-    runtime = _lightglue_runtime()
+    runtime = _lightglue_runtime(maximum_features, filter_threshold)
     torch = runtime["torch"]
     image_tensor = torch.from_numpy(feature_image).float()[None] / 255.0
     with _LIGHTGLUE_RUNTIME_LOCK, torch.inference_mode():
@@ -170,7 +187,12 @@ def _load_features(path: Path, entry: dict[str, Any]) -> _FrameFeatures:
 
 
 def _candidate_pairs(
-    names: list[str], entries: dict[str, dict[str, Any]], records: dict[str, dict[str, Any]],
+    names: list[str],
+    entries: dict[str, dict[str, Any]],
+    records: dict[str, dict[str, Any]],
+    *,
+    temporal_neighbors: int,
+    lateral_neighbors: int,
 ) -> list[tuple[str, str, str]]:
     ordered = sorted(names, key=lambda name: (_timestamp(entries[name]), name))
     order_index = {name: index for index, name in enumerate(ordered)}
@@ -180,7 +202,7 @@ def _candidate_pairs(
     # overlap and preserve the flight sequence.
     for index, first in enumerate(ordered):
         first_time = _timestamp(entries[first])
-        for second in ordered[index + 1:index + 4]:
+        for second in ordered[index + 1:index + 1 + int(temporal_neighbors)]:
             second_time = _timestamp(entries[second])
             if first_time and second_time and second_time - first_time > 8.0:
                 break
@@ -208,16 +230,22 @@ def _candidate_pairs(
                 second_radius = 10.0
             if distance <= min(30.0, 0.85 * (first_radius + second_radius)):
                 nearby.append((distance, second))
-        for _distance, second in sorted(nearby)[:4]:
+        for _distance, second in sorted(nearby)[:int(lateral_neighbors)]:
             key = tuple(sorted((first, second)))
             pairs.setdefault(key, "lateral")
     return [(first, second, kind) for (first, second), kind in pairs.items()]
 
 
-def _lightglue_matches(first: _FrameFeatures, second: _FrameFeatures) -> tuple[np.ndarray, np.ndarray]:
+def _lightglue_matches(
+    first: _FrameFeatures,
+    second: _FrameFeatures,
+    *,
+    maximum_features: int,
+    filter_threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
     if first.features is None or second.features is None or len(first.points) < 4 or len(second.points) < 4:
         return np.empty((0, 2), np.int32), np.empty(0, np.float32)
-    runtime = _lightglue_runtime()
+    runtime = _lightglue_runtime(maximum_features, filter_threshold)
     device = runtime["device"]
     image0 = {key: value.to(device) for key, value in first.features.items()}
     image1 = {key: value.to(device) for key, value in second.features.items()}
@@ -236,19 +264,23 @@ def _match_pair(
     second: _FrameFeatures,
     first_entry: dict[str, Any],
     second_entry: dict[str, Any],
-    maximum_pair_position_error_m: float | None = None,
+    *,
+    maximum_features: int,
+    filter_threshold: float,
+    minimum_matches: int,
+    minimum_inlier_ratio: float,
+    ransac_px: float,
+    maximum_pair_rotation_deg: float,
 ) -> dict[str, Any] | None:
     if first.analysis_mpp <= 0 or second.analysis_mpp <= 0:
         return None
-    matches, match_scores = _lightglue_matches(first, second)
-    if len(matches) < PAIR_MIN_MATCHES:
+    matches, match_scores = _lightglue_matches(
+        first, second, maximum_features=maximum_features, filter_threshold=filter_threshold,
+    )
+    if len(matches) < minimum_matches:
         return None
     _distance, gps_east, gps_north = _distance_and_offset(first_entry, second_entry)
-    maximum_relative_error_m = (
-        float(maximum_pair_position_error_m)
-        if maximum_pair_position_error_m is not None
-        else PAIR_MAX_TEMPORAL_GPS_ERROR_M if kind == "temporal" else PAIR_MAX_LATERAL_GPS_ERROR_M
-    )
+    maximum_relative_error_m = PAIR_MAXIMUM_GPS_ERROR_M
     expected_scale = second.analysis_mpp / first.analysis_mpp
     first_centre = np.array([first.width * 0.5, first.height * 0.5], dtype=np.float32)
     second_centre = np.array([second.width * 0.5, second.height * 0.5], dtype=np.float32)
@@ -264,7 +296,7 @@ def _match_pair(
         predicted = expected_scale * source + expected_translation
         if float(np.linalg.norm(destination - predicted)) <= maximum_prior_error_px:
             filtered_indices.append(index)
-    if len(filtered_indices) < PAIR_MIN_MATCHES:
+    if len(filtered_indices) < minimum_matches:
         return None
     filtered_matches = matches[filtered_indices]
     filtered_scores = match_scores[filtered_indices]
@@ -274,7 +306,7 @@ def _match_pair(
         source_points,
         destination_points,
         method=cv2.RANSAC,
-        ransacReprojThreshold=3.0,
+        ransacReprojThreshold=float(ransac_px),
         maxIters=3000,
         confidence=0.995,
         refineIters=20,
@@ -283,13 +315,13 @@ def _match_pair(
         return None
     inlier_count = int(np.count_nonzero(inlier_mask))
     inlier_ratio = inlier_count / max(1, len(filtered_matches))
-    if inlier_count < PAIR_MIN_MATCHES or inlier_ratio < 0.35:
+    if inlier_count < minimum_matches or inlier_ratio < minimum_inlier_ratio:
         return None
     affine_scale = math.hypot(float(transform[0, 0]), float(transform[1, 0]))
     if not 0.92 * expected_scale <= affine_scale <= 1.08 * expected_scale:
         return None
     affine_rotation = math.degrees(math.atan2(float(transform[1, 0]), float(transform[0, 0])))
-    if abs(affine_rotation) > 6.0:
+    if abs(affine_rotation) > maximum_pair_rotation_deg:
         return None
     mapped_centre = transform[:, :2] @ second_centre + transform[:, 2]
     visual_east = float(mapped_centre[0] - first_centre[0]) * first.analysis_mpp
@@ -330,16 +362,31 @@ def build_visual_constraints(
     entries: dict[str, dict[str, Any]],
     records: dict[str, dict[str, Any]],
     progress: Callable[[int, int, str], None] | None = None,
-    maximum_pair_position_error_m: float | None = None,
+    quality: str,
+    strictness: str,
+    temporal_neighbors: int,
+    lateral_neighbors: int,
+    maximum_pair_rotation_deg: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    quality_options = ALIGNMENT_QUALITY_PRESETS[quality]
+    strictness_options = ALIGNMENT_STRICTNESS_PRESETS[strictness]
     names = [path.name for path in image_paths if path.name in entries]
     path_index = {path.name: path for path in image_paths}
     features: dict[str, _FrameFeatures] = {}
     for index, name in enumerate(names, start=1):
-        features[name] = _load_features(path_index[name], entries[name])
+        features[name] = _load_features(
+            path_index[name], entries[name],
+            analysis_max_dimension=int(quality_options["analysis_max_dimension"]),
+            maximum_features=int(quality_options["maximum_features"]),
+            filter_threshold=float(strictness_options["filter_threshold"]),
+        )
         if progress and (index == 1 or index == len(names) or index % max(1, len(names) // 10) == 0):
             progress(index, len(names), f"Extracting LightGlue features: {name}")
-    pairs = _candidate_pairs(names, entries, records)
+    pairs = _candidate_pairs(
+        names, entries, records,
+        temporal_neighbors=temporal_neighbors,
+        lateral_neighbors=lateral_neighbors,
+    )
     constraints: list[dict[str, Any]] = []
     attempted = {"temporal": 0, "lateral": 0}
     accepted = {"temporal": 0, "lateral": 0}
@@ -347,7 +394,12 @@ def build_visual_constraints(
         attempted[kind] += 1
         constraint = _match_pair(
             first, second, kind, features[first], features[second], entries[first], entries[second],
-            maximum_pair_position_error_m,
+            maximum_features=int(quality_options["maximum_features"]),
+            filter_threshold=float(strictness_options["filter_threshold"]),
+            minimum_matches=int(strictness_options["minimum_matches"]),
+            minimum_inlier_ratio=float(strictness_options["minimum_inlier_ratio"]),
+            ransac_px=float(strictness_options["ransac_px"]),
+            maximum_pair_rotation_deg=maximum_pair_rotation_deg,
         )
         if constraint is not None:
             constraints.append(constraint)
@@ -356,8 +408,16 @@ def build_visual_constraints(
             progress(index, len(pairs), f"Verifying {kind} image overlaps")
     return constraints, {
         "matcher": "lightglue_sift",
-        "device": str(_lightglue_runtime()["device"]),
-        "maximum_pair_position_error_m": maximum_pair_position_error_m,
+        "device": str(_lightglue_runtime(
+            int(quality_options["maximum_features"]), float(strictness_options["filter_threshold"]),
+        )["device"]),
+        "quality": quality,
+        "strictness": strictness,
+        "quality_options": quality_options,
+        "strictness_options": strictness_options,
+        "temporal_neighbors": temporal_neighbors,
+        "lateral_neighbors": lateral_neighbors,
+        "maximum_pair_rotation_deg": maximum_pair_rotation_deg,
         "candidate_pairs": len(pairs),
         "verified_pairs": len(constraints),
         "attempted_by_kind": attempted,
@@ -565,11 +625,26 @@ def align_images_with_lightglue(
     images_dir: Path,
     camera_meta: dict[str, Any],
     report_path: Path,
-    maximum_position_correction_m: float,
-    maximum_rotation_correction_deg: float,
+    quality: str = "standard",
+    strictness: str = "balanced",
+    temporal_neighbors: int = 3,
+    lateral_neighbors: int = 4,
+    maximum_pair_rotation_deg: float = 6.0,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Refine individual image poses from overlaps without using reference GeoJSON."""
+    quality = str(quality or "").strip().lower()
+    strictness = str(strictness or "").strip().lower()
+    if quality not in ALIGNMENT_QUALITY_PRESETS:
+        raise ValueError("LightGlue quality must be standard or high.")
+    if strictness not in ALIGNMENT_STRICTNESS_PRESETS:
+        raise ValueError("LightGlue strictness must be strict, balanced or lenient.")
+    if not 1 <= int(temporal_neighbors) <= 10:
+        raise ValueError("Temporal neighbours must be between 1 and 10.")
+    if not 0 <= int(lateral_neighbors) <= 12:
+        raise ValueError("Lateral neighbours must be between 0 and 12.")
+    if not math.isfinite(float(maximum_pair_rotation_deg)) or not 0 <= float(maximum_pair_rotation_deg) <= 30:
+        raise ValueError("Maximum pair rotation difference must be between 0 and 30 degrees.")
     image_paths = sorted(
         path for path in Path(images_dir).iterdir()
         if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -621,14 +696,18 @@ def align_images_with_lightglue(
         entries=entries,
         records=records,
         progress=progress,
-        maximum_pair_position_error_m=min(float(maximum_position_correction_m), 12.0),
+        quality=quality,
+        strictness=strictness,
+        temporal_neighbors=temporal_neighbors,
+        lateral_neighbors=lateral_neighbors,
+        maximum_pair_rotation_deg=maximum_pair_rotation_deg,
     )
     pose_graph = apply_visual_pose_graph(
         constraints=constraints,
         records=records,
         entries=entries,
-        maximum_position_correction_m=maximum_position_correction_m,
-        maximum_rotation_correction_deg=maximum_rotation_correction_deg,
+        maximum_position_correction_m=FINAL_MAXIMUM_POSITION_CORRECTION_M,
+        maximum_rotation_correction_deg=FINAL_MAXIMUM_ORIENTATION_CORRECTION_DEG,
     )
     for image_name, entry in entries.items():
         _commit_lightglue_record(entry, records[image_name])
@@ -638,12 +717,15 @@ def align_images_with_lightglue(
         status = str(record.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
     report = {
-        "version": 1,
+        "version": 2,
         "mode": "lightglue",
         "source": {"type": "overlapping_images", "uses_reference_geojson": False},
         "options": {
-            "maximum_position_correction_m": maximum_position_correction_m,
-            "maximum_rotation_correction_deg": maximum_rotation_correction_deg,
+            "quality": quality,
+            "strictness": strictness,
+            "temporal_neighbors": temporal_neighbors,
+            "lateral_neighbors": lateral_neighbors,
+            "maximum_pair_rotation_deg": maximum_pair_rotation_deg,
         },
         "visual_matching": visual_matching,
         "visual_pose_graph": pose_graph,

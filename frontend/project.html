@@ -109,12 +109,31 @@
             <div class="statusLine tiny ok">Uses LightGlue image overlaps with GPS as the map anchor.</div>
             <div class="row wrap imageAlignmentLimits">
               <div class="modalContentField">
-                <label for="imageAlignmentMaxPosition">Maximum position correction (m)</label>
-                <input id="imageAlignmentMaxPosition" type="number" value="8" min="0.5" max="50" step="0.5" />
+                <label for="imageAlignmentQuality">Matching quality</label>
+                <select id="imageAlignmentQuality">
+                  <option value="standard" selected>Standard</option>
+                  <option value="high">High</option>
+                </select>
               </div>
               <div class="modalContentField">
-                <label for="imageAlignmentMaxRotation">Maximum orientation correction (°)</label>
-                <input id="imageAlignmentMaxRotation" type="number" value="10" min="0" max="45" step="0.5" />
+                <label for="imageAlignmentStrictness">Matching strictness</label>
+                <select id="imageAlignmentStrictness">
+                  <option value="strict">Strict</option>
+                  <option value="balanced" selected>Balanced</option>
+                  <option value="lenient">Lenient</option>
+                </select>
+              </div>
+              <div class="modalContentField">
+                <label for="imageAlignmentTemporalNeighbors">Temporal neighbours</label>
+                <input id="imageAlignmentTemporalNeighbors" type="number" value="3" min="1" max="10" step="1" />
+              </div>
+              <div class="modalContentField">
+                <label for="imageAlignmentLateralNeighbors">Lateral neighbours</label>
+                <input id="imageAlignmentLateralNeighbors" type="number" value="4" min="0" max="12" step="1" />
+              </div>
+              <div class="modalContentField">
+                <label for="imageAlignmentMaxPairRotation">Maximum pair rotation difference (°)</label>
+                <input id="imageAlignmentMaxPairRotation" type="number" value="6" min="0" max="30" step="0.5" />
               </div>
             </div>
           </div>
@@ -1388,6 +1407,15 @@
           <li>Images without sufficient verified overlap retain their original metadata.</li>
           <li>When approximate mosaicing is enabled, the mosaic is created from these final corrected poses.</li>
         </ul>
+        <h4>Alignment controls</h4>
+        <ul>
+          <li><b>Matching quality — Standard.</b> Standard analyses images at up to 768 px with 1,024 SIFT features. High uses up to 1,024 px and 2,048 features. Increasing quality can find more reliable detail in difficult thermal images, but takes more GPU/CPU time and memory. Standard is faster.</li>
+          <li><b>Matching strictness — Balanced.</b> Strict requires stronger LightGlue scores and more RANSAC agreement, reducing false alignment but potentially leaving more images unchanged. Lenient accepts weaker evidence and may align more images, but increases the chance of matching repeated panels incorrectly. Balanced is the recommended default.</li>
+          <li><b>Temporal neighbours — 3.</b> Each image is compared with the next three captures, subject to the capture-time safeguard. Increasing it can bridge missing or weak consecutive frames, but adds comparisons and may cross a flight turn. Decreasing it is faster but can fragment the alignment graph.</li>
+          <li><b>Lateral neighbours — 4.</b> Each image can be compared with up to four GPS-overlapping images from nearby flight strips. Increasing it can connect more strips but costs time and can introduce repetitive-row ambiguity. Setting it lower is safer and faster; 0 disables cross-strip comparisons.</li>
+          <li><b>Maximum pair rotation difference — 6°.</b> Pairs with a larger visual rotation difference are rejected. Increasing it helps when heading metadata is poor, but accepts more ambiguous transformations. Decreasing it is safer when images are already close to north-up, but can reject valid pairs.</li>
+        </ul>
+        <div class="workflowNote"><b>Fixed safeguards:</b> GPS consistency, scale limits and final pose-displacement limits remain internal. They prevent a permissive matching choice from moving images to a visually similar but incorrect solar row.</div>
       </div>
       <div class="modalFooter">
         <button id="btnCloseImageAlignmentInfoFooter" class="secondary" type="button">Close</button>
@@ -1714,7 +1742,7 @@
   <script src="js/map.js?v=20260901a"></script>
   <script src="js/colmap.js?v=20260901b"></script>
   <script src="js/map-overlay.js?v=20260827b"></script>
-  <script src="js/test-image-alignment.js?v=20260901c"></script>
+  <script src="js/test-image-alignment.js?v=20260901d"></script>
   <script src="js/main.js?v=20260901g"></script>
   <script src="js/postprocess.js?v=20260831b"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>

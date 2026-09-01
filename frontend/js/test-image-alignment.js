@@ -36,13 +36,21 @@
 
   function validate(){
     if(!byId("chkAlignImages")?.checked) return null;
-    const maximumPosition = Number(byId("imageAlignmentMaxPosition")?.value);
-    const maximumRotation = Number(byId("imageAlignmentMaxRotation")?.value);
-    if(!Number.isFinite(maximumPosition) || maximumPosition < 0.5 || maximumPosition > 50){
-      return "Maximum position correction must be between 0.5 and 50 metres.";
+    const quality = byId("imageAlignmentQuality")?.value;
+    const strictness = byId("imageAlignmentStrictness")?.value;
+    const temporalNeighbors = Number(byId("imageAlignmentTemporalNeighbors")?.value);
+    const lateralNeighbors = Number(byId("imageAlignmentLateralNeighbors")?.value);
+    const maximumPairRotation = Number(byId("imageAlignmentMaxPairRotation")?.value);
+    if(!["standard", "high"].includes(quality)) return "Select a valid matching quality.";
+    if(!["strict", "balanced", "lenient"].includes(strictness)) return "Select a valid matching strictness.";
+    if(!Number.isInteger(temporalNeighbors) || temporalNeighbors < 1 || temporalNeighbors > 10){
+      return "Temporal neighbours must be a whole number between 1 and 10.";
     }
-    if(!Number.isFinite(maximumRotation) || maximumRotation < 0 || maximumRotation > 45){
-      return "Maximum orientation correction must be between 0 and 45 degrees.";
+    if(!Number.isInteger(lateralNeighbors) || lateralNeighbors < 0 || lateralNeighbors > 12){
+      return "Lateral neighbours must be a whole number between 0 and 12.";
+    }
+    if(!Number.isFinite(maximumPairRotation) || maximumPairRotation < 0 || maximumPairRotation > 30){
+      return "Maximum pair rotation difference must be between 0 and 30 degrees.";
     }
     return null;
   }
@@ -52,8 +60,11 @@
     const enabled = checkbox?.checked === true && checkbox.disabled !== true;
     formData.append("image_alignment_mode", enabled ? "lightglue" : "none");
     if(!enabled) return;
-    formData.append("image_alignment_max_position_m", byId("imageAlignmentMaxPosition").value);
-    formData.append("image_alignment_max_rotation_deg", byId("imageAlignmentMaxRotation").value);
+    formData.append("image_alignment_quality", byId("imageAlignmentQuality").value);
+    formData.append("image_alignment_strictness", byId("imageAlignmentStrictness").value);
+    formData.append("image_alignment_temporal_neighbors", byId("imageAlignmentTemporalNeighbors").value);
+    formData.append("image_alignment_lateral_neighbors", byId("imageAlignmentLateralNeighbors").value);
+    formData.append("image_alignment_max_pair_rotation_deg", byId("imageAlignmentMaxPairRotation").value);
   }
 
   function init(){

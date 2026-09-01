@@ -3582,8 +3582,11 @@ async def api_test_run(
     embed_aligned_gps_for_webodm: bool = Form(default=False),
     target_surface_height_m: float = Form(default=DEFAULT_TARGET_SURFACE_HEIGHT_M),
     image_alignment_mode: str = Form(default=""),
-    image_alignment_max_position_m: float = Form(default=8.0),
-    image_alignment_max_rotation_deg: float = Form(default=10.0),
+    image_alignment_quality: str = Form(default="standard"),
+    image_alignment_strictness: str = Form(default="balanced"),
+    image_alignment_temporal_neighbors: int = Form(default=3),
+    image_alignment_lateral_neighbors: int = Form(default=4),
+    image_alignment_max_pair_rotation_deg: float = Form(default=6.0),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
@@ -3591,10 +3594,18 @@ async def api_test_run(
         raise HTTPException(status_code=400, detail="No inference backends are enabled on this server.")
     if not math.isfinite(target_surface_height_m) or target_surface_height_m < 0:
         raise HTTPException(status_code=400, detail="Target surface height must be zero or a positive number in metres.")
-    if not math.isfinite(image_alignment_max_position_m) or not 0.5 <= image_alignment_max_position_m <= 50.0:
-        raise HTTPException(status_code=400, detail="Maximum image-alignment position correction must be between 0.5 and 50 metres.")
-    if not math.isfinite(image_alignment_max_rotation_deg) or not 0.0 <= image_alignment_max_rotation_deg <= 45.0:
-        raise HTTPException(status_code=400, detail="Maximum image-alignment orientation correction must be between 0 and 45 degrees.")
+    image_alignment_quality = str(image_alignment_quality or "").strip().lower()
+    image_alignment_strictness = str(image_alignment_strictness or "").strip().lower()
+    if image_alignment_quality not in {"standard", "high"}:
+        raise HTTPException(status_code=400, detail="Image-alignment quality must be standard or high.")
+    if image_alignment_strictness not in {"strict", "balanced", "lenient"}:
+        raise HTTPException(status_code=400, detail="Image-alignment strictness must be strict, balanced or lenient.")
+    if not 1 <= image_alignment_temporal_neighbors <= 10:
+        raise HTTPException(status_code=400, detail="Temporal image neighbours must be between 1 and 10.")
+    if not 0 <= image_alignment_lateral_neighbors <= 12:
+        raise HTTPException(status_code=400, detail="Lateral image neighbours must be between 0 and 12.")
+    if not math.isfinite(image_alignment_max_pair_rotation_deg) or not 0 <= image_alignment_max_pair_rotation_deg <= 30:
+        raise HTTPException(status_code=400, detail="Maximum pair rotation difference must be between 0 and 30 degrees.")
 
     requested_backend = backend or forced_backend
     if requested_backend and requested_backend not in settings.enabled_backends:
@@ -3689,6 +3700,11 @@ async def api_test_run(
         target_surface_height_m=float(target_surface_height_m),
         image_alignment_mode=alignment_mode,
         image_alignment_enabled=alignment_enabled,
+        image_alignment_quality=image_alignment_quality,
+        image_alignment_strictness=image_alignment_strictness,
+        image_alignment_temporal_neighbors=image_alignment_temporal_neighbors,
+        image_alignment_lateral_neighbors=image_alignment_lateral_neighbors,
+        image_alignment_max_pair_rotation_deg=image_alignment_max_pair_rotation_deg,
     )
     test_logger = logging.getLogger("pvrt.test")
     test_logger.info(
@@ -4029,7 +4045,15 @@ async def api_test_run(
                 status_code=400,
                 detail="Image alignment requires readable GPS, orientation, and GSD metadata.",
             )
-        test_logger.info("UI:INFO:test: Aligning prepared images with LightGlue overlaps and GPS…")
+        test_logger.info(
+            "UI:INFO:test: Aligning prepared images with LightGlue: quality=%s, strictness=%s, "
+            "temporal neighbours=%s, lateral neighbours=%s, maximum pair rotation=%.1f°…",
+            image_alignment_quality,
+            image_alignment_strictness,
+            image_alignment_temporal_neighbors,
+            image_alignment_lateral_neighbors,
+            image_alignment_max_pair_rotation_deg,
+        )
 
         def _alignment_progress(done: int, total: int, image_name: str) -> None:
             interval = max(1, total // 10)
@@ -4045,8 +4069,11 @@ async def api_test_run(
                 images_dir=Path(run_images_dir),
                 camera_meta=camera_meta,
                 report_path=out_root / "image_alignment.json",
-                maximum_position_correction_m=float(image_alignment_max_position_m),
-                maximum_rotation_correction_deg=float(image_alignment_max_rotation_deg),
+                quality=image_alignment_quality,
+                strictness=image_alignment_strictness,
+                temporal_neighbors=int(image_alignment_temporal_neighbors),
+                lateral_neighbors=int(image_alignment_lateral_neighbors),
+                maximum_pair_rotation_deg=float(image_alignment_max_pair_rotation_deg),
                 progress=_alignment_progress,
             )
         except Exception as exc:
@@ -4421,6 +4448,7 @@ async def api_test_run(
         metrics["image_alignment_mode"] = alignment_mode
         metrics["image_alignment_enabled"] = alignment_enabled
         if image_alignment_report is not None:
+            metrics["image_alignment_options"] = image_alignment_report.get("options") or {}
             metrics["image_alignment_counts"] = image_alignment_report.get("counts") or {}
             metrics["image_alignment_source"] = image_alignment_report.get("source") or {}
             metrics["image_alignment_visual_matching"] = image_alignment_report.get("visual_matching") or {}
@@ -4458,6 +4486,7 @@ async def api_test_run(
         image_alignment_mode=alignment_mode,
         image_alignment_enabled=alignment_enabled,
         image_alignment_counts=(image_alignment_report or {}).get("counts") or {},
+        image_alignment_options=(image_alignment_report or {}).get("options") or {},
     )
     logger.info(f"UI:OK:test: Test complete. results={preds_dir}")
     return {
@@ -4490,6 +4519,7 @@ async def api_test_run(
         "image_alignment": (
             {
                 "source": image_alignment_report.get("source") or {},
+                "options": image_alignment_report.get("options") or {},
                 "counts": image_alignment_report.get("counts") or {},
                 "image_count": image_alignment_report.get("image_count", 0),
                 "visual_matching": image_alignment_report.get("visual_matching") or {},
