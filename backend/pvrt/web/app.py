@@ -36,7 +36,7 @@ import numpy as np
 import math
 from io import BytesIO
 from ..dataops.camera_geometry import compute_meters_per_pixel as _compute_meters_per_pixel
-from ..dataops.row_alignment import RowAlignmentOptions, align_rotated_images_to_rows
+from ..dataops.row_sequence_alignment import align_images_with_lightglue
 _TILER_STATS = {}
 
 # --- Optional tiler deps (best-effort) ---
@@ -55,7 +55,6 @@ except (ImportError, ModuleNotFoundError):
 from ..core.registry import register_backend
 from .bridge import train_entry, predict_entry
 from .postprocess import create_postprocess_router
-from .row_alignment import create_row_alignment_router, resolve_rows_source
 from .settings import settings
 
 if settings.enable_detectron:
@@ -1886,9 +1885,16 @@ def _preds_to_geojson(
         if cam_entry and isinstance(cam_entry.get("row_alignment"), dict):
             alignment_record = cam_entry["row_alignment"]
             props["row_alignment_status"] = alignment_record.get("status")
+            props["row_alignment_method"] = alignment_record.get("alignment_method")
             props["row_alignment_confidence"] = alignment_record.get("confidence")
             props["row_alignment_position_correction_m"] = alignment_record.get("position_correction_m")
             props["row_alignment_rotation_correction_deg"] = alignment_record.get("rotation_correction_deg")
+            props["row_alignment_neighbor_support"] = alignment_record.get("neighbor_support_count")
+            props["row_alignment_visual_temporal_support"] = alignment_record.get("visual_temporal_support")
+            props["row_alignment_visual_lateral_support"] = alignment_record.get("visual_lateral_support")
+            props["row_alignment_flight_sequence_support"] = alignment_record.get("flight_sequence_support")
+        if cam_entry and cam_entry.get("meters_per_pixel_scale") is not None:
+            props["meters_per_pixel_scale"] = cam_entry.get("meters_per_pixel_scale")
 
         # basic props
         if w_px and h_px:
@@ -2150,6 +2156,14 @@ def _preds_to_geojson(
                     "score": round(sc * 100.0, 2),
                     "image": srcfile,
                     "prediction_index": i,
+                    "image_alignment_status": (
+                        (cam_entry or {}).get("row_alignment", {}).get("status")
+                        if isinstance((cam_entry or {}).get("row_alignment"), dict) else None
+                    ),
+                    "image_alignment_method": (
+                        (cam_entry or {}).get("row_alignment", {}).get("alignment_method")
+                        if isinstance((cam_entry or {}).get("row_alignment"), dict) else None
+                    ),
                 }
             })
 
@@ -3587,11 +3601,9 @@ async def api_test_run(
     undistort_thermal: bool = Form(default=False),
     export_undistorted_images: bool = Form(default=False),
     target_surface_height_m: float = Form(default=DEFAULT_TARGET_SURFACE_HEIGHT_M),
-    align_images_to_rows: bool = Form(default=False),
-    row_alignment_job_id: Optional[str] = Form(default=None),
-    row_alignment_path: Optional[str] = Form(default=None),
-    row_alignment_max_position_m: float = Form(default=8.0),
-    row_alignment_max_rotation_deg: float = Form(default=10.0),
+    image_alignment_mode: str = Form(default=""),
+    image_alignment_max_position_m: float = Form(default=8.0),
+    image_alignment_max_rotation_deg: float = Form(default=10.0),
     optimization_project: Optional[str] = Form(default=None),
     clear_existing: bool = Form(default=False),
 ):
@@ -3599,10 +3611,10 @@ async def api_test_run(
         raise HTTPException(status_code=400, detail="No inference backends are enabled on this server.")
     if not math.isfinite(target_surface_height_m) or target_surface_height_m < 0:
         raise HTTPException(status_code=400, detail="Target surface height must be zero or a positive number in metres.")
-    if not math.isfinite(row_alignment_max_position_m) or not 0.5 <= row_alignment_max_position_m <= 50.0:
-        raise HTTPException(status_code=400, detail="Maximum row-alignment position correction must be between 0.5 and 50 metres.")
-    if not math.isfinite(row_alignment_max_rotation_deg) or not 0.0 <= row_alignment_max_rotation_deg <= 45.0:
-        raise HTTPException(status_code=400, detail="Maximum row-alignment orientation correction must be between 0 and 45 degrees.")
+    if not math.isfinite(image_alignment_max_position_m) or not 0.5 <= image_alignment_max_position_m <= 50.0:
+        raise HTTPException(status_code=400, detail="Maximum image-alignment position correction must be between 0.5 and 50 metres.")
+    if not math.isfinite(image_alignment_max_rotation_deg) or not 0.0 <= image_alignment_max_rotation_deg <= 45.0:
+        raise HTTPException(status_code=400, detail="Maximum image-alignment orientation correction must be between 0 and 45 degrees.")
 
     requested_backend = backend or forced_backend
     if requested_backend and requested_backend not in settings.enabled_backends:
@@ -3635,22 +3647,17 @@ async def api_test_run(
     if source_mode not in {"individual", "mosaic"}:
         raise HTTPException(status_code=400, detail="Inference source must be ‘individual’ or ‘mosaic’.")
     mosaic_enabled = bool(create_mosaic or mosaic_enabled or source_mode == "mosaic")
-    rows_source_path: Optional[Path] = None
-    if align_images_to_rows:
-        if mosaic_enabled:
-            raise HTTPException(
-                status_code=400,
-                detail="Rows alignment currently supports individual-image inference only. Disable approximate mosaic creation.",
-            )
-        if not row_alignment_job_id or not row_alignment_path:
-            raise HTTPException(status_code=400, detail="Select a post-processing job and Rows GeoJSON for image alignment.")
-        try:
-            rows_source_path = resolve_rows_source(
-                get_project_sessions_dir(project), row_alignment_job_id, row_alignment_path,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    alignment_mode = str(image_alignment_mode or "").strip().lower()
+    if not alignment_mode:
+        alignment_mode = "none"
+    if alignment_mode not in {"none", "lightglue"}:
+        raise HTTPException(status_code=400, detail="Image alignment mode must be none or lightglue.")
+    alignment_enabled = alignment_mode != "none"
+    if alignment_enabled and mosaic_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Image alignment supports individual-image inference only. Disable approximate mosaic creation.",
+        )
     session = (_safe_name(result_name) or _now_stamp())
     base = get_project_sessions_dir(project)
     ses = base / session
@@ -3694,9 +3701,8 @@ async def api_test_run(
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
         target_surface_height_m=float(target_surface_height_m),
-        align_images_to_rows=bool(align_images_to_rows),
-        row_alignment_job_id=row_alignment_job_id if align_images_to_rows else None,
-        row_alignment_path=row_alignment_path if align_images_to_rows else None,
+        image_alignment_mode=alignment_mode,
+        image_alignment_enabled=alignment_enabled,
     )
     test_logger = logging.getLogger("pvrt.test")
     test_logger.info(
@@ -3720,8 +3726,8 @@ async def api_test_run(
             "UI:OK:test: Lens correction skipped: orthophotos are already geometrically corrected products."
         )
         undistort_thermal = False
-    if align_images_to_rows and input_type != "images":
-        raise HTTPException(status_code=400, detail="Rows alignment requires a folder of individual images.")
+    if alignment_enabled and input_type != "images":
+        raise HTTPException(status_code=400, detail="Image alignment requires a folder of individual images.")
 
     accurate_locations = bool(accurate_locations)
     if accurate_locations and input_type != "images":
@@ -4027,55 +4033,54 @@ async def api_test_run(
     tiles_dir = rotation_result.tiles_dir
     tif_src = rotation_result.tif_src
 
-    row_alignment_report: Optional[dict[str, Any]] = None
-    if align_images_to_rows:
+    image_alignment_report: Optional[dict[str, Any]] = None
+    if alignment_enabled:
         if input_type != "images" or Path(run_images_dir).name != "rotated_images":
             raise HTTPException(
                 status_code=400,
-                detail="Rows alignment requires successfully prepared north-up images.",
+                detail="Image alignment requires successfully prepared north-up images.",
             )
-        if not camera_meta or rows_source_path is None:
+        if not camera_meta:
             raise HTTPException(
                 status_code=400,
-                detail="Rows alignment requires readable GPS, orientation, and GSD metadata.",
+                detail="Image alignment requires readable GPS, orientation, and GSD metadata.",
             )
-        test_logger.info("UI:INFO:test: Aligning prepared images to solar rows…")
+        test_logger.info("UI:INFO:test: Aligning prepared images with LightGlue overlaps and GPS…")
 
         def _alignment_progress(done: int, total: int, image_name: str) -> None:
             interval = max(1, total // 10)
             if done == 1 or done == total or done % interval == 0:
                 test_logger.info(
-                    "UI:INFO:test: Solar-row alignment progress: %s/%s (%s)",
+                    "UI:INFO:test: Image alignment progress: %s/%s (%s)",
                     done, total, image_name,
                 )
 
         try:
-            row_alignment_report = await asyncio.to_thread(
-                align_rotated_images_to_rows,
+            image_alignment_report = await asyncio.to_thread(
+                align_images_with_lightglue,
                 images_dir=Path(run_images_dir),
                 camera_meta=camera_meta,
-                rows_geojson=rows_source_path,
-                report_path=out_root / "row_alignment.json",
-                source={"job_id": row_alignment_job_id, "path": row_alignment_path},
-                options=RowAlignmentOptions(
-                    maximum_position_correction_m=float(row_alignment_max_position_m),
-                    maximum_rotation_correction_deg=float(row_alignment_max_rotation_deg),
-                ),
+                report_path=out_root / "image_alignment.json",
+                maximum_position_correction_m=float(image_alignment_max_position_m),
+                maximum_rotation_correction_deg=float(image_alignment_max_rotation_deg),
                 progress=_alignment_progress,
             )
         except Exception as exc:
             _write_result_status(out_root, "failed", dataset=dataset, model=model_dir.name, error=str(exc))
-            test_logger.error("UI:ERR:test: Solar-row alignment failed: %s", exc)
-            raise HTTPException(status_code=400, detail=f"Solar-row alignment failed: {exc}") from exc
+            test_logger.error("UI:ERR:test: Image alignment failed: %s", exc)
+            raise HTTPException(status_code=400, detail=f"Image alignment failed: {exc}") from exc
         (out_root / "camera_meta.json").write_text(json.dumps(camera_meta, indent=2), encoding="utf-8")
-        alignment_counts = row_alignment_report.get("counts") or {}
+        alignment_counts = image_alignment_report.get("counts") or {}
         aligned_count = int(alignment_counts.get("aligned", 0))
-        total_alignment_images = int(row_alignment_report.get("image_count", 0))
+        total_alignment_images = int(image_alignment_report.get("image_count", 0))
+        visual_matching = image_alignment_report.get("visual_matching") or {}
         test_logger.info(
-            "UI:OK:test: Solar-row alignment complete: %s aligned, %s retained original metadata, %s total.",
+            "UI:OK:test: LightGlue alignment complete: %s aligned, %s retained original metadata, "
+            "%s total; %s verified temporal/lateral image pairs; GPS retained as the absolute map anchor.",
             aligned_count,
             max(0, total_alignment_images - aligned_count),
             total_alignment_images,
+            int(visual_matching.get("verified_pairs") or 0),
         )
     prepared_count = sum(
         1 for path in run_images_dir.iterdir()
@@ -4389,10 +4394,13 @@ async def api_test_run(
         metrics["inference_source"] = source_mode
         metrics["mosaic_created"] = mosaic_enabled
         metrics["target_surface_height_m"] = float(target_surface_height_m)
-        metrics["row_alignment_enabled"] = bool(align_images_to_rows)
-        if row_alignment_report is not None:
-            metrics["row_alignment_counts"] = row_alignment_report.get("counts") or {}
-            metrics["row_alignment_source"] = row_alignment_report.get("source") or {}
+        metrics["image_alignment_mode"] = alignment_mode
+        metrics["image_alignment_enabled"] = alignment_enabled
+        if image_alignment_report is not None:
+            metrics["image_alignment_counts"] = image_alignment_report.get("counts") or {}
+            metrics["image_alignment_source"] = image_alignment_report.get("source") or {}
+            metrics["image_alignment_visual_matching"] = image_alignment_report.get("visual_matching") or {}
+            metrics["image_alignment_visual_pose_graph"] = image_alignment_report.get("visual_pose_graph") or {}
         if tif_src is not None:
             metrics.setdefault("source_tifs", [])
             if str(tif_src) not in metrics["source_tifs"]:
@@ -4418,8 +4426,9 @@ async def api_test_run(
         inference_source=source_mode,
         mosaic_created=mosaic_enabled,
         target_surface_height_m=float(target_surface_height_m),
-        row_alignment_enabled=bool(align_images_to_rows),
-        row_alignment_counts=(row_alignment_report or {}).get("counts") or {},
+        image_alignment_mode=alignment_mode,
+        image_alignment_enabled=alignment_enabled,
+        image_alignment_counts=(image_alignment_report or {}).get("counts") or {},
     )
     logger.info(f"UI:OK:test: Test complete. results={preds_dir}")
     return {
@@ -4445,15 +4454,17 @@ async def api_test_run(
         "inference_source": source_mode,
         "mosaic_created": mosaic_enabled,
         "target_surface_height_m": float(target_surface_height_m),
-        "row_alignment_enabled": bool(align_images_to_rows),
-        "row_alignment": (
+        "image_alignment_mode": alignment_mode,
+        "image_alignment_enabled": alignment_enabled,
+        "image_alignment": (
             {
-                "source": row_alignment_report.get("source") or {},
-                "counts": row_alignment_report.get("counts") or {},
-                "image_count": row_alignment_report.get("image_count", 0),
-                "row_line_count": row_alignment_report.get("row_line_count", 0),
+                "source": image_alignment_report.get("source") or {},
+                "counts": image_alignment_report.get("counts") or {},
+                "image_count": image_alignment_report.get("image_count", 0),
+                "visual_matching": image_alignment_report.get("visual_matching") or {},
+                "visual_pose_graph": image_alignment_report.get("visual_pose_graph") or {},
             }
-            if row_alignment_report is not None else None
+            if image_alignment_report is not None else None
         ),
         "assets": assets,
         "backend": presp.get("used_backend"),
@@ -5595,7 +5606,6 @@ async def serve_project_file(file_path: str):
 app.include_router(
     create_postprocess_router(get_project_sessions_dir, get_project_overlays_dir, _media_url, logger)
 )
-app.include_router(create_row_alignment_router(get_project_sessions_dir))
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")
 if FRONTEND_DIR.exists():

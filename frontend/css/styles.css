@@ -252,8 +252,8 @@ button:disabled{ opacity:0.5; cursor:not-allowed; }
 }
 .testAdvancedSubsection .modalContentField { margin: 0 0 12px; }
 .testAdvancedSubsection .modalContentField:last-child { margin-bottom: 0; }
-.rowAlignmentLimits { align-items: flex-start; gap: 14px; }
-.rowAlignmentLimits .modalContentField { flex: 1 1 220px; }
+.imageAlignmentLimits { align-items: flex-start; gap: 14px; }
+.imageAlignmentLimits .modalContentField { flex: 1 1 220px; }
 @media (max-width:600px){
   .trainingUploadSources{ grid-template-columns:1fr; }
   .trainingUploadOr{ text-align:center; }

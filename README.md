@@ -1,8 +1,8 @@
 # SolarOly Project
 
-SolarOly is an end-to-end inspection console for Solar PV. It ingests DJI thermal flights, orthophotos, then turns them into actionable anomaly reports that can be reviewed, exported, or pushed into downstream GIS tools.
+SolarOly is an end-to-end inspection console for Solar PV. It ingests DJI thermal flights and orthophotos, then turns them into actionable anomaly reports that can be reviewed, exported, or pushed into downstream GIS tools.
 
-This repository packages the FastAPI backend that drives thermal decoding, Detectron2/YOLO inference, COLMAP-assisted alignment, and batch utilities, plus the single-page frontend that manages uploads, project workspaces, training knobs, and map reviews. Feature flags (`PVRT_ENABLE_*`) keep heavy integrations opt-in so the same codebase runs on a laptop or a GPU workstation without code changes.
+This repository packages the FastAPI backend that drives thermal decoding, Detectron2/YOLO inference, LightGlue image-overlap alignment, optional COLMAP workflows, and batch utilities, plus the single-page frontend that manages uploads, project workspaces, training knobs, and map reviews. Feature flags (`PVRT_ENABLE_*`) keep heavy integrations opt-in so the same codebase runs on a laptop or a GPU workstation without code changes.
 
 **Use SolarOly to:**
 - Create isolated projects for different sites and keep train/test data, outputs, overlays, and logs neatly partitioned.
@@ -17,6 +17,7 @@ This repository packages the FastAPI backend that drives thermal decoding, Detec
 - Dual inference engines (Detectron2 and YOLOv8) plus optional COLMAP pose refinement exposed through feature flags so heavy integrations stay opt-in.
 - Server-Sent Events stream live logs for training, testing, mosaicking, and ZIP uploads directly into the browser.
 - DJI Thermal SDK integration decodes 16-bit radiometric frames, preserves metadata, and falls back to RGB thermal renders when raw extraction is unavailable.
+- Optional SIFT + LightGlue matching refines the horizontal position and residual in-plane orientation of overlapping individual images before prediction GeoJSON is generated.
 - Built-in tools regenerate GeoJSON, rotate/align frames, tile orthophotos, and rebuild thermal mosaics directly from COLMAP camera poses.
 
 ---
@@ -63,6 +64,7 @@ The committed `requirements.txt` lists *all* integrations. Comment out the lines
 | YOLOv8 pipeline | `ultralytics>=8.3.0,<9.0.0` plus the shared OpenCV/numpy stack already present | Comment `ultralytics` if Detectron2 is the only backend you ship. | `PVRT_ENABLE_YOLO=0/1` |
 | CUDA accelerators | All `nvidia-*` wheels plus CUDA-specific Torch builds | Comment GPU wheels and install CPU Torch (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) when no CUDA-capable device exists. | Not flag-controlled; match your hardware |
 | DJI Thermal SDK (optional) | `dji-thermal-sdk==0.0.2`, `opencv-python-headless`, `tifffile`, `piexif`, `exif` | Comment this block if you never ingest DJI R-JPEG/radiometric frames. Keep it to unlock grayscale thermal extraction, temperature metadata, and the COLMAP-driven thermal mosaic pipeline. | `PVRT_ENABLE_THERMAL=0/1` (drives the shared `thermal_data_extraction` flag; when 0 the UI hides "Use thermal" toggles and the backend rejects decode/train/test requests that require DJI payloads) + export `DIRP_SDK_PATH`, `LD_LIBRARY_PATH` when enabled |
+| LightGlue individual-image alignment | `lightglue @ git+https://github.com/cvg/LightGlue.git@edb2b8...`, `kornia`, `torch`, `torchvision`, `opencv-python-headless` | Keep these when raw thermal-image GPS/orientation is not accurate enough and prediction GeoJSON must align with an optical orthophoto. Without LightGlue, leave **Align individual images before inference** disabled. | Selected per test run under **Test → Advanced**; CUDA is used when available and CPU remains supported. |
 | COLMAP-assisted alignment | Installed separately via `conda install -c conda-forge colmap` or system packages | Skip entirely if you only need per-frame inference. | `PVRT_ENABLE_COLMAP=0/1` |
 
 **Base requirement:** PyTorch (`torch`, `torchvision`, `torchaudio`, `triton`) is always needed because both Detectron2 and YOLO sit on top of it. Install the CUDA wheels shown in `requirements.txt` or swap in the CPU-only wheels before enabling either backend.
@@ -163,11 +165,17 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 ### 7.1 Single DJI Frame Inference
 1. **Upload** JPG/R-JPEG bundles under *Test → Uploads*. The server unpacks them into `test/data/uploads` for the active project.
 2. **Thermal extraction / fallback:** With the DJI SDK installed and `PVRT_ENABLE_THERMAL=1`, the platform decodes DJI R-JPEG files into 16-bit grayscale rasters and exposes temperature metadata. If you skipped the SDK (non-DJI thermal cameras or RGB-only workflows) and set `PVRT_ENABLE_THERMAL=0`, the UI auto-disables the "Use thermal" checkbox and the API blocks decode/train/test calls that would require DJI libraries. RGB imagery or pre-rendered thermal PNG/JPEG files still run normally, but grayscale extraction and temperature readouts remain unavailable.
-3. **Rotation & normalization:** Metadata-driven heading correction rotates each frame north-up. If rotation scripts fail or metadata is missing, the system continues with the original orientation but flags the session in the log.
+3. **Rotation, normalization, and optional alignment:** Metadata-driven heading correction rotates each frame north-up. With **Align individual images before inference** enabled, SIFT + LightGlue matches temporal and lateral overlapping frames, then a GPS-anchored pose graph refines horizontal position and residual in-plane orientation. Images without a verified connected match retain their original metadata.
 4. **Inference:**
    - Detectron2: loads the configured `model_final.pth` under `train/outputs/<run>/weights/` and respects batch size/thresholds from the UI.
    - YOLOv8: uses Ultralytics models; per-image overlays are rendered with CV2, stored in `test/outputs/<session>/overlays`, and summarized via `raw_results_summary.json` and `metrics.json` (see `backend/pvrt/backends/yolo/infer.py`).
-5. **Geo outputs:** Every run writes `preds/*.json`, `rotated_images/`, `images.geojson`, `anomalies.geojson`, overlays, and `test.log`. The frontend map tab consumes the GeoJSON directly and renders anomalies + camera markers.
+5. **Geo outputs:** Every run writes `preds/*.json`, `rotated_images/`, `images.geojson`, `predictions.geojson`, overlays, and `test.log`. When LightGlue alignment is enabled, both image footprints and prediction polygons are generated from the corrected per-image metadata. The frontend map renders the GeoJSON directly with camera markers and prepared source imagery.
+
+#### Optional LightGlue image-overlap alignment
+
+Enable **Test → Advanced → Align individual images before inference** for individual-image input whose DJI GPS and heading do not place thermal frames accurately enough against an optical orthophoto. The runtime extracts SIFT features, verifies temporal and lateral neighbor matches with LightGlue, and jointly solves bounded east/north and residual rotation corrections while retaining GPS as the absolute map anchor. Alignment runs after lens correction and north-up preparation and before inference. Corrected metadata is saved to `camera_meta.json`, detailed matching decisions are saved to `image_alignment.json`, and the corrected pose is used consistently by `images.geojson` and `predictions.geojson`.
+
+LightGlue alignment is a planar placement refinement, not a photogrammetric reconstruction. It does not estimate corrected altitude, pitch, roll, terrain, or a complete calibrated 3D camera pose. Images without sufficient verified overlap keep their original location. Install the pinned official LightGlue dependency and Kornia from `requirements.txt`; the Docker build also performs a LightGlue SIFT initialization check.
 
 #### Optional runtime lens correction
 

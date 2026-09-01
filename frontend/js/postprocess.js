@@ -1191,26 +1191,13 @@
     };
   }
 
-  function applyReferenceImageRotation(overlay, rotationDegrees) {
-    const rotation = Number(rotationDegrees || 0);
-    const apply = () => {
-      const element = overlay?.getElement?.();
-      if (!element) return;
-      element.style.transformOrigin = "center center";
-      element.style.rotate = Math.abs(rotation) > 1e-6 ? `${rotation}deg` : "";
-    };
-    overlay?.on?.("load", apply);
-    requestAnimationFrame(apply);
-  }
-
   function createReferenceImageOverlay(imageUrl, record, opacity) {
-    const image = window.L.imageOverlay(imageUrl, record.overlayBounds || record.bounds, {
+    return window.createGeoreferencedImageOverlay(imageUrl, record.corners, {
+      bounds: record.overlayBounds || record.bounds,
       pane: "ppRasterPane",
       opacity,
       interactive: false,
     });
-    applyReferenceImageRotation(image, record.rotation);
-    return image;
   }
 
   function imageOverlayUrl(properties, overlayByName) {
@@ -1302,7 +1289,6 @@
         byId("ppReferenceStatus").textContent = "Linked anomaly image removed from the map.";
       } else {
         match.item.layer.addLayer(image);
-        applyReferenceImageRotation(image, match.record.rotation);
         if (!state.map.hasLayer(match.item.layer)) match.item.layer.addTo(state.map);
         button.textContent = "Remove image";
         byId("ppReferenceStatus").textContent = "Linked anomaly image is visible on the map.";
@@ -1358,6 +1344,7 @@
         bounds,
         overlayBounds: placement.bounds,
         rotation: placement.rotation,
+        corners: Array.isArray(properties.corners) ? properties.corners : null,
         matchTokens: imageMatchTokens(properties.image, properties.file, properties.src, properties.name),
       };
       const footprintPoints = imageFootprintPoints(feature);
@@ -1395,7 +1382,6 @@
           byId("ppReferenceStatus").textContent = "Linked image hidden.";
         } else {
           item.layer.addLayer(image);
-          applyReferenceImageRotation(image, record.rotation);
           byId("ppReferenceStatus").textContent = "Linked image loaded. Click its footprint again to hide it.";
         }
       });

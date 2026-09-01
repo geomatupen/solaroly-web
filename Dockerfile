@@ -19,7 +19,8 @@ RUN pip install --upgrade pip setuptools wheel \
     && pip install -r requirements.txt \
     && pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install 'git+https://github.com/facebookresearch/detectron2.git' \
-    && pip install ultralytics==8.0.*
+    && pip install ultralytics==8.0.* \
+    && python -c "from lightglue import LightGlue; LightGlue(features='sift')"
 
 COPY . .
 

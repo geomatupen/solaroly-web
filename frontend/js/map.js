@@ -62,6 +62,7 @@ let lastLoadedSessionName = null;
 let lastLoadedImagesUrl = null;
 let lastLoadedSessionSummary = null;
 let rotatedImagesLookup = null;     // cached map of basename -> rotated URL
+let mapAssetCacheVersion = "";      // changes whenever a result is loaded/reloaded
 
 // camera position overrides loaded from an uploaded WebODM camera-positions JSON
 // keyed by normalized basename (no extension), value: { lon, lat, alt }
@@ -106,18 +107,6 @@ function clearImageOverlays(){
   imageOverlays.clear();
 }
 
-function applyImageOverlayRotation(overlay, rotationDegrees){
-  const rotation = Number(rotationDegrees || 0);
-  const apply = () => {
-    const element = overlay?.getElement?.();
-    if (!element) return;
-    element.style.transformOrigin = 'center center';
-    element.style.rotate = Math.abs(rotation) > 1e-6 ? `${rotation}deg` : '';
-  };
-  overlay?.on?.('load', apply);
-  requestAnimationFrame(apply);
-}
-
 // turn one image overlay on/off by id
 function toggleImageOverlay(id, on){
   const rec = imageCatalog.find(x => x.id === id);
@@ -126,15 +115,16 @@ function toggleImageOverlay(id, on){
   let ov = imageOverlays.get(id);
   if (on){
     if (!ov){
-      // create overlay using provided bounds (may be conservative bbox of corners)
-      ov = L.imageOverlay(rec.url, rec.bounds, { opacity: imagesOpacity, interactive: false });
-      applyImageOverlayRotation(ov, rec.rotation);
+      ov = window.createGeoreferencedImageOverlay(rec.url, rec.corners, {
+        bounds: rec.bounds,
+        opacity: imagesOpacity,
+        interactive: false,
+      });
       imageOverlays.set(id, ov);
     } else {
       try { ov.setOpacity(imagesOpacity); } catch(_){ }
     }
     ov.addTo(imagesLayerGroup);
-    applyImageOverlayRotation(ov, rec.rotation);
     rec.on = true;
 
   } else {

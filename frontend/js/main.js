@@ -1750,9 +1750,9 @@ async function runTest(){
     setHidden($("#spinTest"), true);
     return;
   }
-  const rowAlignmentError = window.TestRowAlignment?.validate?.();
-  if(rowAlignmentError){
-    warn("test", rowAlignmentError);
+  const imageAlignmentError = window.TestImageAlignment?.validate?.();
+  if(imageAlignmentError){
+    warn("test", imageAlignmentError);
     setHidden($("#spinTest"), true);
     return;
   }
@@ -1780,7 +1780,7 @@ async function runTest(){
   fd.append("clear_existing", clearExisting ? "true" : "false");
   fd.append("test_threshold", testThreshold);
   fd.append("target_surface_height_m", String(targetSurfaceHeight));
-  window.TestRowAlignment?.appendFormData?.(fd);
+  window.TestImageAlignment?.appendFormData?.(fd);
   const correctLensDistortion = document.getElementById("chkUndistortThermal")?.checked === true;
   fd.append("undistort_thermal", correctLensDistortion ? "true" : "false");
   fd.append(
@@ -1979,17 +1979,22 @@ function buildNameVariantSet(...values){
 }
 
 function resolveFeatureOverlayUrl(featureProps, overlayByName, sessionRoot){
+  const currentAssetUrl = value => {
+    if(typeof value !== 'string' || !value || !mapAssetCacheVersion) return value;
+    const separator = value.includes('?') ? '&' : '?';
+    return `${value}${separator}result_v=${encodeURIComponent(mapAssetCacheVersion)}`;
+  };
   const preparedImage = featureProps?.prepared_image;
   if (typeof preparedImage === 'string' && preparedImage) {
-    if (preparedImage.startsWith('/api/project_file/')) return preparedImage;
+    if (preparedImage.startsWith('/api/project_file/')) return currentAssetUrl(preparedImage);
     const projected = toProjectFileUrlFromValue(preparedImage);
-    if (projected) return projected;
+    if (projected) return currentAssetUrl(projected);
   }
   const overlayProp = featureProps?.overlay;
   if (typeof overlayProp === 'string' && overlayProp) {
-    if (overlayProp.startsWith('/api/project_file/')) return overlayProp;
+    if (overlayProp.startsWith('/api/project_file/')) return currentAssetUrl(overlayProp);
     const projected = toProjectFileUrlFromValue(overlayProp);
-    if (projected) return projected;
+    if (projected) return currentAssetUrl(projected);
   }
 
   const srcRaw = featureProps?.src || featureProps?.image || featureProps?.file || featureProps?.name;
@@ -1999,13 +2004,13 @@ function resolveFeatureOverlayUrl(featureProps, overlayByName, sessionRoot){
   const stem = srcFile.replace(/\.[^.]+$/, '');
   const overlayName = `${stem}.png`;
   const fromSummary = overlayByName.get(overlayName);
-  if (fromSummary) return fromSummary;
+  if (fromSummary) return currentAssetUrl(fromSummary);
 
   const rotated = getRotatedImageUrl(srcFile);
-  if (rotated) return rotated;
+  if (rotated) return currentAssetUrl(rotated);
 
   const canUseSessionRoot = sessionRoot && !sessionRoot.includes('/api/project_file/');
-  return canUseSessionRoot ? `${sessionRoot}overlays/${encodeURIComponent(overlayName)}` : null;
+  return canUseSessionRoot ? currentAssetUrl(`${sessionRoot}overlays/${encodeURIComponent(overlayName)}`) : null;
 }
 
 function ensureRotatedLookup(){
@@ -2358,7 +2363,23 @@ function popupImageToggleButtonHTML(props){
 
 function findImageRecordForFeature(props){
   if (!props) return null;
-  const targetTokens = buildNameVariantSet(props.image, props.file, props.name, props.src);
+
+  // Predictions store their originating image in `image`. Prefer an exact
+  // basename/stem match before considering legacy aliases so the popup never
+  // opens a similarly named neighboring capture.
+  const sourceValues = [props.image, props.file, props.src, props.name]
+    .filter(value => value != null && String(value).trim());
+  for (const sourceValue of sourceValues){
+    const basename = extractAssetBasename(sourceValue).trim().toLowerCase();
+    const stem = basename.replace(/\.[^.]+$/, '');
+    for (const rec of imageCatalog){
+      const recBasename = extractAssetBasename(rec?.name || rec?.id).trim().toLowerCase();
+      const recStem = recBasename.replace(/\.[^.]+$/, '');
+      if ((basename && recBasename === basename) || (stem && recStem === stem)) return rec;
+    }
+  }
+
+  const targetTokens = buildNameVariantSet(...sourceValues);
   if (!targetTokens.size) return null;
   for (const rec of imageCatalog){
     if (!rec) continue;
@@ -2377,8 +2398,11 @@ function findImageRecordForFeature(props){
 let anomaliesProp = 'class_name';  // current property to color by
 
 async function loadGeoJSON(url){
-  const res = await fetch(url);
-  const gj = await res.json();
+  // A result name may be rerun in place. Never reuse an older prediction
+  // response against freshly generated image placement metadata.
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Failed to load prediction GeoJSON (${res.status})`);
+  const gj = applyCameraPositionOverridesToPredictions(await res.json());
 
   const base = overlayRegistry["Predictions"]?.style || {
     color: "#ff5722", weight: 1, opacity: 1,
@@ -2655,6 +2679,53 @@ function parseCameraPositionsFeatureCollection(gj){
   return out;
 }
 
+function cameraMetadataForImage(name){
+  const metadata = lastLoadedSessionSummary?.camera_meta;
+  if(!metadata || typeof metadata !== 'object') return null;
+  const target = normalizeBasename(name);
+  if(!target) return null;
+  for(const [key, value] of Object.entries(metadata)){
+    if(!key.startsWith('__') && value && typeof value === 'object' && normalizeBasename(key) === target){
+      return value;
+    }
+  }
+  return null;
+}
+
+function translateGeoJsonCoordinates(value, deltaLongitude, deltaLatitude){
+  if(!Array.isArray(value)) return value;
+  if(value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))){
+    return [
+      Number(value[0]) + deltaLongitude,
+      Number(value[1]) + deltaLatitude,
+      ...value.slice(2),
+    ];
+  }
+  return value.map(item => translateGeoJsonCoordinates(item, deltaLongitude, deltaLatitude));
+}
+
+function applyCameraPositionOverridesToPredictions(featureCollection){
+  if(!featureCollection || !Array.isArray(featureCollection.features)) return featureCollection;
+  if(!Object.keys(cameraPositionOverrides).length) return featureCollection;
+  for(const feature of featureCollection.features){
+    const properties = feature?.properties || {};
+    const imageName = properties.image || properties.file || properties.name || properties.src;
+    const override = findOverrideForName(imageName);
+    const metadata = cameraMetadataForImage(imageName);
+    const originalLongitude = Number(metadata?.lon);
+    const originalLatitude = Number(metadata?.lat);
+    if(!override || !feature?.geometry || !Array.isArray(feature.geometry.coordinates)
+      || !Number.isFinite(originalLongitude) || !Number.isFinite(originalLatitude)) continue;
+    feature.geometry.coordinates = translateGeoJsonCoordinates(
+      feature.geometry.coordinates,
+      Number(override.lon) - originalLongitude,
+      Number(override.lat) - originalLatitude,
+    );
+    properties.camera_position_override_applied = true;
+  }
+  return featureCollection;
+}
+
 function updateCameraPositionsInfo(matched, total){
   const el = document.getElementById('cameraPositionsInfo');
   if(!el) return;
@@ -2665,9 +2736,9 @@ function updateCameraPositionsInfo(matched, total){
 async function clearCameraPositions(){
   cameraPositionOverrides = {};
   updateCameraPositionsInfo(0,0);
-  // re-render current session images if any
+  // Reload both image and prediction layers so they share one coordinate frame.
   if(lastLoadedSessionName){
-    await loadImagesCatalog(lastLoadedSessionName, lastLoadedImagesUrl);
+    await applySessionToMap(lastLoadedSessionName);
   }
 }
 
@@ -2710,6 +2781,7 @@ function waitForMapTiles(layers, timeoutMs = 10000){
 }
 
 async function applySessionToMap(sessionName){
+  mapAssetCacheVersion = `${sessionName}-${Date.now()}`;
   setMapSectionLoading(true, "Loading result map…");
   setImagesSectionLoading("Checking geospatial imagery…");
   try {
@@ -2941,9 +3013,55 @@ function installImageMarkers(gj) {
     };
 
     const layer = L.geoJSON(gj, {
-      pointToLayer: (feat, latlng) =>
-        L.circleMarker(latlng, { radius: 4, ...style })
-          .bindPopup(`<div class="mini"><b>Image:</b> ${escapeHtml(feat?.properties?.image || feat?.properties?.name || feat?.properties?.file || '')}</div>`)
+      pointToLayer: (feat, latlng) => {
+        const properties = feat?.properties || {};
+        const aligned = properties.row_alignment_status === 'aligned';
+        const temporalSupport = Number(properties.row_alignment_visual_temporal_support);
+        const lateralSupport = Number(properties.row_alignment_visual_lateral_support);
+        const poseGraphAligned = properties.row_alignment_method === 'lightglue_pose_graph';
+        const sequenceOnly = aligned
+          && poseGraphAligned
+          && (!Number.isFinite(temporalSupport) || temporalSupport <= 0)
+          && (!Number.isFinite(lateralSupport) || lateralSupport <= 0);
+        const status = aligned
+            ? sequenceOnly
+            ? 'Aligned from flight-sequence continuity'
+            : properties.row_alignment_method === 'lightglue_pose_graph'
+              ? 'Aligned with LightGlue image overlaps and GPS'
+              : 'Aligned with image overlaps and GPS'
+          : properties.row_alignment_status === 'retained_original'
+            ? 'Original camera position retained'
+            : null;
+        const markerColor = aligned
+          ? sequenceOnly ? '#3b82f6' : '#22c55e'
+          : properties.row_alignment_status === 'retained_original'
+            ? '#f59e0b'
+            : '#ef4444';
+        const corners = properties.corners;
+        const markerLatLng = Array.isArray(corners) && corners.length >= 4
+          ? L.latLng(
+              corners.slice(0, 4).reduce((sum, corner) => sum + Number(corner[1]), 0) / 4,
+              corners.slice(0, 4).reduce((sum, corner) => sum + Number(corner[0]), 0) / 4,
+            )
+          : latlng;
+        const scale = Number(properties.meters_per_pixel_scale);
+        const details = [
+          `<b>Image:</b> ${escapeHtml(properties.image || properties.name || properties.file || '')}`,
+          status ? `<b>Placement:</b> ${escapeHtml(status)}` : '',
+          Number.isFinite(temporalSupport) ? `<b>Temporal matches:</b> ${temporalSupport}` : '',
+          Number.isFinite(lateralSupport) ? `<b>Lateral matches:</b> ${lateralSupport}` : '',
+          Number.isFinite(scale) ? `<b>Shared GSD scale:</b> ×${scale.toFixed(2)}` : '',
+        ].filter(Boolean).join('<br>');
+        return L.circleMarker(markerLatLng, {
+          radius: 5,
+          ...style,
+          color: markerColor,
+          fillColor: markerColor,
+          fillOpacity: aligned ? 0.78 : 0.9,
+        })
+          .bindTooltip(`${properties.image || properties.name || properties.file || 'Image'} · ${status || 'Alignment unavailable'}`, { sticky: true })
+          .bindPopup(`<div class="mini">${details}</div>`);
+      }
     }).addTo(MAP);
 
     overlayRegistry[key] = { layer, type: 'geojson', style };
@@ -3007,8 +3125,19 @@ async function loadImagesCatalog(sessionName, imagesUrl){
           const ov = findOverrideForName(file);
           if (ov){
             // replace geometry coordinates [lon, lat, (alt)]
+            const previousCoordinates = Array.isArray(f?.geometry?.coordinates)
+              ? f.geometry.coordinates.slice()
+              : null;
             f.geometry = f.geometry || { type: 'Point', coordinates: [ov.lon, ov.lat] };
             f.geometry.coordinates = [ov.lon, ov.lat].concat(ov.alt != null ? [ov.alt] : []);
+            const deltaLongitude = previousCoordinates ? ov.lon - Number(previousCoordinates[0]) : 0;
+            const deltaLatitude = previousCoordinates ? ov.lat - Number(previousCoordinates[1]) : 0;
+            if(Array.isArray(f?.properties?.corners)){
+              f.properties.corners = f.properties.corners.map(corner => [
+                Number(corner[0]) + deltaLongitude,
+                Number(corner[1]) + deltaLatitude,
+              ]);
+            }
             matched++;
           }
         }catch(_){ }
@@ -3055,7 +3184,7 @@ async function loadImagesCatalog(sessionName, imagesUrl){
       if (!url) continue;
 
       // Place the prepared image at the corrected GeoJSON centre. Its residual
-      // row-alignment orientation is applied by the shared map overlay helper.
+      // LightGlue residual orientation is applied by the shared map overlay helper.
       let bounds = null;
       let storedRotation = Number(f?.properties?.rotation ?? f?.properties?.rotation_heading ?? 0);
       const corners = f?.properties?.corners;
@@ -3345,9 +3474,9 @@ $("#fileCameraPositions")?.addEventListener("change", async (e)=>{
     const parsed = parseCameraPositionsFeatureCollection(gj);
     cameraPositionOverrides = parsed;
     const total = Object.keys(parsed).length;
-    // If images already loaded for a session, re-run loadImagesCatalog to apply overrides
+    // Reload both image and prediction layers so the override moves them together.
     if(lastLoadedSessionName && lastLoadedImagesUrl){
-      await loadImagesCatalog(lastLoadedSessionName, lastLoadedImagesUrl);
+      await applySessionToMap(lastLoadedSessionName);
     } else {
       updateCameraPositionsInfo(0, total);
     }
@@ -3398,13 +3527,13 @@ function connectLogs(){
       setText("#testStatus", "Finalizing prepared inputs…");
     }else if(line.includes("Starting model inference")){
       setText("#testStatus", "Running inference…");
-    }else if(line.includes("Aligning prepared images to solar rows")){
-      setText("#testStatus", "Aligning prepared images to solar rows…");
-    }else if(line.includes("Solar-row alignment progress:")){
-      const progress = line.split("Solar-row alignment progress:").pop().trim();
-      setText("#testStatus", `Aligning images to rows: ${progress}`);
-    }else if(line.includes("Solar-row alignment complete:")){
-      setText("#testStatus", "Solar-row alignment complete. Preparing inference…");
+    }else if(line.includes("Aligning prepared images with LightGlue overlaps and GPS")){
+      setText("#testStatus", "Aligning neighboring images with LightGlue…");
+    }else if(line.includes("Image alignment progress:")){
+      const progress = line.split("Image alignment progress:").pop().trim();
+      setText("#testStatus", `Aligning images: ${progress}`);
+    }else if(line.includes("alignment complete:")){
+      setText("#testStatus", "Image alignment complete. Preparing inference…");
     }else if(line.includes("Inference complete")){
       setText("#testStatus", "Inference complete. Preparing result files…");
     }else if(line.includes("Preparing prediction manifest")){
