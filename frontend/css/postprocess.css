@@ -853,7 +853,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 
 .postprocessWholeLayerMoveMetrics[hidden] { display: none; }
-.postprocessWholeLayerMoveMetrics > span {
+.postprocessWholeLayerMoveMetrics > label {
+  display: block;
   padding: 7px 9px;
   border: 1px solid rgba(192, 132, 252, .38);
   border-radius: 7px;
@@ -863,6 +864,10 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessWholeLayerMoveMetrics strong { display: block; }
 .postprocessWholeLayerMoveMetrics small { color: var(--muted); }
 .postprocessWholeLayerMoveMetrics > small { grid-column: 1 / -1; }
+.postprocessWholeLayerMoveMetrics input {
+  width: 100%;
+  margin-top: 5px;
+}
 
 #ppActionConfirmModal,
 #appConfirmModal,

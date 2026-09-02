@@ -7,6 +7,7 @@ helpers, which keeps this feature isolated from the rest of the application.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import math
@@ -181,10 +182,84 @@ def raster_shift_in_mercator(path: Path, east_m: float, north_m: float) -> tuple
     return shifted_x - start_x, shifted_y - start_y
 
 
+def _raster_crs_offset(path: Path, east_m: float, north_m: float) -> tuple[float, float]:
+    """Convert local ground metres at the raster centre into its native CRS."""
+    import rasterio
+    from pyproj import CRS, Transformer
+
+    with rasterio.open(path) as dataset:
+        raster_crs = dataset.crs
+        left, bottom, right, top = rasterio.warp.transform_bounds(
+            raster_crs, CRS.from_epsg(4326), *dataset.bounds, densify_pts=21,
+        )
+    center_lon = (left + right) / 2.0
+    center_lat = (bottom + top) / 2.0
+    local_crs = CRS.from_proj4(
+        f"+proj=aeqd +lat_0={center_lat:.12f} +lon_0={center_lon:.12f} +datum=WGS84 +units=m +no_defs"
+    )
+    local_to_wgs84 = Transformer.from_crs(local_crs, "EPSG:4326", always_xy=True)
+    wgs84_to_raster = Transformer.from_crs("EPSG:4326", raster_crs, always_xy=True)
+    shifted_lon, shifted_lat = local_to_wgs84.transform(east_m, north_m)
+    start_x, start_y = wgs84_to_raster.transform(center_lon, center_lat)
+    shifted_x, shifted_y = wgs84_to_raster.transform(shifted_lon, shifted_lat)
+    return shifted_x - start_x, shifted_y - start_y
+
+
+def create_or_update_raster_working_copy(
+    job_dir: Path,
+    kind: str,
+    source_paths: list[Path],
+    east_m: float,
+    north_m: float,
+) -> list[Path]:
+    """Atomically create/update the job's sole portable raster working copy."""
+    import rasterio
+
+    if not source_paths:
+        raise HTTPException(status_code=404, detail="No orthophoto or mosaic GeoTIFF was found for this source.")
+    working_dir = job_dir / "rasters" / kind
+    working_dir.mkdir(parents=True, exist_ok=True)
+    destinations: list[Path] = []
+    temporary_files: list[Path] = []
+    used_names: set[str] = set()
+    try:
+        for index, source in enumerate(source_paths):
+            if not source.is_file() or source.suffix.lower() not in {".tif", ".tiff"}:
+                raise HTTPException(status_code=404, detail="A configured raster source is no longer available.")
+            name = source.name
+            if name.casefold() in used_names:
+                name = f"{source.stem}_{index + 1}{source.suffix}"
+            used_names.add(name.casefold())
+            destination = working_dir / name
+            temporary = working_dir / f".{name}.{uuid.uuid4().hex}.tmp{source.suffix}"
+            shutil.copy2(source, temporary)
+            delta_x, delta_y = _raster_crs_offset(temporary, east_m, north_m)
+            with rasterio.open(temporary, "r+") as dataset:
+                transform = dataset.transform
+                dataset.transform = type(transform)(
+                    transform.a, transform.b, transform.c + delta_x,
+                    transform.d, transform.e, transform.f + delta_y,
+                )
+            destinations.append(destination)
+            temporary_files.append(temporary)
+        for temporary, destination in zip(temporary_files, destinations):
+            temporary.replace(destination)
+        keep = {path.resolve() for path in destinations}
+        for stale in working_dir.iterdir():
+            if stale.is_file() and stale.suffix.lower() in {".tif", ".tiff"} and stale.resolve() not in keep:
+                stale.unlink()
+        return destinations
+    finally:
+        for temporary in temporary_files:
+            if temporary.exists():
+                temporary.unlink()
+
+
 def create_postprocess_layer_move_router(
     read_job: Callable[[str], tuple[Path, dict[str, Any]]],
     resolve_workspace: Callable[[str], Path],
     write_json: Callable[[Path, dict[str, Any]], None],
+    resolve_rasters: Callable[[str], list[Path]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -221,15 +296,40 @@ def create_postprocess_layer_move_router(
         if layer_type == "raster":
             if stage != "orthophoto":
                 raise HTTPException(status_code=400, detail="Individual images and non-raster references cannot be moved.")
-            shifts = dict(metadata.get("raster_shifts") or {})
-            previous = shifts.get(kind) or {}
-            shifts[kind] = {
-                "east_m": float(previous.get("east_m") or 0.0) + east_m,
-                "north_m": float(previous.get("north_m") or 0.0) + north_m,
+            raster_copies = dict(metadata.get("raster_copies") or {})
+            previous_copy = raster_copies.get(kind) or {}
+            existing_paths: list[Path] = []
+            for relative in previous_copy.get("paths") or []:
+                candidate = (directory / str(relative)).resolve()
+                try:
+                    candidate.relative_to(directory.resolve())
+                except ValueError:
+                    continue
+                if candidate.is_file():
+                    existing_paths.append(candidate)
+            source_paths = existing_paths or resolve_rasters(str(source.get("result_id") or ""))
+            legacy_shift = ((metadata.get("raster_shifts") or {}).get(kind) or {}) if not existing_paths else {}
+            applied_east = east_m + float(legacy_shift.get("east_m") or 0.0)
+            applied_north = north_m + float(legacy_shift.get("north_m") or 0.0)
+            destinations = await asyncio.to_thread(
+                create_or_update_raster_working_copy,
+                directory,
+                kind,
+                source_paths,
+                applied_east,
+                applied_north,
+            )
+            previous_east = float(previous_copy.get("east_m") or legacy_shift.get("east_m") or 0.0)
+            previous_north = float(previous_copy.get("north_m") or legacy_shift.get("north_m") or 0.0)
+            raster_copies[kind] = {
+                "paths": [path.relative_to(directory).as_posix() for path in destinations],
+                "east_m": previous_east + east_m,
+                "north_m": previous_north + north_m,
                 "updated_at": now,
                 "revision": revision_id,
             }
-            metadata["raster_shifts"] = shifts
+            metadata["raster_copies"] = raster_copies
+            metadata.get("raster_shifts", {}).pop(kind, None)
         else:
             if stage not in MOVE_DEPENDENCIES:
                 raise HTTPException(status_code=400, detail="This GeoJSON layer cannot be moved.")

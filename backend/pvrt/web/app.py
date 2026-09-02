@@ -5115,12 +5115,26 @@ async def api_session_tiles(
     if postprocess_job_id or source_kind:
         if not postprocess_job_id or source_kind not in {"segmentation", "anomaly"}:
             raise HTTPException(status_code=400, detail="A valid post-processing job and source kind are required.")
-        _, job = _read_postprocess_job(postprocess_job_id)
+        job_dir, job = _read_postprocess_job(postprocess_job_id)
         configured = (job.get("sources") or {}).get(source_kind) or {}
         if str(configured.get("result_id") or "") != session:
             raise HTTPException(status_code=400, detail="This raster does not belong to the configured source.")
-        raster_shift = (job.get("raster_shifts") or {}).get(source_kind) or {}
-        revision = _safe_name(str(raster_shift.get("revision") or "original"))
+        raster_copy = (job.get("raster_copies") or {}).get(source_kind) or {}
+        copied_tifs: List[Path] = []
+        for relative in raster_copy.get("paths") or []:
+            candidate = (job_dir / str(relative)).resolve()
+            try:
+                candidate.relative_to(job_dir.resolve())
+            except ValueError:
+                continue
+            if candidate.is_file() and candidate.suffix.lower() in (".tif", ".tiff"):
+                copied_tifs.append(candidate)
+        if copied_tifs:
+            tifs = copied_tifs
+            raster_shift = None
+        else:
+            raster_shift = (job.get("raster_shifts") or {}).get(source_kind) or {}
+        revision = _safe_name(str((raster_copy or raster_shift or {}).get("revision") or "original"))
         tile_key = _safe_name(f"ppmove_{postprocess_job_id[:60]}_{source_kind}_{revision}")
     layers = _build_tile_layer_defs(tile_key, tifs, raster_shift)
 
@@ -5610,7 +5624,12 @@ app.include_router(
     create_postprocess_router(get_project_sessions_dir, get_project_overlays_dir, _media_url, logger)
 )
 app.include_router(
-    create_postprocess_layer_move_router(_read_postprocess_job, _resolve_postprocess_workspace, _atomic_json)
+    create_postprocess_layer_move_router(
+        _read_postprocess_job,
+        _resolve_postprocess_workspace,
+        _atomic_json,
+        _session_tifs,
+    )
 )
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")

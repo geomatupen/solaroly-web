@@ -71,15 +71,52 @@
       for (const record of editing.previewElements) {
         record.element.style.transform = `${record.baseTransform} translate3d(${offset.x}px, ${offset.y}px, 0)`;
       }
-      const eastDirection = editing.currentOffset.east < 0 ? "W" : "E";
-      const northDirection = editing.currentOffset.north < 0 ? "S" : "N";
-      byId("ppLayerMoveEast").textContent = `${Math.abs(editing.currentOffset.east).toFixed(2)} m ${eastDirection}`;
-      byId("ppLayerMoveNorth").textContent = `${Math.abs(editing.currentOffset.north).toFixed(2)} m ${northDirection}`;
+      const eastInput = byId("ppLayerMoveEast");
+      const northInput = byId("ppLayerMoveNorth");
+      if (document.activeElement !== eastInput) eastInput.value = editing.currentOffset.east.toFixed(2);
+      if (document.activeElement !== northInput) northInput.value = editing.currentOffset.north.toFixed(2);
       editing.dirty = Math.hypot(editing.currentOffset.east, editing.currentOffset.north) >= 0.001;
       byId("ppLayerMoveUndo").disabled = editing.historyIndex <= 0;
       byId("ppLayerMoveRedo").disabled = editing.historyIndex >= editing.history.length - 1;
       byId("ppLayerMoveSave").disabled = !editing.dirty;
       if (message) byId("ppLayerMoveStatus").textContent = message;
+    }
+
+    function recordOffset(message) {
+      const editing = state.editing;
+      if (!editing?.wholeLayer) return;
+      const previous = editing.history[editing.historyIndex];
+      if (Math.hypot(
+        editing.currentOffset.east - previous.east,
+        editing.currentOffset.north - previous.north,
+      ) >= 0.001) {
+        editing.history.splice(editing.historyIndex + 1);
+        editing.history.push({ ...editing.currentOffset });
+        if (editing.history.length > 20) editing.history.shift();
+        editing.historyIndex = editing.history.length - 1;
+      }
+      updatePreview(message);
+    }
+
+    function updateOffsetFromInput(input, axis, commit) {
+      const editing = state.editing;
+      if (!editing?.wholeLayer) return;
+      const value = Number(input.value);
+      if (input.value.trim() === "" || !Number.isFinite(value) || Math.abs(value) > 10000) {
+        if (commit) {
+          editing.currentOffset[axis] = editing.history[editing.historyIndex][axis];
+          input.value = editing.currentOffset[axis].toFixed(2);
+          updatePreview("Enter a movement between -10,000 and 10,000 metres.");
+        }
+        return;
+      }
+      editing.currentOffset[axis] = value;
+      if (commit) {
+        input.value = value.toFixed(2);
+        recordOffset("Manual movement recorded. Use Undo, Redo or Save movement.");
+      } else {
+        updatePreview("Previewing the entered movement. Finish editing the value to add it to history.");
+      }
     }
 
     function detach({ restoreTransform = true } = {}) {
@@ -134,15 +171,7 @@
       const finish = (event, cancelled = false) => {
         if (pointerId !== event.pointerId) return;
         if (cancelled) editing.currentOffset = { ...editing.history[editing.historyIndex] };
-        else if (Math.hypot(
-          editing.currentOffset.east - editing.history[editing.historyIndex].east,
-          editing.currentOffset.north - editing.history[editing.historyIndex].north,
-        ) >= 0.001) {
-          editing.history.splice(editing.historyIndex + 1);
-          editing.history.push({ ...editing.currentOffset });
-          if (editing.history.length > 20) editing.history.shift();
-          editing.historyIndex = editing.history.length - 1;
-        }
+        else recordOffset();
         container.releasePointerCapture?.(pointerId);
         pointerId = null;
         startLatLng = null;
@@ -150,7 +179,7 @@
         byId("ppMap").classList.remove("wholeLayerDragging");
         updatePreview(cancelled
           ? "Movement cancelled. The previous position was restored."
-          : "Whole-layer movement recorded. Use Undo, Redo or Save edits.");
+          : "Whole-layer movement recorded. Use Undo, Redo or Save movement.");
         event.preventDefault();
         event.stopPropagation();
       };
@@ -167,13 +196,19 @@
       state.map.on("zoomend", editing.zoomHandler);
     }
 
+    for (const [id, axis] of [["ppLayerMoveEast", "east"], ["ppLayerMoveNorth", "north"]]) {
+      const input = byId(id);
+      input.addEventListener("input", () => updateOffsetFromInput(input, axis, false));
+      input.addEventListener("change", () => updateOffsetFromInput(input, axis, true));
+    }
+
     async function begin(target) {
       if (!state.currentJobId || !target?.item || state.editing) return;
       const isRaster = target.layerType === "raster";
       const confirmed = await confirmAction({
         title: `Move ${target.item.label}?`,
         message: isRaster
-          ? "You are about to move the complete orthophoto or mosaic. Its original raster remains unchanged; only this job's georeferencing offset will be saved."
+          ? "You are about to move the complete orthophoto or mosaic. Saving will create or replace one job-owned GeoTIFF working copy; the original raster remains unchanged."
           : "You are about to move every feature in this GeoJSON layer together. Individual polygons will not be draggable in this mode.",
         details: DEPENDENCIES[target.kind]?.[target.stage] || [],
         confirmLabel: "Start moving",
@@ -237,14 +272,26 @@
       const editing = state.editing;
       if (!editing?.wholeLayer || !editing.dirty) return;
       const details = DEPENDENCIES[editing.kind]?.[editing.stage] || [];
+      const existingRasterCopy = Boolean(
+        editing.layerType === "raster"
+        && state.currentJob?.raster_copies?.[editing.kind]?.paths?.length
+      );
+      let message;
+      if (editing.layerType === "raster") {
+        message = existingRasterCopy
+          ? "The existing moved orthophoto/mosaic in this job will be replaced. The original test-run raster remains unchanged."
+          : "The entire orthophoto/mosaic will be copied into this job and saved at the new position. This can take time and use approximately the raster's file size. The original test-run raster remains unchanged.";
+      } else {
+        message = details.length
+          ? "The current job-owned vector layer will be replaced by its moved version, and dependent outputs will be archived as outdated. The original test-run GeoJSON remains unchanged."
+          : "The current job-owned vector layer will be replaced by its moved version. The original test-run GeoJSON remains unchanged.";
+      }
       const confirmed = await confirmAction({
         title: "Save whole-layer movement?",
-        message: details.length
-          ? "The moved layer will be updated and dependent outputs will be archived as outdated. Originals in the test run remain unchanged."
-          : "The complete layer will be saved at its new position. Originals in the test run remain unchanged.",
+        message,
         details,
         confirmLabel: "Save movement",
-        danger: details.length > 0,
+        danger: editing.layerType === "raster" || details.length > 0,
       });
       if (!confirmed || state.editing !== editing) return;
       const button = byId("ppLayerMoveSave");

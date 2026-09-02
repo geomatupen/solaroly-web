@@ -12,6 +12,7 @@ from rasterio.transform import from_origin
 from pvrt.web.app import _build_tile_layer_defs
 from pvrt.web.postprocess_layer_move import (
     archive_postprocess_outputs,
+    create_or_update_raster_working_copy,
     create_postprocess_layer_move_router,
     translate_geojson_payload,
 )
@@ -73,6 +74,7 @@ class PostprocessLayerMoveTests(unittest.TestCase):
                 lambda _job_id: (job, metadata),
                 lambda _workspace_id: workspace,
                 write_json,
+                lambda _result_id: [],
             )
             endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/move-layer"))
             response = asyncio.run(endpoint("job", request))
@@ -132,6 +134,40 @@ class PostprocessLayerMoveTests(unittest.TestCase):
             _, _, distance = Geod(ellps="WGS84").inv(*original_center, *shifted_center)
             self.assertAlmostEqual(distance, (5.0 ** 2 + 3.0 ** 2) ** 0.5, delta=0.05)
             self.assertEqual(shifted["movement"], {"east_m": 5.0, "north_m": 3.0})
+
+    def test_raster_working_copy_is_reused_and_source_remains_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.tif"
+            with rasterio.open(
+                source,
+                "w",
+                driver="GTiff",
+                width=10,
+                height=10,
+                count=1,
+                dtype="uint8",
+                crs=CRS.from_epsg(4326),
+                transform=from_origin(8.0, 49.001, 0.0001, 0.0001),
+            ) as dataset:
+                dataset.write_band(1, __import__("numpy").ones((10, 10), dtype="uint8"))
+            with rasterio.open(source) as dataset:
+                original_transform = dataset.transform
+            first = create_or_update_raster_working_copy(root / "job", "segmentation", [source], 5.0, 0.0)
+            second = create_or_update_raster_working_copy(root / "job", "segmentation", first, 5.0, 0.0)
+            self.assertEqual(first, second)
+            self.assertEqual(len(second), 1)
+            with rasterio.open(source) as dataset:
+                self.assertEqual(dataset.transform, original_transform)
+            with rasterio.open(second[0]) as dataset:
+                moved_transform = dataset.transform
+            _, _, distance = Geod(ellps="WGS84").inv(
+                original_transform.c,
+                original_transform.f,
+                moved_transform.c,
+                moved_transform.f,
+            )
+            self.assertAlmostEqual(distance, 10.0, delta=0.1)
 
     def test_dependent_output_is_archived_and_removed_from_active_status(self):
         with tempfile.TemporaryDirectory() as temporary:

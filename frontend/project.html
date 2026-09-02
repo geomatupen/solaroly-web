@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260901a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260902b" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260902c" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -775,9 +775,9 @@
                   <small id="ppLayerMoveIdentity">—</small>
                 </div>
                 <div class="postprocessWholeLayerMoveMetrics">
-                  <span><small>East / west</small><strong id="ppLayerMoveEast">0.00 m</strong></span>
-                  <span><small>North / south</small><strong id="ppLayerMoveNorth">0.00 m</strong></span>
-                  <small>Drag anywhere on the map to reposition the complete layer.</small>
+                  <label><small>East / west (m)</small><input id="ppLayerMoveEast" type="number" value="0.00" step="0.01" min="-10000" max="10000" inputmode="decimal" /></label>
+                  <label><small>North / south (m)</small><input id="ppLayerMoveNorth" type="number" value="0.00" step="0.01" min="-10000" max="10000" inputmode="decimal" /></label>
+                  <small>Positive values move east/north; negative values move west/south. Dragging the map updates both fields.</small>
                 </div>
                 <div class="postprocessEditActions">
                   <button id="ppLayerMoveUndo" class="secondary tiny postprocessEditToolButton" type="button" title="Undo movement" aria-label="Undo movement" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5M5 12h8a6 6 0 0 1 6 6"/></svg></button>
@@ -1539,7 +1539,7 @@
   <script src="js/map-overlay.js?v=20260902a"></script>
   <script src="js/test-image-alignment.js?v=20260901e"></script>
   <script src="js/main.js?v=20260902a"></script>
-  <script src="js/postprocess-layer-move.js?v=20260902c"></script>
+  <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260902c"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260830a"></script>
