@@ -390,12 +390,18 @@ class PostprocessWorkflowTests(unittest.TestCase):
             _write(panel_source, [
                 _feature(box(500000, 5500000, 500002, 5500001), panel_id="ROW-0001-PANEL-0001", row_id="ROW-0001")
             ])
+            row_source = root / "rows.geojson"
+            _write(row_source, [
+                _feature(box(500000, 5500000, 500002, 5500001), row_id="ROW-0001")
+            ])
             associated = root / "associated.geojson"
             association = associate_anomalies(
                 deduplicated,
                 panel_source,
                 associated,
                 panel_output_path=panel_source,
+                row_path=row_source,
+                row_output_path=row_source,
             )
             self.assertEqual(association["assigned"], 1)
             self.assertEqual(association["unassigned"], 1)
@@ -409,6 +415,10 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 updated_panel["properties"]["anomaly_ids"],
                 [assigned["properties"]["anomaly_id"]],
             )
+            updated_row = json.loads(row_source.read_text(encoding="utf-8"))["features"][0]
+            self.assertEqual(updated_row["properties"]["anomaly_count"], 1)
+            self.assertEqual(updated_row["properties"]["anomaly_ids"], [assigned["properties"]["anomaly_id"]])
+            self.assertEqual(updated_row["properties"]["anomaly_panel_ids"], ["ROW-0001-PANEL-0001"])
 
 
 if __name__ == "__main__":

@@ -624,15 +624,18 @@
             <article id="ppAssociateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">4</div>
               <div class="postprocessStepBody">
-                <h3>Assign anomalies to panels</h3>
-                <p class="muted tiny">Assign anomalies against the final Regularized panel polygons. Final Rows are shown only as a visual reference; unassigned and nearest-only matches are flagged for review.</p>
+                <div class="switchInfoRow">
+                  <h3>Assign anomalies to panels and rows</h3>
+                  <button id="ppAssociationInfo" type="button" class="infoBtn" aria-label="How anomaly assignment works" aria-haspopup="dialog" aria-controls="ppAssociationInfoModal">i</button>
+                </div>
+                <p class="muted tiny">Assign IDs without moving anomaly, panel, or row geometry. Reliable overlaps are matched first; only remaining anomalies use the outside-panel distance.</p>
                 <div class="postprocessFields postprocessFieldsCompact">
                   <div>
-                    <label for="ppAssociationOverlap">Minimum anomaly overlap</label>
-                    <input id="ppAssociationOverlap" type="number" value="0.20" min="0" max="1" step="0.05" />
+                    <label for="ppAssociationOverlap">Minimum overlap with panel (%)</label>
+                    <input id="ppAssociationOverlap" type="number" value="20" min="0" max="100" step="5" />
                   </div>
                   <div>
-                    <label for="ppAssociationDistance">Nearest fallback distance (m)</label>
+                    <label for="ppAssociationDistance">Maximum outside-panel distance (m)</label>
                     <input id="ppAssociationDistance" type="number" value="0.50" min="0" max="100" step="0.05" />
                   </div>
                 </div>
@@ -1042,6 +1045,26 @@
         <button id="ppReplacementCancel" class="secondary" type="button">Cancel</button>
         <button id="ppReplacementConfirm" type="button">Replace output</button>
       </div>
+    </div>
+  </div>
+
+  <div id="ppAssociationInfoModal" class="modal hidden workflowInfoModal" role="dialog" aria-modal="true" aria-labelledby="ppAssociationInfoTitle">
+    <div class="modalContent workflowInfoModalContent">
+      <div class="modalHeader">
+        <h3 id="ppAssociationInfoTitle">How anomaly assignment works</h3>
+        <button id="ppAssociationInfoClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody infoBody workflowInfoBody">
+        <p><strong>No geometry is moved.</strong> This step only creates relationships between anomalies, regularized panels, and rows.</p>
+        <ol>
+          <li>The panel with the greatest anomaly-area overlap is evaluated first.</li>
+          <li>If it meets the minimum overlap, its panel and row IDs are assigned as a reliable overlap match.</li>
+          <li>Otherwise, the nearest panel is assigned only when its edge is within the configured outside-panel distance.</li>
+          <li>Anomalies beyond that distance remain unassigned and are flagged for review.</li>
+        </ol>
+        <p>The row ID always comes from the selected panel, keeping the panel and row relationship consistent. Anomalies receive <code>panel_id</code> and <code>row_id</code>; panels and rows receive reciprocal <code>anomaly_ids</code> and <code>anomaly_count</code>.</p>
+      </div>
+      <div class="modalFooter"><button id="ppAssociationInfoCloseFooter" class="secondary" type="button">Close</button></div>
     </div>
   </div>
 
@@ -1542,7 +1565,7 @@
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260902c"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
-  <script src="js/postprocess_anomaly.js?v=20260830a"></script>
+  <script src="js/postprocess_anomaly.js?v=20260902a"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

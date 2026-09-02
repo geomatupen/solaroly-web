@@ -114,6 +114,7 @@ class ApplyVisualDeduplicationRequest(BaseModel):
 
 class AssociateAnomaliesRequest(BaseModel):
     panel_path: str
+    row_path: str | None = None
     panel_result_id: str | None = None
     panel_workflow_id: str | None = None
     minimum_overlap: float = Field(default=0.20, ge=0.0, le=1.0)
@@ -1357,6 +1358,7 @@ def create_postprocess_router(
         anomaly_path = resolve_input(result_dir, str(anomaly_output.get("path") or ""))
         panel_result_dir = resolve_result(request.panel_result_id or result_id)
         panel_path = resolve_input(panel_result_dir, request.panel_path)
+        row_path = resolve_input(panel_result_dir, request.row_path) if request.row_path else None
         panel_workflow_dir = (
             resolve_workflow(panel_result_dir, request.panel_workflow_id)
             if request.panel_workflow_id
@@ -1365,8 +1367,10 @@ def create_postprocess_router(
         if panel_workflow_dir is not None:
             try:
                 panel_path.relative_to(panel_workflow_dir)
+                if row_path is not None:
+                    row_path.relative_to(panel_workflow_dir)
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail="Selected panels do not belong to the supplied segmentation workflow.") from exc
+                raise HTTPException(status_code=400, detail="Selected panels or rows do not belong to the supplied segmentation workflow.") from exc
         update_status(
             workflow_dir,
             status="queued",
@@ -1384,11 +1388,14 @@ def create_postprocess_router(
                     panel_path,
                     output_path,
                     panel_output_path=panel_path,
+                    row_path=row_path,
+                    row_output_path=row_path,
                     minimum_overlap=request.minimum_overlap,
                     maximum_distance_m=request.maximum_distance_m,
                     callback=progress_callback(workflow_dir, "associate"),
                 )
                 stats["panel_updated_mtime"] = int(panel_path.stat().st_mtime_ns)
+                stats["row_updated_mtime"] = int(row_path.stat().st_mtime_ns) if row_path is not None else None
                 if panel_workflow_dir is not None:
                     panel_status = read_status(panel_workflow_dir)
                     update_status(
@@ -1398,6 +1405,7 @@ def create_postprocess_router(
                             "anomaly_workflow_id": workflow_id,
                             "associated_anomalies": stats["assigned"],
                             "panels_with_anomalies": stats["panels_with_anomalies"],
+                            "rows_with_anomalies": stats["rows_with_anomalies"],
                             "updated_at": datetime.now().isoformat(),
                         },
                         outputs=panel_status.get("outputs") or {},

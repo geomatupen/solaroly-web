@@ -871,6 +871,8 @@ def associate_anomalies(
     panel_path: Path,
     output_path: Path,
     panel_output_path: Path | None = None,
+    row_path: Path | None = None,
+    row_output_path: Path | None = None,
     *,
     minimum_overlap: float = 0.20,
     maximum_distance_m: float = 0.50,
@@ -880,6 +882,10 @@ def associate_anomalies(
     _notify(callback, 2, "Reading anomaly and identified-panel layers…")
     anomaly_payload, anomalies, invalid_anomalies = load_polygon_features(anomaly_path)
     panel_payload, loaded_panels, invalid_panels = load_polygon_features(panel_path)
+    row_payload = None
+    invalid_rows = 0
+    if row_path is not None:
+        row_payload, _, invalid_rows = load_polygon_features(row_path)
     panels = [record for record in loaded_panels if record[2].get("panel_id")]
     if not panels:
         raise ValueError("The selected hierarchy layer does not contain identified panel features.")
@@ -895,6 +901,8 @@ def associate_anomalies(
     nearest_assigned = 0
     unassigned = 0
     panel_anomaly_ids: dict[str, list[str]] = {}
+    row_anomaly_ids: dict[str, list[str]] = {}
+    row_panel_ids: dict[str, list[str]] = {}
     total = max(1, len(anomalies))
     for position, (source_index, geometry, properties) in enumerate(anomalies):
         projected = project_geometry(geometry, "EPSG:4326", metric_crs)
@@ -937,8 +945,13 @@ def associate_anomalies(
         })
         if best_panel:
             panel_id = str(best_panel[1].get("panel_id") or "")
+            row_id = str(best_panel[1].get("row_id") or "")
             if panel_id:
                 panel_anomaly_ids.setdefault(panel_id, []).append(anomaly_id)
+            if row_id:
+                row_anomaly_ids.setdefault(row_id, []).append(anomaly_id)
+                if panel_id and panel_id not in row_panel_ids.setdefault(row_id, []):
+                    row_panel_ids[row_id].append(panel_id)
         output_features.append(feature(projected, output_properties, to_wgs84))
         if position % 250 == 0:
             _notify(callback, 12 + int(78 * position / total), "Assigning anomalies to panels and rows…")
@@ -967,17 +980,39 @@ def associate_anomalies(
             if key not in {"type", "features"}
         }
         write_feature_collection(panel_output_path, updated_panels, **panel_metadata)
+    rows_with_anomalies = len(row_anomaly_ids)
+    if row_payload is not None and row_output_path is not None:
+        updated_rows = []
+        for row_feature in row_payload["features"]:
+            updated = dict(row_feature) if isinstance(row_feature, dict) else row_feature
+            if isinstance(updated, dict):
+                properties = dict(updated.get("properties") or {})
+                row_id = str(properties.get("row_id") or "")
+                anomaly_ids = row_anomaly_ids.get(row_id, [])
+                properties["anomaly_count"] = len(anomaly_ids)
+                properties["anomaly_ids"] = anomaly_ids
+                properties["anomaly_panel_ids"] = row_panel_ids.get(row_id, [])
+                updated["properties"] = properties
+            updated_rows.append(updated)
+        row_metadata = {
+            key: value for key, value in row_payload.items()
+            if key not in {"type", "features"}
+        }
+        write_feature_collection(row_output_path, updated_rows, **row_metadata)
     _notify(callback, 100, "Anomaly-to-panel association is complete.")
     return {
         "input_features": len(anomaly_payload["features"]),
         "invalid_anomaly_features": invalid_anomalies,
         "invalid_panel_features": invalid_panels,
+        "invalid_row_features": invalid_rows,
         "output_features": len(output_features),
         "assigned": assigned,
         "assigned_by_nearest": nearest_assigned,
         "unassigned": unassigned,
         "panels_with_anomalies": panels_with_anomalies,
+        "rows_with_anomalies": rows_with_anomalies,
         "panel_features_updated": len(panel_payload["features"]) if panel_output_path is not None else 0,
+        "row_features_updated": len(row_payload["features"]) if row_payload is not None and row_output_path is not None else 0,
         "metric_crs": metric_crs.to_string(),
         "output_path": str(output_path),
     }

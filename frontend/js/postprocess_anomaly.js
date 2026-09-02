@@ -1594,9 +1594,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             panel_path: panelLayer.path,
+            row_path: panelLayer.rows_path || null,
             panel_result_id: panelLayer.result_id,
             panel_workflow_id: panelLayer.workflow_id,
-            minimum_overlap: Number(byId("ppAssociationOverlap").value),
+            minimum_overlap: Number(byId("ppAssociationOverlap").value) / 100,
             maximum_distance_m: Number(byId("ppAssociationDistance").value),
           }),
         },
@@ -1609,6 +1610,21 @@
   }
 
   function init() {
+    const associationInfoModal = byId("ppAssociationInfoModal");
+    const closeAssociationInfo = () => {
+      associationInfoModal?.classList.remove("show");
+      associationInfoModal?.classList.add("hidden");
+    };
+    byId("ppAssociationInfo")?.addEventListener("click", () => {
+      associationInfoModal?.classList.remove("hidden");
+      associationInfoModal?.classList.add("show");
+      byId("ppAssociationInfoClose")?.focus();
+    });
+    byId("ppAssociationInfoClose")?.addEventListener("click", closeAssociationInfo);
+    byId("ppAssociationInfoCloseFooter")?.addEventListener("click", closeAssociationInfo);
+    associationInfoModal?.addEventListener("click", event => {
+      if (event.target === associationInfoModal) closeAssociationInfo();
+    });
     byId("ppSegmentationTab")?.addEventListener("click", () => switchMode("segmentation"));
     byId("ppAnomalyTab")?.addEventListener("click", () => switchMode("anomaly"));
     byId("ppAnomalyNeighborRadius")?.addEventListener("input", () => {
@@ -1725,6 +1741,9 @@
       const panelLayer = currentPanelLayer(event.detail.context);
       if (!panelLayer?.url) return;
       panelLayer.mtime = String(status.association_stats.panel_updated_mtime);
+      if (status.association_stats.row_updated_mtime) {
+        panelLayer.rows_mtime = String(status.association_stats.row_updated_mtime);
+      }
       loadedPanelReferenceKey = "";
       void showSegmentationReferences(panelLayer, event.detail.context);
       api()?.invalidateCachedMode("segmentation");
