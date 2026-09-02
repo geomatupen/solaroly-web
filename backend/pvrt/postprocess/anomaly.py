@@ -875,7 +875,7 @@ def associate_anomalies(
     row_output_path: Path | None = None,
     *,
     minimum_overlap: float = 0.20,
-    maximum_distance_m: float = 0.50,
+    maximum_distance_m: float = 1.50,
     callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Attach panel and row IDs to anomalies without changing their geometry."""

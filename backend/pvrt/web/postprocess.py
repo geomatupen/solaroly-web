@@ -118,7 +118,7 @@ class AssociateAnomaliesRequest(BaseModel):
     panel_result_id: str | None = None
     panel_workflow_id: str | None = None
     minimum_overlap: float = Field(default=0.20, ge=0.0, le=1.0)
-    maximum_distance_m: float = Field(default=0.50, ge=0.0, le=100.0)
+    maximum_distance_m: float = Field(default=1.50, ge=0.0, le=100.0)
 
 
 class RenameWorkflowRequest(BaseModel):

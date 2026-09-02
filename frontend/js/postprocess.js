@@ -358,6 +358,8 @@
       titleRow.className = "postprocessStepTitleRow";
       body.insertBefore(titleRow, heading);
       titleRow.appendChild(heading);
+      const titleAction = body.querySelector(":scope > .postprocessStepTitleAction");
+      if (titleAction) titleRow.appendChild(titleAction);
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "secondary tiny postprocessStepCollapse";

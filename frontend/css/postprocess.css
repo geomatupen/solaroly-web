@@ -1116,7 +1116,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   gap: 8px;
 }
 
-.postprocessStepTitleRow h3 { margin: 2px 0 4px; }
+.postprocessStepTitleRow h3 { margin: 2px auto 4px 0; }
 .postprocessStepCollapse { min-width: 34px; padding: 4px 8px; }
 .postprocessStep.collapsed .postprocessStepBody > :not(.postprocessStepTitleRow) { display: none; }
 .postprocessStep.collapsed { padding-bottom: 10px; }

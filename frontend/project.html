@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260901a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260902c" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260902d" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -624,10 +624,8 @@
             <article id="ppAssociateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">4</div>
               <div class="postprocessStepBody">
-                <div class="switchInfoRow">
-                  <h3>Assign anomalies to panels and rows</h3>
-                  <button id="ppAssociationInfo" type="button" class="infoBtn" aria-label="How anomaly assignment works" aria-haspopup="dialog" aria-controls="ppAssociationInfoModal">i</button>
-                </div>
+                <h3>Assign anomalies to panels and rows</h3>
+                <button id="ppAssociationInfo" type="button" class="infoBtn postprocessStepTitleAction" aria-label="How anomaly assignment works" aria-haspopup="dialog" aria-controls="ppAssociationInfoModal">i</button>
                 <p class="muted tiny">Assign IDs without moving anomaly, panel, or row geometry. Reliable overlaps are matched first; only remaining anomalies use the outside-panel distance.</p>
                 <div class="postprocessFields postprocessFieldsCompact">
                   <div>
@@ -636,7 +634,7 @@
                   </div>
                   <div>
                     <label for="ppAssociationDistance">Maximum outside-panel distance (m)</label>
-                    <input id="ppAssociationDistance" type="number" value="0.50" min="0" max="100" step="0.05" />
+                    <input id="ppAssociationDistance" type="number" value="1.50" min="0" max="100" step="0.05" />
                   </div>
                 </div>
                 <button id="ppAssociate" type="button" disabled>Assign panel and row IDs</button>
@@ -1563,7 +1561,7 @@
   <script src="js/test-image-alignment.js?v=20260901e"></script>
   <script src="js/main.js?v=20260902a"></script>
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
-  <script src="js/postprocess.js?v=20260902c"></script>
+  <script src="js/postprocess.js?v=20260902d"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260902a"></script>
   <script>
