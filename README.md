@@ -87,7 +87,7 @@ Match the flag to the dependency list—if `PVRT_ENABLE_DETECTRON=0`, the UI hid
 ---
 
 ## 4. DJI Thermal SDK Setup (only for DJI radiometric workflows)
-1. **Native binaries:** The repo already vendors DJI Thermal SDK under `third_party/`. If you download a newer SDK, unzip it into the same folder so `third_party/tsdk-core/lib/linux/release_x64/libdirp.so` exists.
+1. **Native binaries:** The repo vendors the DJI Thermal SDK runtime utilities under `third_party/utility/bin/`. On Linux, `third_party/utility/bin/linux/release_x64/libdirp.so` must exist. The vendor sample datasets, generated API documentation, sample source code, and duplicate `tsdk-core` library tree are intentionally not included.
 2. **Environment activation:** Append to `venv/bin/activate` (or export manually) so runtime paths are set every time the environment loads:
    ```bash
    # --- DJI Thermal SDK ---
