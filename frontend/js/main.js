@@ -667,8 +667,13 @@ function renderTestResults(results){ renderTestAssetList('testResultsList', resu
 async function renameTestAsset(asset, kind){
   closeTrainedModelMenus();
   const oldName = asset.display_name || asset.name;
-  const nextName = prompt(kind === 'result' ? 'Rename model result' : 'Rename test dataset', oldName);
-  if(nextName === null || !nextName.trim() || nextName.trim() === oldName) return;
+  const nextName = await window.showAppTextInput({
+    title: kind === 'result' ? 'Rename model result' : 'Rename test dataset',
+    label: 'Name',
+    value: oldName,
+    confirmLabel: 'Rename',
+  });
+  if(nextName === null || nextName === oldName) return;
   const base = kind === 'result' ? api.results : api.testDatasets;
   const body = new FormData();
   body.append('name', nextName.trim());
@@ -686,7 +691,13 @@ async function deleteTestAsset(asset, kind){
   const explanation = kind === 'result'
     ? 'This removes the saved inference result files. The model and test data are not deleted.'
     : 'This removes the uploaded test files. Trained models and saved results are not deleted.';
-  if(!confirm(`Delete ${noun} "${label}"?\n\n${explanation}`)) return;
+  if(!await window.showAppConfirmation({
+    title: `Delete ${noun}?`,
+    message: `Delete "${label}"?`,
+    detail: explanation,
+    confirmLabel: 'Delete',
+    danger: true,
+  })) return;
   const base = kind === 'result' ? api.results : api.testDatasets;
   const response = await fetch(`${base}/${encodeURIComponent(asset.id || asset.name)}`, {method:'DELETE'});
   const result = await response.json().catch(()=>({}));
@@ -746,8 +757,13 @@ async function refreshModelViews(){
 async function renameTrainedModel(model){
   closeTrainedModelMenus();
   const oldName = model.display_name || model.model_name || model.name;
-  const nextName = prompt('Rename model', oldName);
-  if(nextName === null || !nextName.trim() || nextName.trim() === oldName) return;
+  const nextName = await window.showAppTextInput({
+    title: 'Rename model',
+    label: 'Model name',
+    value: oldName,
+    confirmLabel: 'Rename',
+  });
+  if(nextName === null || nextName === oldName) return;
 
   const body = new FormData();
   body.append('name', nextName.trim());
@@ -764,7 +780,13 @@ async function deleteTrainedModel(model){
   closeTrainedModelMenus();
   const label = model.display_name || model.model_name || model.name;
   const kind = model.complete === false ? 'incomplete training run' : 'model';
-  const confirmed = confirm(`Delete ${kind} "${label}"?\n\nThis removes its trained-model output files. Training data will not be deleted.`);
+  const confirmed = await window.showAppConfirmation({
+    title: `Delete ${kind}?`,
+    message: `Delete "${label}"?`,
+    detail: 'This removes its trained-model output files. Training data will not be deleted.',
+    confirmLabel: 'Delete',
+    danger: true,
+  });
   if(!confirmed) return;
 
   const response = await fetch(`${api.models}/${encodeURIComponent(model.id || model.name)}`, {
@@ -971,8 +993,13 @@ function trainingDatasetFormatLabel(dataset){
 async function renameTrainingDataset(dataset){
   closeTrainedModelMenus();
   const oldName = dataset.display_name || 'Training dataset';
-  const nextName = prompt('Rename training data', oldName);
-  if(nextName === null || !nextName.trim() || nextName.trim() === oldName) return;
+  const nextName = await window.showAppTextInput({
+    title: 'Rename training data',
+    label: 'Dataset name',
+    value: oldName,
+    confirmLabel: 'Rename',
+  });
+  if(nextName === null || nextName === oldName) return;
   const body = new FormData();
   body.append('name', nextName.trim());
   const response = await fetch(`${api.trainingDatasets}/${encodeURIComponent(dataset.id)}/rename`, {
@@ -987,11 +1014,13 @@ async function renameTrainingDataset(dataset){
 async function deleteTrainingDataset(dataset){
   closeTrainedModelMenus();
   const label = dataset.display_name || 'Training dataset';
-  const confirmed = confirm(
-    `Delete training data "${label}"?\n\n` +
-    'This permanently removes the uploaded dataset folder and its registered files. ' +
-    'The original source folder you selected is not affected.'
-  );
+  const confirmed = await window.showAppConfirmation({
+    title: 'Delete training data?',
+    message: `Delete "${label}"?`,
+    detail: 'This permanently removes the uploaded dataset folder and its registered files. The original source folder you selected is not affected.',
+    confirmLabel: 'Delete training data',
+    danger: true,
+  });
   if(!confirmed) return;
   const response = await fetch(`${api.trainingDatasets}/${encodeURIComponent(dataset.id)}`, {
     method: 'DELETE',
@@ -1628,7 +1657,13 @@ async function startTraining(){
   try {
     const existingModel = modelsCache[modelName];
     if (existingModel) {
-      const shouldClear = confirm(`A model named "${modelName}" already exists.\n\nDo you want to delete the previous model and start fresh?`);
+      const shouldClear = await window.showAppConfirmation({
+        title: 'Replace existing model?',
+        message: `A model named "${modelName}" already exists.`,
+        detail: 'The previous model output will be deleted before training starts.',
+        confirmLabel: 'Replace and train',
+        danger: true,
+      });
       if (!shouldClear) {
         warn("train", "Training canceled.");
         return;
@@ -1733,7 +1768,13 @@ async function runTest(){
     const existingSessions = Array.from(document.querySelectorAll("#selResults option")).map(o => o.value);
     const sessionExists = existingSessions.some(s => s.includes(resultName));
     if (sessionExists) {
-      const shouldClear = confirm(`A result named "${resultName}" already exists.\n\nDo you want to delete the previous result and start fresh?`);
+      const shouldClear = await window.showAppConfirmation({
+        title: 'Replace existing result?',
+        message: `A result named "${resultName}" already exists.`,
+        detail: 'The previous result files will be deleted before this test starts.',
+        confirmLabel: 'Replace and run',
+        danger: true,
+      });
       if (!shouldClear) {
         warn("test", "Testing canceled.");
         setHidden($("#spinTest"), true);
@@ -4071,9 +4112,15 @@ function renderProjectCards() {
     }
     
     if (deleteBtn) {
-      deleteBtn.addEventListener("click", (e) => {
+      deleteBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (confirm(`Delete project "${project.name}"? (Files will not be deleted.)`)) {
+        if (await window.showAppConfirmation({
+          title: 'Delete project?',
+          message: `Delete "${project.name}" from the project list?`,
+          detail: 'Project files will not be deleted.',
+          confirmLabel: 'Delete project',
+          danger: true,
+        })) {
           deleteProject(project.id).then(() => {
             renderProjectCards();
           }).catch(err => {
@@ -4293,9 +4340,15 @@ function applyProjectFilters() {
     }
     
     if (deleteBtn) {
-      deleteBtn.addEventListener("click", (e) => {
+      deleteBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (confirm(`Delete project "${project.name}"? (Files will not be deleted.)`)) {
+        if (await window.showAppConfirmation({
+          title: 'Delete project?',
+          message: `Delete "${project.name}" from the project list?`,
+          detail: 'Project files will not be deleted.',
+          confirmLabel: 'Delete project',
+          danger: true,
+        })) {
           deleteProject(project.id).then(() => {
             applyProjectFilters();  // Refresh the filtered display
           }).catch(err => {

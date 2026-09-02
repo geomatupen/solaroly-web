@@ -792,6 +792,9 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   padding: 6px;
 }
 
+/* Keep polygon-only controls hidden while an orthophoto/mosaic is moved. */
+.postprocessEditToolButton[hidden] { display: none; }
+
 .postprocessEditToolButton svg {
   width: 17px;
   height: 17px;
@@ -833,6 +836,55 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessMap.deleteMode .leaflet-interactive { cursor: crosshair; }
 .postprocessMap.moveMode .leaflet-interactive { cursor: move; }
 .postprocessMap.rotateMode .leaflet-interactive { cursor: alias; }
+.postprocessMap.wholeLayerMoveMode,
+.postprocessMap.wholeLayerMoveMode .leaflet-container,
+.postprocessMap.wholeLayerMoveMode .leaflet-interactive,
+.postprocessMap.wholeLayerMoveMode .leaflet-tile-container { cursor: grab !important; }
+.postprocessMap.wholeLayerMoveMode.wholeLayerDragging,
+.postprocessMap.wholeLayerMoveMode.wholeLayerDragging .leaflet-interactive,
+.postprocessMap.wholeLayerMoveMode.wholeLayerDragging .leaflet-tile-container { cursor: grabbing !important; }
+.postprocessMap.wholeLayerMoveMode .leaflet-control-zoom { pointer-events: none; opacity: .45; }
+
+.postprocessWholeLayerMoveMetrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 7px 0;
+}
+
+.postprocessWholeLayerMoveMetrics[hidden] { display: none; }
+.postprocessWholeLayerMoveMetrics > span {
+  padding: 7px 9px;
+  border: 1px solid rgba(192, 132, 252, .38);
+  border-radius: 7px;
+  background: rgba(8, 15, 22, .46);
+}
+.postprocessWholeLayerMoveMetrics small,
+.postprocessWholeLayerMoveMetrics strong { display: block; }
+.postprocessWholeLayerMoveMetrics small { color: var(--muted); }
+.postprocessWholeLayerMoveMetrics > small { grid-column: 1 / -1; }
+
+#ppActionConfirmModal,
+#appConfirmModal,
+#appTextInputModal { z-index: 8000; }
+.postprocessActionConfirmContent { width: min(520px, calc(100vw - 28px)); }
+.postprocessActionConfirmDetails {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .025);
+}
+.postprocessActionConfirmDetails ul { margin: 7px 0 0; padding-left: 20px; }
+.postprocessActionConfirmContent .modalFooter button.danger {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #fff;
+}
+.appModalInputField { display: flex; flex-direction: column; gap: 6px; }
+.appModalInputField span { color: #cdd6df; font-size: 12px; font-weight: 600; }
+.appModalInputField input { width: 100%; }
 
 .postprocessMap .marker-icon {
   width: 14px !important;

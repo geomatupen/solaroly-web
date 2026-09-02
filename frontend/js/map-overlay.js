@@ -143,7 +143,13 @@ async function uploadGeoJsonOverlay() {
   
   // Check if name already exists
   if (overlayRegistry[name]) {
-    const changeName = confirm(`An overlay named "${name}" already exists. Do you want to replace it?`);
+    const changeName = await window.showAppConfirmation({
+      title: 'Replace map overlay?',
+      message: `An overlay named "${name}" already exists.`,
+      detail: 'The existing map layer will be replaced by the uploaded GeoJSON.',
+      confirmLabel: 'Replace overlay',
+      danger: true,
+    });
     if (!changeName) {
       alert('Please change the name before uploading.');
       return;
@@ -281,7 +287,13 @@ async function uploadTifOverlay() {
   
   // Check if name already exists
   if (overlayRegistry[name]) {
-    const changeName = confirm(`An overlay named "${name}" already exists. Do you want to replace it?`);
+    const changeName = await window.showAppConfirmation({
+      title: 'Replace map overlay?',
+      message: `An overlay named "${name}" already exists.`,
+      detail: 'The existing map layer will be replaced by the uploaded GeoTIFF.',
+      confirmLabel: 'Replace overlay',
+      danger: true,
+    });
     if (!changeName) {
       alert('Please change the name before uploading.');
       return;

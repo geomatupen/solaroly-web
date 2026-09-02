@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import copy
 import io
 import json
 import logging
@@ -56,6 +55,7 @@ except (ImportError, ModuleNotFoundError):
 from ..core.registry import register_backend
 from .bridge import train_entry, predict_entry
 from .postprocess import create_postprocess_router
+from .postprocess_layer_move import create_postprocess_layer_move_router, raster_shift_in_mercator
 from .settings import settings
 
 if settings.enable_detectron:
@@ -4907,6 +4907,7 @@ def api_model_meta(run_name: str):
 # -------------- Simple dynamic tiler for TIFF (XYZ) --------------
 _TILER_INDEX: Dict[str, List[Path]] = {}
 _TILER_STATS: Dict[tuple, Dict[str, Any]] = {}   # per (session, idx) cached stretch + meta
+_TILER_OFFSETS: Dict[str, List[Tuple[float, float]]] = {}
 
 def _session_tifs(session: str) -> List[Path]:
     """
@@ -5005,13 +5006,25 @@ def _stitch_tiles_to_tiff(tifs: List[Path], output_path: Path) -> bool:
         return False
 
 
-def _build_tile_layer_defs(tile_key: str, tifs: List[Path]) -> List[Dict[str, Any]]:
+def _build_tile_layer_defs(
+    tile_key: str,
+    tifs: List[Path],
+    raster_shift: dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
     """
     Register GeoTIFF sources under tile_key and return Leaflet-ready layer descriptors.
     """
     if not RIO_OK:
         return []
     _TILER_INDEX[tile_key] = tifs
+    east_m = float((raster_shift or {}).get("east_m") or 0.0)
+    north_m = float((raster_shift or {}).get("north_m") or 0.0)
+    try:
+        shared_offset = raster_shift_in_mercator(tifs[0], east_m, north_m) if tifs else (0.0, 0.0)
+    except Exception as exc:
+        logger.warning("Tiler: failed to calculate raster movement: %s", exc)
+        shared_offset = (0.0, 0.0)
+    offsets: List[Tuple[float, float]] = [shared_offset for _ in tifs]
     layers: List[Dict[str, Any]] = []
     for i, p in enumerate(tifs):
         try:
@@ -5021,6 +5034,14 @@ def _build_tile_layer_defs(tile_key: str, tifs: List[Path]) -> List[Dict[str, An
                     left, bottom, right, top = rasterio.warp.transform_bounds(
                         ds.crs, CRS.from_epsg(4326), *ds.bounds, densify_pts=21
                     )
+                    offset_x, offset_y = offsets[i]
+                    if offset_x or offset_y:
+                        to_mercator = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+                        to_wgs84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+                        min_x, min_y = to_mercator.transform(left, bottom)
+                        max_x, max_y = to_mercator.transform(right, top)
+                        left, bottom = to_wgs84.transform(min_x + offset_x, min_y + offset_y)
+                        right, top = to_wgs84.transform(max_x + offset_x, max_y + offset_y)
                     # Validate bounds are finite numbers
                     if not all(math.isfinite(x) for x in [left, bottom, right, top]):
                         raise ValueError("Invalid bounds detected")
@@ -5039,9 +5060,11 @@ def _build_tile_layer_defs(tile_key: str, tifs: List[Path]) -> List[Dict[str, An
                     "maxzoom": 22,
                     # [[south, west], [north, east]]
                     "bounds": [[bottom, left], [top, right]],
+                    "movement": {"east_m": east_m, "north_m": north_m},
                 })
         except Exception as e:
             logger.warning(f"Tiler: failed to inspect '{p}': {e}")
+    _TILER_OFFSETS[tile_key] = offsets
     return layers
 
 # --- small Inferno-like LUT (256x3) for single-band rasters without palette ---
@@ -5074,7 +5097,11 @@ def _inferno_lut_256() -> np.ndarray:
 
 
 @app.get("/api/session_tiles")
-async def api_session_tiles(session: str):
+async def api_session_tiles(
+    session: str,
+    postprocess_job_id: str | None = None,
+    source_kind: str | None = None,
+):
     """
     Return tile layer descriptors for ORIGINAL GeoTIFF(s) of this session.
     The frontend will add them under the Images panel (not the Layers list).
@@ -5083,7 +5110,19 @@ async def api_session_tiles(session: str):
         return {"ok": False, "reason": "rasterio_not_available", "layers": []}
 
     tifs = _session_tifs(session)
-    layers = _build_tile_layer_defs(session, tifs)
+    tile_key = session
+    raster_shift: dict[str, Any] | None = None
+    if postprocess_job_id or source_kind:
+        if not postprocess_job_id or source_kind not in {"segmentation", "anomaly"}:
+            raise HTTPException(status_code=400, detail="A valid post-processing job and source kind are required.")
+        _, job = _read_postprocess_job(postprocess_job_id)
+        configured = (job.get("sources") or {}).get(source_kind) or {}
+        if str(configured.get("result_id") or "") != session:
+            raise HTTPException(status_code=400, detail="This raster does not belong to the configured source.")
+        raster_shift = (job.get("raster_shifts") or {}).get(source_kind) or {}
+        revision = _safe_name(str(raster_shift.get("revision") or "original"))
+        tile_key = _safe_name(f"ppmove_{postprocess_job_id[:60]}_{source_kind}_{revision}")
+    layers = _build_tile_layer_defs(tile_key, tifs, raster_shift)
 
     return {"ok": True, "session": session, "layers": layers}
 
@@ -5388,6 +5427,8 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
     if not tifs or idx < 0 or idx >= len(tifs):
         raise HTTPException(404, "tile source not found")
     tif = tifs[idx]
+    offsets = _TILER_OFFSETS.get(session) or []
+    offset_x, offset_y = offsets[idx] if idx < len(offsets) else (0.0, 0.0)
 
     # XYZ tile bounds → EPSG:3857 meters
     t = mercantile.Tile(x=int(x), y=int(y), z=int(z))
@@ -5414,8 +5455,10 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
         nodata = src.nodata
         # overlap clip (prevents boundless)
         vb = vrt.bounds
-        oxmin, oymin = max(minx, vb.left),  max(miny, vb.bottom)
-        oxmax, oymax = min(maxx, vb.right), min(maxy, vb.top)
+        shifted_left, shifted_bottom = vb.left + offset_x, vb.bottom + offset_y
+        shifted_right, shifted_top = vb.right + offset_x, vb.top + offset_y
+        oxmin, oymin = max(minx, shifted_left), max(miny, shifted_bottom)
+        oxmax, oymax = min(maxx, shifted_right), min(maxy, shifted_top)
         if not (oxmin < oxmax and oymin < oymax):
             rgba = np.zeros((TILE_SIZE, TILE_SIZE, 4), np.uint8)
             im = Image.fromarray(rgba, "RGBA"); buf = BytesIO(); im.save(buf, "PNG"); buf.seek(0)
@@ -5428,7 +5471,13 @@ def tile_xyz(session: str, idx: int, z: int, x: int, y: int):
         Tt = max(0, int(np.floor((maxy - oymax) * sy)))  # y inverted
         B = min(TILE_SIZE, int(np.ceil((maxy - oymin) * sy)))
         W, H = max(1, R - L), max(1, B - Tt)
-        win = win_from_bounds(oxmin, oymin, oxmax, oymax, transform=vrt.transform)
+        win = win_from_bounds(
+            oxmin - offset_x,
+            oymin - offset_y,
+            oxmax - offset_x,
+            oymax - offset_y,
+            transform=vrt.transform,
+        )
 
         # choose visible bands (prefer declared RGB)
         try:
@@ -5559,6 +5608,9 @@ async def serve_project_file(file_path: str):
 
 app.include_router(
     create_postprocess_router(get_project_sessions_dir, get_project_overlays_dir, _media_url, logger)
+)
+app.include_router(
+    create_postprocess_layer_move_router(_read_postprocess_job, _resolve_postprocess_workspace, _atomic_json)
 )
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR), html=False), name="media")

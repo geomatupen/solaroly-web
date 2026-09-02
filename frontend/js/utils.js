@@ -20,6 +20,115 @@ window.api = {
   features: "/api/features"
 };
 
+let appConfirmationResolver = null;
+let appConfirmationWired = false;
+
+function finishAppConfirmation(confirmed){
+  const modal = document.getElementById("appConfirmModal");
+  modal?.classList.remove("show");
+  modal?.classList.add("hidden");
+  const resolve = appConfirmationResolver;
+  appConfirmationResolver = null;
+  if(resolve) resolve(Boolean(confirmed));
+}
+
+function wireAppConfirmation(){
+  if(appConfirmationWired) return;
+  appConfirmationWired = true;
+  document.getElementById("appConfirmAccept")?.addEventListener("click", ()=>finishAppConfirmation(true));
+  document.getElementById("appConfirmCancel")?.addEventListener("click", ()=>finishAppConfirmation(false));
+  document.getElementById("appConfirmClose")?.addEventListener("click", ()=>finishAppConfirmation(false));
+  document.getElementById("appConfirmModal")?.addEventListener("click", event=>{
+    if(event.target === document.getElementById("appConfirmModal")) finishAppConfirmation(false);
+  });
+}
+
+window.showAppConfirmation = function showAppConfirmation({
+  title = "Confirm action",
+  message = "Continue?",
+  detail = "",
+  confirmLabel = "Continue",
+  danger = false,
+} = {}){
+  wireAppConfirmation();
+  if(appConfirmationResolver) finishAppConfirmation(false);
+  const modal = document.getElementById("appConfirmModal");
+  if(!modal) return Promise.resolve(false);
+  document.getElementById("appConfirmTitle").textContent = title;
+  document.getElementById("appConfirmMessage").textContent = message;
+  const detailNode = document.getElementById("appConfirmDetail");
+  detailNode.textContent = detail;
+  detailNode.hidden = !detail;
+  const accept = document.getElementById("appConfirmAccept");
+  accept.textContent = confirmLabel;
+  accept.classList.toggle("danger", danger);
+  modal.classList.remove("hidden");
+  modal.classList.add("show");
+  accept.focus();
+  return new Promise(resolve=>{ appConfirmationResolver = resolve; });
+};
+
+let appTextInputResolver = null;
+let appTextInputWired = false;
+
+function finishAppTextInput(accepted){
+  const modal = document.getElementById("appTextInputModal");
+  const input = document.getElementById("appTextInputValue");
+  const error = document.getElementById("appTextInputError");
+  if(accepted && !input.value.trim()){
+    error.textContent = "Name cannot be empty.";
+    error.hidden = false;
+    input.focus();
+    return;
+  }
+  modal?.classList.remove("show");
+  modal?.classList.add("hidden");
+  const resolve = appTextInputResolver;
+  appTextInputResolver = null;
+  if(resolve) resolve(accepted ? input.value.trim() : null);
+}
+
+function wireAppTextInput(){
+  if(appTextInputWired) return;
+  appTextInputWired = true;
+  document.getElementById("appTextInputAccept")?.addEventListener("click", ()=>finishAppTextInput(true));
+  document.getElementById("appTextInputCancel")?.addEventListener("click", ()=>finishAppTextInput(false));
+  document.getElementById("appTextInputClose")?.addEventListener("click", ()=>finishAppTextInput(false));
+  document.getElementById("appTextInputModal")?.addEventListener("click", event=>{
+    if(event.target === document.getElementById("appTextInputModal")) finishAppTextInput(false);
+  });
+  document.getElementById("appTextInputValue")?.addEventListener("keydown", event=>{
+    if(event.key === "Enter"){
+      event.preventDefault();
+      finishAppTextInput(true);
+    }
+  });
+}
+
+window.showAppTextInput = function showAppTextInput({
+  title = "Update name",
+  label = "Name",
+  value = "",
+  confirmLabel = "Save",
+  maxLength = 128,
+} = {}){
+  wireAppTextInput();
+  if(appTextInputResolver) finishAppTextInput(false);
+  const modal = document.getElementById("appTextInputModal");
+  if(!modal) return Promise.resolve(null);
+  document.getElementById("appTextInputTitle").textContent = title;
+  document.getElementById("appTextInputLabel").textContent = label;
+  const input = document.getElementById("appTextInputValue");
+  input.maxLength = Number(maxLength) || 128;
+  input.value = value;
+  document.getElementById("appTextInputError").hidden = true;
+  document.getElementById("appTextInputAccept").textContent = confirmLabel;
+  modal.classList.remove("hidden");
+  modal.classList.add("show");
+  window.setTimeout(()=>{ input.focus(); input.select(); }, 0);
+  return new Promise(resolve=>{ appTextInputResolver = resolve; });
+};
+
 const featureDefaults = {
   detectron: true,
   yolo: false,

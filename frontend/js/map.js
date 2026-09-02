@@ -404,7 +404,7 @@ document.addEventListener('mousedown', (e)=>{
 });
 
 
-document.addEventListener('click', (e)=>{
+document.addEventListener('click', async (e)=>{
   const li = e.target.closest('#layerMenu li');
   if (!li) return;
 
@@ -551,12 +551,17 @@ document.addEventListener('click', (e)=>{
   }
 
   if (action === 'delete') {
-    // Show confirmation dialog
     const layerName = key || 'this overlay';
-    const confirmDelete = confirm(`Are you sure you want to delete "${layerName}"?`);
+    closeLayerMenu();
+    const confirmDelete = await window.showAppConfirmation({
+      title: 'Delete map layer?',
+      message: `Delete "${layerName}"?`,
+      detail: 'Saved overlay files for this layer will be removed.',
+      confirmLabel: 'Delete layer',
+      danger: true,
+    });
     
     if (!confirmDelete) {
-      closeLayerMenu();
       return;
     }
     

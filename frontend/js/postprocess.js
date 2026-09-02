@@ -119,6 +119,7 @@
     if (text) text.textContent = message;
   }
   let replacementResolver = null;
+  let actionConfirmationResolver = null;
 
   function finishReplacementConfirmation(confirmed) {
     const modal = byId("ppReplacementModal");
@@ -139,6 +140,70 @@
     byId("ppReplacementConfirm").focus();
     return new Promise(resolve => { replacementResolver = resolve; });
   }
+
+  function finishActionConfirmation(confirmed) {
+    const modal = byId("ppActionConfirmModal");
+    modal?.classList.remove("show");
+    modal?.classList.add("hidden");
+    if (modal && modal.parentElement !== document.body) document.body.appendChild(modal);
+    const resolve = actionConfirmationResolver;
+    actionConfirmationResolver = null;
+    if (resolve) resolve(Boolean(confirmed));
+  }
+
+  function confirmPostprocessAction({ title, message, details = [], confirmLabel = "Continue", danger = false }) {
+    if (actionConfirmationResolver) finishActionConfirmation(false);
+    byId("ppActionConfirmTitle").textContent = title;
+    byId("ppActionConfirmMessage").textContent = message;
+    const detailsNode = byId("ppActionConfirmDetails");
+    detailsNode.replaceChildren();
+    if (details.length) {
+      const intro = document.createElement("strong");
+      intro.textContent = "Outputs archived if present";
+      const list = document.createElement("ul");
+      for (const detail of details) {
+        const item = document.createElement("li");
+        item.textContent = detail;
+        list.appendChild(item);
+      }
+      detailsNode.append(intro, list);
+      detailsNode.hidden = false;
+    } else {
+      detailsNode.hidden = true;
+    }
+    const accept = byId("ppActionConfirmAccept");
+    accept.textContent = confirmLabel;
+    accept.classList.toggle("danger", danger);
+    const modal = byId("ppActionConfirmModal");
+    const preview = document.querySelector(".postprocessPreview");
+    if (document.fullscreenElement === preview) preview.appendChild(modal);
+    modal.classList.remove("hidden");
+    modal.classList.add("show");
+    accept.focus();
+    return new Promise(resolve => { actionConfirmationResolver = resolve; });
+  }
+
+  const wholeLayerMove = window.PostprocessLayerMove.create({
+    state,
+    byId,
+    confirmAction: confirmPostprocessAction,
+    requestJson: (...args) => requestJson(...args),
+    setMessage: (...args) => setMessage(...args),
+    lockControls: locked => lockProcessingControls(locked),
+    renderLayers: () => {
+      renderPreviewLayers();
+      renderReferenceLayers();
+    },
+    stopEditing: confirmDiscard => stopEditing(confirmDiscard),
+    reloadAfterSave: async () => {
+      state.previewDataCache.clear();
+      state.previewLayerCache.clear();
+      state.referenceSourceCache.clear();
+      state.referenceLoadPromises.clear();
+      resetModeCache();
+      await loadGeojsons();
+    },
+  });
 
   function closeGenerationDetails() {
     const modal = byId("ppGenerationDetailsModal");
@@ -659,7 +724,13 @@
     anomalyReviewPane.style.zIndex = "440";
     anomalyReviewPane.style.pointerEvents = "none";
     window.L.control.layers({ Street: street, Satellite: satellite }, {}, { position: "topleft" }).addTo(state.map);
-    window.addStandardMeasureControl?.(state.map, { onStart: () => stopEditing(true) });
+    window.addStandardMeasureControl?.(state.map, {
+      onStart: () => {
+        if (!state.editing) return;
+        state.map?._solarolyMeasureControl?.cancel();
+        void requestStopEditing();
+      },
+    });
     return state.map;
   }
 
@@ -1042,11 +1113,12 @@
     }
     for (const [id, item] of state.referenceLayers) {
       const row = document.createElement("div");
-      row.className = "postprocessLayerItem";
+      const isEditing = state.editing?.wholeLayer && state.editing.owner === "reference" && state.editing.item === item;
+      row.className = `postprocessLayerItem${isEditing ? " editing" : ""}${state.editing && !isEditing ? " locked" : ""}`;
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = Boolean(item.layer && state.map?.hasLayer(item.layer));
-      checkbox.disabled = Boolean(item.loading);
+      checkbox.disabled = Boolean(item.loading || state.editing);
       checkbox.title = `Show ${item.label}`;
       checkbox.addEventListener("change", async () => {
         try {
@@ -1062,7 +1134,7 @@
           if (checkbox.checked) item.layer.addTo(state.map);
           else if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
           byId("ppReferenceStatus").textContent = checkbox.checked
-            ? `${item.label} is visible as a read-only reference.`
+            ? `${item.label} is visible${item.movableWholeLayer ? " and can store a job-only whole-layer offset" : " as a read-only reference"}.`
             : `${item.label} is hidden.`;
         } catch (error) {
           checkbox.checked = false;
@@ -1093,9 +1165,10 @@
       opacity.value = String(item.opacity ?? 0.75);
       opacity.className = "postprocessReferenceOpacity";
       opacity.title = "Reference opacity";
+      opacity.disabled = Boolean(state.editing);
       opacity.addEventListener("input", () => setReferenceOpacity(item, Number(opacity.value)));
       actions.appendChild(opacity);
-      const layerMenu = createLayerMenu(item.label, Boolean(item.loading), "reference");
+      const layerMenu = createLayerMenu(item.label, Boolean(item.loading || state.editing), "reference");
       layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
         const bounds = item.bounds || item.layer?.getBounds?.();
         if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
@@ -1111,6 +1184,24 @@
           },
         ));
       }
+      const moveWholeLayer = layerMenuButton(
+        isEditing ? "Moving whole layer" : "Move whole layer",
+        layerMenu.menu,
+        () => void wholeLayerMove.begin({
+          owner: "reference",
+          kind: item.sourceKind,
+          stage: item.referenceStage,
+          layerType: "raster",
+          item,
+        }),
+        { disabled: !item.movableWholeLayer || Boolean(state.editing) },
+      );
+      if (!item.movableWholeLayer) {
+        moveWholeLayer.title = item.referenceStage === "images"
+          ? "Individual images stay read-only. Move an orthophoto or mosaic instead."
+          : "Only the current tab's configured orthophoto or mosaic can be moved.";
+      }
+      layerMenu.menu.appendChild(moveWholeLayer);
       if (item.temporary) {
         layerMenu.menu.appendChild(layerMenuButton("Remove", layerMenu.menu, () => {
           if (state.map.hasLayer(item.layer)) state.map.removeLayer(item.layer);
@@ -1393,11 +1484,11 @@
     item.bounds = item.layer.getBounds?.();
   }
 
-  function labeledReferenceItem(item, sourceLabel) {
-    if (!sourceLabel) return item;
+  function labeledReferenceItem(item, sourceLabel, metadata = {}) {
     const labeled = {
       ...item,
-      label: `${sourceLabel} · ${item.label}`,
+      ...metadata,
+      label: sourceLabel ? `${sourceLabel} · ${item.label}` : item.label,
     };
     if (item.loader) {
       labeled.loader = async () => {
@@ -1418,7 +1509,16 @@
   function applyReferenceSource(loaded, { append = false, sourceKey = "", sourceLabel = "" } = {}) {
     const layers = append ? new Map(state.referenceLayers) : new Map();
     for (const [key, item] of loaded.layers) {
-      layers.set(sourceKey ? `${sourceKey}:${key}` : key, labeledReferenceItem(item, sourceLabel));
+      const movableRaster = Boolean(
+        state.currentJobId
+        && key === "orthophoto"
+        && sourceKey === state.mode
+      );
+      layers.set(sourceKey ? `${sourceKey}:${key}` : key, labeledReferenceItem(item, sourceLabel, {
+        sourceKind: sourceKey || null,
+        movableWholeLayer: movableRaster,
+        referenceStage: key,
+      }));
     }
     state.referenceLayers = layers;
     renderReferenceLayers();
@@ -1429,7 +1529,9 @@
 
   async function loadReferenceSources(resultId, options = {}) {
     const token = ++state.referenceToken;
-    const cached = state.referenceSourceCache.get(resultId);
+    const movableSource = Boolean(state.currentJobId && options.sourceKey === state.mode);
+    const cacheKey = `${resultId}::${movableSource ? `${state.currentJobId}:${options.sourceKey}` : "read-only"}`;
+    const cached = state.referenceSourceCache.get(cacheKey);
     if (cached) {
       applyReferenceSource(cached, options);
       return;
@@ -1438,12 +1540,15 @@
     byId("ppReferenceStatus").textContent = options.sourceLabel
       ? `Finding ${options.sourceLabel.toLowerCase()} orthophoto and image references…`
       : "Finding linked orthophoto and image references…";
-    let pending = state.referenceLoadPromises.get(resultId);
+    let pending = state.referenceLoadPromises.get(cacheKey);
     if (!pending) {
       pending = (async () => {
         const [summaryResult, tilesResult] = await Promise.allSettled([
           requestJson(`/api/session_summary?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
-          requestJson(`/api/session_tiles?session=${encodeURIComponent(resultId)}`, { cache: "no-store" }),
+          requestJson(
+            `/api/session_tiles?session=${encodeURIComponent(resultId)}${movableSource ? `&postprocess_job_id=${encodeURIComponent(state.currentJobId)}&source_kind=${encodeURIComponent(options.sourceKey)}` : ""}`,
+            { cache: "no-store" },
+          ),
         ]);
         const summary = summaryResult.status === "fulfilled" ? summaryResult.value : {};
         const tiles = tilesResult.status === "fulfilled" ? tilesResult.value : {};
@@ -1465,8 +1570,12 @@
             }).addTo(group);
           }
           layers.set("orthophoto", {
-            label: "Orthophoto",
-            detail: `${tiles.layers.length.toLocaleString()} linked tile layer${tiles.layers.length === 1 ? "" : "s"} · read-only`,
+            label: tiles.layers.some(layer => /mosaic/i.test(String(layer.name || ""))) ? "Approximate mosaic" : "Orthophoto",
+            detail: (() => {
+              const movement = tiles.layers[0]?.movement || {};
+              const distance = Math.hypot(Number(movement.east_m || 0), Number(movement.north_m || 0));
+              return `${tiles.layers.length.toLocaleString()} linked tile layer${tiles.layers.length === 1 ? "" : "s"}${distance ? ` · shifted ${distance.toFixed(2)} m` : ""}`;
+            })(),
             color: "#f8fafc",
             layer: group,
             bounds: combinedBounds,
@@ -1494,14 +1603,14 @@
           : "No linked orthophoto or geolocated image references were found.";
         return { layers, status };
       })();
-      state.referenceLoadPromises.set(resultId, pending);
+      state.referenceLoadPromises.set(cacheKey, pending);
     }
     let loaded;
     try {
       loaded = await pending;
-      state.referenceSourceCache.set(resultId, loaded);
+      state.referenceSourceCache.set(cacheKey, loaded);
     } finally {
-      if (state.referenceLoadPromises.get(resultId) === pending) state.referenceLoadPromises.delete(resultId);
+      if (state.referenceLoadPromises.get(cacheKey) === pending) state.referenceLoadPromises.delete(cacheKey);
     }
     if (token !== state.referenceToken) return;
     applyReferenceSource(loaded, options);
@@ -1512,11 +1621,11 @@
     const segmentationId = String(sources.segmentation?.result_id || sources.segmentation?.workspace_result_id || "");
     const anomalyId = String(sources.anomaly?.result_id || sources.anomaly?.workspace_result_id || "");
     if (state.mode !== "anomaly") {
-      if (segmentationId) await loadReferenceSources(segmentationId);
+      if (segmentationId) await loadReferenceSources(segmentationId, { sourceKey: "segmentation", sourceLabel: "Segmentation run" });
       return;
     }
     if (anomalyId && anomalyId === segmentationId) {
-      await loadReferenceSources(anomalyId, { sourceKey: "shared", sourceLabel: "Shared run" });
+      await loadReferenceSources(anomalyId, { sourceKey: "anomaly", sourceLabel: "Shared run" });
       return;
     }
     let appended = false;
@@ -1748,6 +1857,10 @@
   function updateEditHistoryControls(message = "") {
     const editing = state.editing;
     if (!editing) return;
+    if (editing.wholeLayer) {
+      wholeLayerMove.updatePreview(message);
+      return;
+    }
     editing.dirty = editing.historyIndex > 0;
     byId("ppUndoEdits").disabled = editing.historyIndex <= 0;
     byId("ppRedoEdits").disabled = editing.historyIndex >= editing.history.length - 1;
@@ -1804,6 +1917,7 @@
   function disableEditingTools() {
     const editing = state.editing;
     if (!editing) return;
+    if (editing.wholeLayer) return;
     if (editing.historyTimer) {
       window.clearTimeout(editing.historyTimer);
       editing.historyTimer = null;
@@ -1856,7 +1970,7 @@
     if (stage !== "source" && !GENERATED_STAGES.has(stage)) return;
     const item = state.previewLayers.get(stage);
     if (!item || !state.workflowId) return;
-    if (state.editing?.dirty && !window.confirm("Discard the unsaved edits on the current layer?")) return;
+    if (state.editing) return;
     state.map?._solarolyMeasureControl?.cancel();
     stopEditing(false);
     const visibleStages = new Set(
@@ -2080,6 +2194,10 @@
     if (!state.editing) return;
     const editing = state.editing;
     if (targetIndex < 0 || targetIndex >= editing.history.length || targetIndex === editing.historyIndex) return;
+    if (editing.wholeLayer) {
+      wholeLayerMove.restore(targetIndex);
+      return;
+    }
     const mode = editing.mode || "vertices";
     disableEditingTools();
     const wasVisible = state.map.hasLayer(editing.item.layer);
@@ -2112,8 +2230,17 @@
 
   function stopEditing(confirmDiscard = true) {
     if (!state.editing) return true;
-    if (confirmDiscard && state.editing.dirty && !window.confirm("Exit and discard these unsaved polygon edits?")) return false;
     const editing = state.editing;
+    if (confirmDiscard && editing.dirty) return false;
+    if (editing.wholeLayer) {
+      wholeLayerMove.detach({ restoreTransform: true });
+      state.editing = null;
+      byId("ppLayerMovePanel").hidden = true;
+      lockProcessingControls(false);
+      renderPreviewLayers();
+      renderReferenceLayers();
+      return true;
+    }
     disableEditingTools();
     for (const [stage, item] of state.previewLayers) {
       item.layer.eachLayer(layer => {
@@ -2130,11 +2257,30 @@
     byId("ppEditPanel").hidden = true;
     lockProcessingControls(false);
     renderPreviewLayers();
+    renderReferenceLayers();
     return true;
+  }
+
+  async function requestStopEditing() {
+    if (!state.editing) return true;
+    if (!state.editing.dirty) return stopEditing(false);
+    const confirmed = await confirmPostprocessAction({
+      title: "Discard unsaved changes?",
+      message: state.editing.wholeLayer
+        ? "The layer will return to its last saved position."
+        : "The unsaved polygon edits on this layer will be discarded.",
+      confirmLabel: "Discard changes",
+      danger: true,
+    });
+    return confirmed ? stopEditing(false) : false;
   }
 
   async function saveLayerEdits() {
     if (!state.editing?.dirty) return;
+    if (state.editing.wholeLayer) {
+      await wholeLayerMove.save();
+      return;
+    }
     disableEditingTools();
     const editing = state.editing;
     const button = byId("ppSaveEdits");
@@ -2292,6 +2438,25 @@
           { disabled: Boolean(state.editing) },
         ));
       }
+      const canMoveWholeLayer = Boolean(
+        state.currentJobId
+        && (key === "source" || GENERATED_STAGES.has(key))
+        && !readOnlyReference
+      );
+      const moveWholeLayer = layerMenuButton(
+        isEditing && state.editing?.wholeLayer ? "Moving whole layer" : "Move whole layer",
+        layerMenu.menu,
+        () => void wholeLayerMove.begin({
+          owner: "processing",
+          kind: state.mode,
+          stage: key,
+          layerType: "geojson",
+          item,
+        }),
+        { disabled: !canMoveWholeLayer || Boolean(state.editing) },
+      );
+      if (!canMoveWholeLayer) moveWholeLayer.title = "Only GeoJSON layers owned by this post-processing job can be moved.";
+      layerMenu.menu.appendChild(moveWholeLayer);
       if (GENERATED_STAGES.has(key)) {
         const send = layerMenuButton("Link to Map", layerMenu.menu, () => sendLayerToMap(key, send), {
           disabled: Boolean(state.editing),
@@ -3093,6 +3258,12 @@
     byId("ppReplacementModal")?.addEventListener("click", event => {
       if (event.target === byId("ppReplacementModal")) finishReplacementConfirmation(false);
     });
+    byId("ppActionConfirmAccept")?.addEventListener("click", () => finishActionConfirmation(true));
+    byId("ppActionConfirmCancel")?.addEventListener("click", () => finishActionConfirmation(false));
+    byId("ppActionConfirmClose")?.addEventListener("click", () => finishActionConfirmation(false));
+    byId("ppActionConfirmModal")?.addEventListener("click", event => {
+      if (event.target === byId("ppActionConfirmModal")) finishActionConfirmation(false);
+    });
     byId("ppGenerationDetailsClose")?.addEventListener("click", closeGenerationDetails);
     byId("ppGenerationDetailsDone")?.addEventListener("click", closeGenerationDetails);
     byId("ppGenerationDetailsModal")?.addEventListener("click", event => {
@@ -3141,7 +3312,11 @@
     byId("ppUndoEdits").addEventListener("click", undoEdits);
     byId("ppRedoEdits").addEventListener("click", redoEdits);
     byId("ppSaveEdits").addEventListener("click", saveLayerEdits);
-    byId("ppExitEditing").addEventListener("click", () => stopEditing(true));
+    byId("ppExitEditing").addEventListener("click", () => void requestStopEditing());
+    byId("ppLayerMoveUndo").addEventListener("click", undoEdits);
+    byId("ppLayerMoveRedo").addEventListener("click", redoEdits);
+    byId("ppLayerMoveSave").addEventListener("click", saveLayerEdits);
+    byId("ppLayerMoveExit").addEventListener("click", () => void requestStopEditing());
     byId("ppAddTemporaryLayer").addEventListener("click", () => byId("ppTemporaryLayerFile").click());
     byId("ppTemporaryLayerFile").addEventListener("change", async event => {
       const file = event.target.files?.[0];
@@ -3159,12 +3334,14 @@
       if (!navigation || navigation.id === "btnPostprocess") return;
       exitPreviewFullscreen();
       if (!state.editing) return;
-      if (state.editing.dirty && !window.confirm("Leave Post-process and discard the unsaved polygon edits?")) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
-      stopEditing(false);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const target = navigation;
+      void requestStopEditing().then(confirmed => {
+        if (!confirmed) return;
+        if (target.matches("button[data-tab]")) target.click();
+        else if (target.href) window.location.assign(target.href);
+      });
     }, true);
     window.addEventListener("beforeunload", event => {
       if (!state.editing?.dirty) return;
@@ -4013,7 +4190,7 @@
   function setMode(mode) {
     const nextMode = mode === "anomaly" ? "anomaly" : "segmentation";
     if (nextMode === state.mode) return;
-    if (state.editing) stopEditing(true);
+    if (state.editing) stopEditing(false);
     cacheCurrentModeState();
     state.pollToken += 1;
     invalidateModeLoad();

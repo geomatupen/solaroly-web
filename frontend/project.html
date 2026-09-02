@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260901a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260830c" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260902b" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -740,7 +740,7 @@
               <div class="postprocessReferenceHeader">
                 <div>
                   <h3>Reference layers</h3>
-                  <small class="muted">Linked imagery is read-only and is not copied.</small>
+                  <small class="muted">Source imagery is not copied; eligible orthophotos and mosaics can store a job-only offset.</small>
                 </div>
                 <button id="ppAddTemporaryLayer" class="secondary tiny" type="button"><span aria-hidden="true">＋</span> Add temporary GeoJSON</button>
                 <input id="ppTemporaryLayerFile" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
@@ -767,6 +767,25 @@
                   <button id="ppExitEditing" class="secondary tiny postprocessEditToolButton" type="button" title="Exit editing" aria-label="Exit editing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                 </div>
                 <div id="ppEditStatus" class="muted tiny">Choose an editing tool.</div>
+              </div>
+              <div id="ppLayerMovePanel" class="postprocessEditPanel postprocessLayerMovePanel" hidden>
+                <div class="postprocessEditIdentity">
+                  <span>Moving complete layer</span>
+                  <strong id="ppLayerMoveName">—</strong>
+                  <small id="ppLayerMoveIdentity">—</small>
+                </div>
+                <div class="postprocessWholeLayerMoveMetrics">
+                  <span><small>East / west</small><strong id="ppLayerMoveEast">0.00 m</strong></span>
+                  <span><small>North / south</small><strong id="ppLayerMoveNorth">0.00 m</strong></span>
+                  <small>Drag anywhere on the map to reposition the complete layer.</small>
+                </div>
+                <div class="postprocessEditActions">
+                  <button id="ppLayerMoveUndo" class="secondary tiny postprocessEditToolButton" type="button" title="Undo movement" aria-label="Undo movement" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5M5 12h8a6 6 0 0 1 6 6"/></svg></button>
+                  <button id="ppLayerMoveRedo" class="secondary tiny postprocessEditToolButton" type="button" title="Redo movement" aria-label="Redo movement" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5m4-5h-8a6 6 0 0 0-6 6"/></svg></button>
+                  <button id="ppLayerMoveSave" class="tiny" type="button" disabled>Save movement</button>
+                  <button id="ppLayerMoveExit" class="secondary tiny postprocessEditToolButton" type="button" title="Exit movement" aria-label="Exit movement"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+                </div>
+                <div id="ppLayerMoveStatus" class="muted tiny">Drag anywhere on the map to reposition the complete layer.</div>
               </div>
               <h3 class="postprocessLayerSectionTitle">Processing layers</h3>
               <div id="ppLayerList" class="postprocessLayerList">
@@ -1022,6 +1041,60 @@
       <div class="modalFooter">
         <button id="ppReplacementCancel" class="secondary" type="button">Cancel</button>
         <button id="ppReplacementConfirm" type="button">Replace output</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ppActionConfirmModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ppActionConfirmTitle">
+    <div class="modalContent postprocessActionConfirmContent">
+      <div class="modalHeader">
+        <h3 id="ppActionConfirmTitle">Confirm action</h3>
+        <button id="ppActionConfirmClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p id="ppActionConfirmMessage"></p>
+        <div id="ppActionConfirmDetails" class="postprocessActionConfirmDetails" hidden></div>
+      </div>
+      <div class="modalFooter">
+        <button id="ppActionConfirmCancel" class="secondary" type="button">Cancel</button>
+        <button id="ppActionConfirmAccept" type="button">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="appConfirmModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="appConfirmTitle">
+    <div class="modalContent postprocessActionConfirmContent">
+      <div class="modalHeader">
+        <h3 id="appConfirmTitle">Confirm action</h3>
+        <button id="appConfirmClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <p id="appConfirmMessage"></p>
+        <p id="appConfirmDetail" class="muted tiny" hidden></p>
+      </div>
+      <div class="modalFooter">
+        <button id="appConfirmCancel" class="secondary" type="button">Cancel</button>
+        <button id="appConfirmAccept" type="button">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="appTextInputModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="appTextInputTitle">
+    <div class="modalContent postprocessActionConfirmContent">
+      <div class="modalHeader">
+        <h3 id="appTextInputTitle">Update name</h3>
+        <button id="appTextInputClose" class="iconBtn" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <label class="appModalInputField" for="appTextInputValue">
+          <span id="appTextInputLabel">Name</span>
+          <input id="appTextInputValue" type="text" maxlength="128" autocomplete="off" />
+        </label>
+        <p id="appTextInputError" class="statusLine tiny err" hidden></p>
+      </div>
+      <div class="modalFooter">
+        <button id="appTextInputCancel" class="secondary" type="button">Cancel</button>
+        <button id="appTextInputAccept" type="button">Save</button>
       </div>
     </div>
   </div>
@@ -1459,14 +1532,15 @@
     </div>
   </div>
 
-  <script src="js/utils.js?v=20260901a"></script>
+  <script src="js/utils.js?v=20260902a"></script>
   <script src="js/measure-control.js?v=20260830b"></script>
   <script src="js/georeferenced-image-overlay.js?v=20260901b"></script>
-  <script src="js/map.js?v=20260901b"></script>
-  <script src="js/map-overlay.js?v=20260827b"></script>
+  <script src="js/map.js?v=20260902a"></script>
+  <script src="js/map-overlay.js?v=20260902a"></script>
   <script src="js/test-image-alignment.js?v=20260901e"></script>
-  <script src="js/main.js?v=20260901j"></script>
-  <script src="js/postprocess.js?v=20260831b"></script>
+  <script src="js/main.js?v=20260902a"></script>
+  <script src="js/postprocess-layer-move.js?v=20260902c"></script>
+  <script src="js/postprocess.js?v=20260902c"></script>
   <script src="js/postprocess_segmentation.js?v=20260827m"></script>
   <script src="js/postprocess_anomaly.js?v=20260830a"></script>
   <script>
