@@ -52,23 +52,27 @@ function navigateToProject(projectId) {
   console.log("Navigation triggered (this may not log if page reloads)");
 }
 
+let projectTabHistoryListenerInstalled = false;
 function addPopstateListener() {
   /**
    * Listen for browser back button (popstate event)
    * Allows navigation between projects using browser back/forward
    */
-  window.addEventListener('popstate', async (event) => {
+  if(projectTabHistoryListenerInstalled || !window.ProjectTabRouter) return;
+  projectTabHistoryListenerInstalled = true;
+  window.ProjectTabRouter.listen(async tabId => {
     const projectId = getProjectIdFromURL();
     if (projectId && activeProject?.id !== projectId) {
       // Switch to the project from URL
       try {
         await activateProject(projectId);
         updateProjectUI();
-        switchToTab("tab-test");
       } catch (err) {
         console.error("Failed to switch project from URL:", err);
+        return;
       }
     }
+    switchToTab(tabId, { updateUrl: false });
   });
 }
 
@@ -405,9 +409,13 @@ async function showSharedOverlayOnMap(overlay){
 
 window.showSharedOverlayOnMap = showSharedOverlayOnMap;
 
-function switchToTab(tabId){
+function switchToTab(tabId, { updateUrl = true, replaceUrl = false } = {}){
+  const validTab = document.querySelector(`.tabs button[data-tab="${tabId}"]`)
+    && document.getElementById(tabId);
+  if(!validTab) tabId = "tab-test";
   $$(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab === tabId));
   $$(".tabPanel").forEach(p=>p.classList.toggle("active", p.id === tabId));
+  if(updateUrl) window.ProjectTabRouter?.navigate(tabId, { replace: replaceUrl });
   setMapRasterLayersAttached(tabId === "tab-map");
   if(tabId === "tab-map" && MAP){ 
     setTimeout(()=>{
@@ -3950,6 +3958,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
   }
 
   setupUI();
+  addPopstateListener();
   if(typeof applyFeatureFlags === 'function'){
     applyFeatureFlags();
   }
@@ -3958,6 +3967,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
     initMapOverlayUI();
   }
   connectLogs();
+  switchToTab(window.ProjectTabRouter?.current() || "tab-test", { replaceUrl: true });
   await Promise.all([loadDatasets(), loadModels(getSelectedBackend(), '#selModelFolder'), loadTrainedModels(), loadTrainingDatasets()]);
 });
 
