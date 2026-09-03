@@ -732,12 +732,23 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .leaflet-tooltip.postprocessFeatureLabel {
   pointer-events: none;
   border: 0;
-  background: rgba(8, 15, 22, .88);
-  color: #fff;
+  background: transparent;
+  color: #050505;
   box-shadow: none;
+  text-shadow:
+    -1px -1px 0 #fff,
+    1px -1px 0 #fff,
+    -1px 1px 0 #fff,
+    1px 1px 0 #fff,
+    0 -1px 0 #fff,
+    0 1px 0 #fff,
+    -1px 0 0 #fff,
+    1px 0 0 #fff;
+  font-weight: 700;
   font-size: 11px;
-  padding: 2px 4px;
+  padding: 0;
 }
+.leaflet-tooltip.postprocessFeatureLabel::before { display: none; }
 
 .postprocessMap.mergeMode .leaflet-interactive { cursor: cell; }
 

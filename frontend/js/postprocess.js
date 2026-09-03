@@ -581,6 +581,16 @@
     return { wrapper, menu };
   }
 
+  function closeLabelControlOnMenuClick(layerMenu, item, render) {
+    const dots = layerMenu.wrapper.querySelector(".iconDots");
+    dots?.addEventListener("click", event => {
+      if (!item.labelControlOpen) return;
+      event.stopImmediatePropagation();
+      item.labelControlOpen = false;
+      render();
+    }, { capture: true });
+  }
+
   function showListLoading(id, message) {
     const container = byId(id);
     container.replaceChildren();
@@ -1192,6 +1202,7 @@
       opacity.addEventListener("input", () => setReferenceOpacity(item, Number(opacity.value)));
       actions.appendChild(opacity);
       const layerMenu = createLayerMenu(item.label, Boolean(item.loading || state.editing), "reference");
+      closeLabelControlOnMenuClick(layerMenu, item, renderReferenceLayers);
       layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
         const bounds = item.bounds || item.layer?.getBounds?.();
         if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
@@ -2477,6 +2488,7 @@
       detail.textContent = `${Number(item.count).toLocaleString()} polygons${methodLabel}${key === "source" ? " · Original preserved" : readOnlyReference ? " · Read-only" : ""}`;
       text.append(name, detail);
       const layerMenu = createLayerMenu(item.label, Boolean(state.editing), "processing");
+      closeLabelControlOnMenuClick(layerMenu, item, renderPreviewLayers);
       layerMenu.menu.appendChild(layerMenuButton("Focus", layerMenu.menu, () => {
         const bounds = item.layer.getBounds?.();
         if (bounds?.isValid()) state.map.fitBounds(bounds, { padding: [18, 18], maxZoom: 21 });
