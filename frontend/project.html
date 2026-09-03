@@ -408,7 +408,7 @@
             <div>
               <h2 id="ppHeaderTitle">Post-processing</h2>
               <small id="ppHeaderJobId" class="muted postprocessJobId" hidden></small>
-              <p id="ppHeaderDescription" class="muted">Use this tab when anomaly inference was run on overlapping individual images and anomaly results need to be matched with optical segmentation results and cleaned of duplicate detections. If inference was run on already aligned optical and thermal orthomosaics, post-processing is not needed.</p>
+              <p id="ppHeaderDescription" class="muted">Use this tab for segmentation and anomaly results. Segmentation post-processing is needed even for orthophotos to merge split tiles, edit polygons, and create panel rows. For anomalies, use it when overlapping individual-image results need matching or duplicate cleanup; aligned orthophoto anomalies can skip post-processing if they are already accurate.</p>
             </div>
           </div>
           <div class="row">
