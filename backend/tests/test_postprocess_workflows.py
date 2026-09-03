@@ -391,6 +391,7 @@ class PostprocessWorkflowTests(unittest.TestCase):
                 regularized_path,
                 None,
                 rows_output_path=rows_path,
+                panels_output_path=regularized_path,
                 assign_ids=False,
             )
 

@@ -809,7 +809,6 @@ def create_postprocess_router(
                     input_path,
                     None,
                     rows_output_path=rows_path,
-                    panels_output_path=input_path,
                     max_orientation_difference_deg=request.max_orientation_difference_deg,
                     max_lateral_distance_factor=request.max_lateral_distance_factor,
                     max_along_gap_factor=request.max_along_gap_factor,
@@ -818,7 +817,6 @@ def create_postprocess_router(
                     assign_ids=False,
                     callback=progress_callback(workflow_dir, "hierarchy"),
                 )
-                clear_panel_ids(input_path)
                 latest = read_status(workflow_dir)
                 current_outputs = dict(latest.get("outputs") or {})
                 current_outputs["regularized"] = {

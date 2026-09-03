@@ -322,7 +322,7 @@ def build_panel_hierarchy(
         write_feature_collection(output_path, hierarchy_features, **metadata)
     if rows_output_path is not None:
         write_feature_collection(rows_output_path, row_features, **metadata)
-    if panels_output_path is not None:
+    if panels_output_path is not None and assign_ids:
         write_feature_collection(panels_output_path, panel_features, **metadata)
     _notify(callback, 100, "Panel hierarchy is ready." if assign_ids else "Rows are ready for editing.")
     return {

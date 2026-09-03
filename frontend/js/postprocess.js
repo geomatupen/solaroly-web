@@ -2575,7 +2575,12 @@
     }
     const alreadyLoaded = state.previewLayers.get(stage);
     if (alreadyLoaded?.url === url && alreadyLoaded?.version === version) {
-      if (visible && showAlongside && !map.hasLayer(alreadyLoaded.layer)) alreadyLoaded.layer.addTo(map);
+      if (visible && !showAlongside) {
+        for (const item of state.previewLayers.values()) {
+          if (item !== alreadyLoaded && map.hasLayer(item.layer)) map.removeLayer(item.layer);
+        }
+      }
+      if (visible && !map.hasLayer(alreadyLoaded.layer)) alreadyLoaded.layer.addTo(map);
       renderPreviewLayers();
       return alreadyLoaded;
     }
@@ -2702,6 +2707,9 @@
       associated: status.manual_edits?.associated?.feature_count ?? status.association_stats?.output_features,
     };
     const availableStages = [...GENERATED_STAGES].filter(stage => status.outputs?.[stage]?.url);
+    const showSegmentationRows = state.mode === "segmentation"
+      && availableStages.includes("regularized")
+      && availableStages.includes("solar_rows");
     const preferredStage = state.mode === "anomaly"
       ? (availableStages.includes("associated")
           ? "associated"
@@ -2711,16 +2719,18 @@
               ? "overlap_deduplicated"
               : null)
       : (availableStages.includes("regularized") ? "regularized" : availableStages.includes("combined") ? "combined" : "solar_rows");
-    const immediateStages = preferredStage && availableStages.includes(preferredStage) ? [preferredStage] : [];
+    const immediateStages = showSegmentationRows
+      ? ["regularized", "solar_rows"]
+      : preferredStage && availableStages.includes(preferredStage) ? [preferredStage] : [];
     const deferredStages = availableStages.filter(stage => !immediateStages.includes(stage));
-    const loadStages = async (stages, visible) => {
+    const loadStages = async (stages, visible, showAlongside = false) => {
       for (const stage of stages) {
         if (!isCurrentLoad(requestedContext)) return;
         const output = status.outputs[stage];
         const version = output.mtime
           || status.manual_edits?.[stage]?.updated_at
           || (stage === "regularized" && status.hierarchy_stats ? status.updated_at : null);
-        const item = await loadPreviewLayer(stage, output.url, counts[stage], null, false, version, requestedContext, visible);
+        const item = await loadPreviewLayer(stage, output.url, counts[stage], null, showAlongside, version, requestedContext, visible);
         if (item && (stage === "deduplicated" || stage === "associated")) {
           item.deduplicationMethod = status.deduplicate_stats?.deduplication_method
             || status.scoring_parameters?.deduplication_mode
@@ -2732,7 +2742,12 @@
         if (!visible) await new Promise(resolve => window.requestAnimationFrame(resolve));
       }
     };
-    await loadStages(immediateStages, true);
+    if (showSegmentationRows) {
+      for (const [stage, item] of state.previewLayers) {
+        if (!immediateStages.includes(stage) && state.map?.hasLayer(item.layer)) state.map.removeLayer(item.layer);
+      }
+    }
+    await loadStages(immediateStages, true, showSegmentationRows);
     state.deferredProcessingPromise = new Promise(resolve => window.setTimeout(resolve, 50))
       .then(() => loadStages(deferredStages, false));
   }
