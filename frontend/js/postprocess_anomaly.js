@@ -1465,25 +1465,26 @@
     byId("ppAdjustAnomaliesStep").hidden = false;
     byId("ppAssociateStep").hidden = false;
     byId("ppAdjustAnomaliesStep").classList.toggle("locked", !hasDeduplicated);
-    byId("ppAssociateStep").classList.toggle("locked", !hasDeduplicated);
+    const placementComplete = Boolean(workflow?.placement_review_complete || workflow?.outputs?.associated);
+    byId("ppAssociateStep").classList.toggle("locked", !hasDeduplicated || !placementComplete);
     byId("ppAdjustAnomaliesStep").setAttribute("aria-disabled", String(!hasDeduplicated));
-    byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
-    byId("ppAssociate").disabled = !hasDeduplicated || !panelLayer;
+    byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated || !placementComplete));
+    byId("ppCompletePlacementReview").disabled = !hasDeduplicated || workflowRunning;
+    byId("ppAssociate").disabled = !hasDeduplicated || !placementComplete || !panelLayer;
     byId("ppAssociate").textContent = workflow?.outputs?.associated
       ? panelLayer?.rows_path ? "Reassign panel and row IDs" : "Reassign panel IDs"
       : panelLayer?.rows_path ? "Assign panel and row IDs" : "Assign panel IDs";
     const hasAssociated = Boolean(workflow?.outputs?.associated);
-    const placementStage = workflow?.outputs?.deduplicated ? "deduplicated" : "overlap_deduplicated";
-    const hasSavedPlacement = Boolean(workflow?.manual_edits?.[placementStage]);
     [
       [byId("ppOverlapDeduplicateStep"), Boolean(workflow?.outputs?.overlap_deduplicated)],
       [byId("ppDeduplicateStep"), Boolean(workflow?.outputs?.deduplicated) || hasAssociated],
-      [byId("ppAdjustAnomaliesStep"), hasSavedPlacement || hasAssociated],
+      [byId("ppAdjustAnomaliesStep"), placementComplete],
       [byId("ppAssociateStep"), hasAssociated],
     ].forEach(([step, completed]) => setAnomalyStepCompleted(step, completed));
     const phase = workflow?.outputs?.associated
       ? 0
-      : workflow?.deduplicate_stats ? 3
+      : placementComplete ? 4
+        : workflow?.deduplicate_stats ? 3
         : hasOverlapDeduplicated ? 2 : 1;
     if (phase !== anomalyStepPhase) {
       anomalyStepPhase = phase;
@@ -1718,6 +1719,30 @@
     }
   }
 
+  async function completePlacementReview() {
+    const workspace = api();
+    const context = workspace?.getContext();
+    if (!context?.resultId || !context.workflowId) return;
+    const button = byId("ppCompletePlacementReview");
+    button.disabled = true;
+    try {
+      const status = await workspace.requestJson(
+        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/placement-review/complete`,
+        { method: "POST" },
+      );
+      const workflow = context.workflows.find(item => item.id === context.workflowId);
+      if (workflow) Object.assign(workflow, status);
+      refresh(workspace.getContext());
+      setAnomalyStepCollapsed(byId("ppAdjustAnomaliesStep"), true);
+      setAnomalyStepCollapsed(byId("ppAssociateStep"), false);
+      byId("ppAssociateStep")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      workspace.setMessage("Placement review complete. Anomaly assignment is ready.", "ok");
+    } catch (error) {
+      workspace.setMessage(error.message, "err");
+      button.disabled = false;
+    }
+  }
+
   async function preparePanelUpload(file) {
     pendingPanelUpload = null;
     const fieldSelect = byId("ppPanelUploadIdField");
@@ -1916,6 +1941,7 @@
       }
     });
     byId("ppAssociate")?.addEventListener("click", associate);
+    byId("ppCompletePlacementReview")?.addEventListener("click", completePlacementReview);
     byId("ppChoosePanelUpload")?.addEventListener("click", () => byId("ppPanelUploadFile")?.click());
     byId("ppPanelUploadFile")?.addEventListener("change", event => void preparePanelUpload(event.target.files?.[0]));
     byId("ppPanelUploadIdField")?.addEventListener("change", event => {

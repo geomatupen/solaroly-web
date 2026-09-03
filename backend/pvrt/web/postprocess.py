@@ -960,6 +960,7 @@ def create_postprocess_router(
             "deduplicate_stats": None,
             "association_stats": None,
             "association_parameters": None,
+            "placement_review_complete": False,
             "visual_review_available": False,
             "visual_review_total_pairs": 0,
             "visual_review_path": "",
@@ -1262,6 +1263,7 @@ def create_postprocess_router(
                     deduplicate_stats=stats,
                     association_stats=None,
                     association_parameters=None,
+                    placement_review_complete=False,
                     outputs=current_outputs,
                 )
             except Exception as exc:
@@ -1411,6 +1413,26 @@ def create_postprocess_router(
             "conflict_indices": conflict_indices,
             "conflict_ids": conflict_ids,
         }
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/placement-review/complete")
+    async def complete_placement_review(result_id: str, workflow_id: str) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        status = read_status(workflow_dir)
+        if status.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="Wait for the current workflow operation to finish.")
+        outputs = status.get("outputs") or {}
+        if not (outputs.get("deduplicated") or outputs.get("overlap_deduplicated")):
+            raise HTTPException(status_code=409, detail="Create an anomaly layer before completing placement review.")
+        update_status(
+            workflow_dir,
+            status="complete",
+            stage="placement_review",
+            progress=100,
+            message="Placement review complete.",
+            placement_review_complete=True,
+        )
+        return read_status(workflow_dir)
 
     @router.post("/{result_id}/postprocess/{workflow_id}/associate")
     async def associate(

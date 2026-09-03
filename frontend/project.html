@@ -655,6 +655,7 @@
                 <h3>Review and adjust placement</h3>
                 <p class="muted tiny"><strong>Manual process:</strong> edit the Visually deduplicated anomalies layer, or the Overlap-filtered anomalies layer when visual analysis was skipped. Move, rotate, reshape, or delete polygons while using the final regularized panels as the placement reference, then save the layer.</p>
                 <p id="ppPanelReferenceStatus" class="muted tiny">Loading this job’s final regularized panels…</p>
+                <button id="ppCompletePlacementReview" class="secondary" type="button" disabled>Done</button>
               </div>
             </article>
             <article id="ppAssociateStep" class="postprocessStep" hidden>
@@ -1620,7 +1621,7 @@
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260903c"></script>
   <script src="js/postprocess_segmentation.js?v=20260903d"></script>
-  <script src="js/postprocess_anomaly.js?v=20260903m"></script>
+  <script src="js/postprocess_anomaly.js?v=20260903n"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

@@ -16,6 +16,42 @@ from pvrt.web.postprocess import VisualReviewDecisionRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_placement_review_done_requires_output_and_persists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            workflow_dir = sessions / "test-result" / "postprocess" / "anomalies"
+            workflow_dir.mkdir(parents=True)
+            overlays.mkdir()
+            status_path = workflow_dir / "status.json"
+            status_path.write_text(json.dumps({
+                "id": "anomalies",
+                "status": "complete",
+                "workflow_kind": "anomaly",
+                "outputs": {},
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}/placement-review/complete"
+                and "POST" in item.methods
+            )
+            with self.assertRaises(HTTPException) as unavailable:
+                asyncio.run(route.endpoint("test-result", "anomalies"))
+            self.assertEqual(unavailable.exception.status_code, 409)
+
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["outputs"] = {"overlap_deduplicated": {"path": "postprocess/anomalies/overlap_deduplicated.geojson"}}
+            status_path.write_text(json.dumps(status), encoding="utf-8")
+            completed = asyncio.run(route.endpoint("test-result", "anomalies"))
+            self.assertTrue(completed["placement_review_complete"])
+            self.assertEqual(completed["stage"], "placement_review")
+
     def test_panel_reference_upload_requires_unique_selected_ids(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
