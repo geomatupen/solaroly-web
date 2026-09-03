@@ -2466,6 +2466,7 @@ async function loadGeoJSON(url){
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to load prediction GeoJSON (${res.status})`);
   const gj = await res.json();
+  appendTestLoadLog(`Prediction GeoJSON parsed (${Array.isArray(gj?.features) ? gj.features.length : 0} feature(s)). Rendering map layer…`);
 
   const base = overlayRegistry["Predictions"]?.style || {
     color: "#ff5722", weight: 1, opacity: 1,
@@ -2500,6 +2501,7 @@ async function loadGeoJSON(url){
   overlayRegistry["Predictions"] = { layer, type: "geojson", style: base, data: gj, categorical: overlayRegistry["Predictions"]?.categorical || null };
   refreshLayersPanel();
   renderLegend();
+  appendTestLoadLog("Detection map layer rendered.");
   // Don't auto-fit bounds here - let applySessionToMap handle it after all layers loaded
 }
 
@@ -2746,6 +2748,7 @@ async function applySessionToMap(sessionName){
   removeTifTiles();
 
   // 1) session summary (urls for geojsons)
+  appendTestLoadLog("Requesting result summary and asset catalog…");
   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
   if (!res.ok) { console.warn('session_summary failed'); return; }
   const sum = await res.json();

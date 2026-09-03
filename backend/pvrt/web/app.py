@@ -4839,6 +4839,8 @@ async def api_delete_result(session_id: str):
 
 @app.get("/api/session_summary")
 async def api_session_summary(session: str):
+    summary_logger = logging.getLogger("pvrt.test")
+    summary_logger.info("UI:INFO:test: Loading result summary and asset catalog…")
     ses = _session_asset_dir(session)
     asset_session_id = ses.name
 
@@ -4887,6 +4889,12 @@ async def api_session_summary(session: str):
             manifest = []
     # collect assets and optional camera_meta.json
     assets = _session_assets(ses)
+    summary_logger.info(
+        "UI:OK:test: Result asset catalog ready (%s overlays, %s thumbnails, %s images).",
+        len(assets.get("overlays", [])),
+        len(assets.get("thumbs", [])),
+        len(assets.get("images", [])),
+    )
     camera_meta = None
     try:
         camp = ses / "camera_meta.json"
