@@ -1894,10 +1894,16 @@ async function runTest(){
     appendLog(loadingLine);
 
     await applySessionToMap(currentSession);
+    appendMiniLog("#testMiniLog", "[test] Map assets loaded. Rendering result thumbnails…");
+    appendLog("[test] Map assets loaded. Rendering result thumbnails…");
     renderResultsGrid(js.manifest && js.manifest.length ? js.manifest : pairThumbs(js.assets));
+    appendMiniLog("#testMiniLog", "[test] Result thumbnails rendered. Loading metrics and session list…");
+    appendLog("[test] Result thumbnails rendered. Loading metrics and session list…");
     loadResultsInfo(currentSession);
     
     await loadSessions(true);
+    appendMiniLog("#testMiniLog", "[test] Session list refreshed. Test result is ready.");
+    appendLog("[test] Session list refreshed. Test result is ready.");
     $("#selResults").value = currentSession;
     $("#selMapSession").value = currentSession;
     ok("test", "Testing completed.");
@@ -2718,6 +2724,12 @@ function waitForMapTiles(layers, timeoutMs = 10000){
   ]);
 }
 
+function appendTestLoadLog(message){
+  const line = `[test] ${message}`;
+  appendMiniLog("#testMiniLog", line);
+  appendLog(line);
+}
+
 async function applySessionToMap(sessionName){
   mapAssetCacheVersion = `${sessionName}-${Date.now()}`;
   setMapSectionLoading(true, "Loading result map…");
@@ -2730,6 +2742,7 @@ async function applySessionToMap(sessionName){
   const res = await fetch(`/api/session_summary?session=${encodeURIComponent(sessionName)}`, { cache: 'no-store' });
   if (!res.ok) { console.warn('session_summary failed'); return; }
   const sum = await res.json();
+  appendTestLoadLog("Session summary loaded. Loading detection polygons…");
   // cache the session summary so loadImagesCatalog can prefer rotated_images when available
   lastLoadedSessionSummary = sum || null;
   rotatedImagesLookup = null;
@@ -2763,6 +2776,7 @@ async function applySessionToMap(sessionName){
     setMapSectionLoading(true, "Loading detection polygons…");
     try { await loadGeoJSON(anomaliesUrl); }
     catch(e){ console.warn('anomalies fetch failed:', e); }
+    appendTestLoadLog("Detection polygons loaded. Checking orthophoto tiles…");
   }
 
   // 3) Try ORIGINAL GeoTIFF tiles
@@ -2787,6 +2801,7 @@ async function applySessionToMap(sessionName){
 
     // show controller row inside Images list (replaces normal images there)
     await loadImagesCatalog(sessionName, imagesUrl);
+    appendTestLoadLog("Orthophoto tile catalog loaded. Waiting for map tiles…");
     installTilesIntoImagesList(sessionName, tiles.layers, false);
 
     await waitForMapTiles(b.layers);
@@ -2800,6 +2815,7 @@ async function applySessionToMap(sessionName){
     updateImageListButtonsVisibility(false);
     // Fallback: point markers loaded from images.geojson
     await loadImagesCatalog(sessionName, imagesUrl);
+    appendTestLoadLog("Image catalog loaded. Fitting map to result locations…");
     // Fit to camera locations (image markers) after all layers loaded
     const bounds = L.latLngBounds([]);
     
@@ -2816,6 +2832,7 @@ async function applySessionToMap(sessionName){
   }
 
   refreshLayersPanel();
+  appendTestLoadLog("Map assets loaded.");
   } finally {
     setMapSectionLoading(false);
   }

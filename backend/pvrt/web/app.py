@@ -4235,6 +4235,8 @@ async def api_test_run(
     session_dir = out_root
     
     if input_type == "tif":
+        tile_count = len(list(Path(tiles_dir).glob("*.tif"))) + len(list(Path(tiles_dir).glob("*.tiff")))
+        test_logger.info("UI:INFO:test: Stitching predictions from %s orthomosaic tiles…", tile_count)
         anom_gj, imgs_gj = _build_anomalies_geojson_from_tiles(
             tiles_dir=tiles_dir,
             preds_dir=preds_dir,
@@ -4255,6 +4257,7 @@ async def api_test_run(
                 "inference was performed only on mosaic tiles.",
                 source_image_count,
             )
+        test_logger.info("UI:OK:test: Prediction and image GeoJSON ready. Rendering orthomosaic result overlay…")
 
         # Render downsampled overlay PNG for results grid
         ov_dir = out_root / "overlays"; ov_dir.mkdir(parents=True, exist_ok=True)
@@ -4266,6 +4269,7 @@ async def api_test_run(
             max_px=2000,
             line_thickness=2,
         )
+        test_logger.info("UI:OK:test: Orthomosaic result overlay rendered. Creating result thumbnail…")
 
         # Small thumb from overlay
         th_dir = out_root / "thumbs"; th_dir.mkdir(parents=True, exist_ok=True)
@@ -4281,6 +4285,7 @@ async def api_test_run(
                 cv2.imwrite(str(thumb_png), im)
         except Exception as e:
             logger.debug("ignored web.app error: %s", e)
+        test_logger.info("UI:OK:test: Result thumbnail ready. Finalizing manifest and session metadata…")
         # Update manifest entry for this TIF so results grid shows overlay/thumb
         try:
             m = {}
@@ -4309,7 +4314,7 @@ async def api_test_run(
         ov_dir = out_root / "overlays"
         th_dir = out_root / "thumbs"
 
-    test_logger.info("UI:INFO:test: GeoJSON outputs ready. Finalizing result metadata…")
+    test_logger.info("UI:INFO:test: GeoJSON outputs ready. Collecting result assets and finalizing metadata…")
 
     # Collect assets for UI
     if isinstance(manifest_path, (str, Path)):
@@ -4331,6 +4336,7 @@ async def api_test_run(
     else:
         manifest_items = []
 
+    test_logger.info("UI:INFO:test: Indexing result assets for the test tab…")
     assets = _session_assets(ses)
 
     # Persist a couple of run metrics
@@ -4365,7 +4371,7 @@ async def api_test_run(
     except Exception as e:
         logging.getLogger("pvrt").warning(f"metrics.json update failed: {e}")
 
-    test_logger.info("UI:INFO:test: Finalizing result metadata…")
+    test_logger.info("UI:INFO:test: Writing final run status and metrics…")
     preprocessing_path = out_root / "preprocessing.json"
     _write_result_status(
         out_root,
