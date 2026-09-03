@@ -18,6 +18,7 @@ import torch
 import cv2
 from ...core.results import write_metrics_json
 from ...core.thermal import normalize_thermal
+from .runtime import resolve_yolo_device
 
 log = logging.getLogger("pvrt")
 
@@ -240,12 +241,14 @@ def predict_folder(images_dir: Path, weights_dir: Path, out_dir: Path, score_thr
     src_count, src_samples = _scan_source(source_dir)
     logging.getLogger('pvrt.test').info(f"YOLO predict: source_dir={source_dir} images={src_count} sample={src_samples}")
 
+    device = resolve_yolo_device(torch)
+    tlog.info(f"UI:INFO:test: YOLO compute device={device}")
     t0 = time.time()
     results = model.predict(
         source=str(source_dir),
         conf=score_thresh,
         imgsz=1024,
-        device=0,
+        device=device,
         save=False,
         save_txt=False,
     )

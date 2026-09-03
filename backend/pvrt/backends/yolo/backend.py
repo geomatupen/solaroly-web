@@ -140,17 +140,21 @@ class YOLOBackend(Backend):
                 "ims_per_batch": int(cfg_in.ims_per_batch or 0),
                 "run_name": getattr(cfg_in, "run_name", ""),
             },
-            # include full best/final stats (iter, val_bbox_AP50, loss stats, path)
+            # Include the common AP50 plus the task-specific box/mask AP50.
             "best_model": {
                 "iter": res.get("best_model", {}).get("iter") if isinstance(res.get("best_model", {}), dict) else None,
+                "val_AP50": res.get("best_model", {}).get("val_AP50") if isinstance(res.get("best_model", {}), dict) else None,
                 "val_bbox_AP50": res.get("best_model", {}).get("val_bbox_AP50") if isinstance(res.get("best_model", {}), dict) else None,
+                "val_mask_AP50": res.get("best_model", {}).get("val_mask_AP50") if isinstance(res.get("best_model", {}), dict) else None,
                 "total_loss_med20": res.get("best_model", {}).get("total_loss_med20") if isinstance(res.get("best_model", {}), dict) else None,
                 "total_loss_raw": res.get("best_model", {}).get("total_loss_raw") if isinstance(res.get("best_model", {}), dict) else None,
                 "path": _make_run_path(res.get("best_weights"), res.get("best_model", {})),
             },
             "final_model": {
                 "iter": res.get("final_model", {}).get("iter") if isinstance(res.get("final_model", {}), dict) else None,
+                "val_AP50": res.get("final_model", {}).get("val_AP50") if isinstance(res.get("final_model", {}), dict) else None,
                 "val_bbox_AP50": res.get("final_model", {}).get("val_bbox_AP50") if isinstance(res.get("final_model", {}), dict) else None,
+                "val_mask_AP50": res.get("final_model", {}).get("val_mask_AP50") if isinstance(res.get("final_model", {}), dict) else None,
                 "total_loss_med20": res.get("final_model", {}).get("total_loss_med20") if isinstance(res.get("final_model", {}), dict) else None,
                 "total_loss_raw": res.get("final_model", {}).get("total_loss_raw") if isinstance(res.get("final_model", {}), dict) else None,
                 "path": _make_run_path(res.get("final_weights"), res.get("final_model", {})),

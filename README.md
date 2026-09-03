@@ -123,6 +123,10 @@ training, inference and image alignment can be prohibitively slow. Do not
 install a CUDA PyTorch build over the CPU environment later; recreate the
 virtual environment instead.
 
+YOLO uses the CPU only when SolarOly is installed with the CPU-only PyTorch
+build. A CUDA-enabled PyTorch installation that cannot access its GPU is
+reported as a configuration error rather than silently falling back to CPU.
+
 ### Model weights
 
 SolarOly does not bundle trained Detectron2 or Ultralytics model weights.

@@ -13,6 +13,8 @@ import logging
 import json
 from statistics import median
 
+from .runtime import resolve_yolo_device
+
 # Third-party imports moved to module top per cleanup policy. ImportErrors
 # will surface at import-time (fail-fast) which is the desired behavior.
 from ultralytics import YOLO
@@ -23,6 +25,56 @@ import time
 import csv
 
 log = logging.getLogger("pvrt")
+
+
+def _metric_name(yolo_seg: bool) -> str:
+    return "mask" if yolo_seg else "bbox"
+
+
+def _metric_key(yolo_seg: bool) -> str:
+    return "val_mask_AP50" if yolo_seg else "val_bbox_AP50"
+
+
+def _map50_column(fieldnames: List[str] | None, yolo_seg: bool) -> str | None:
+    """Return the task-specific Ultralytics AP50 column."""
+    suffix = "(m)" if yolo_seg else "(b)"
+    columns = [column for column in (fieldnames or []) if column]
+    for column in columns:
+        normalized = column.strip().lower()
+        if normalized == f"metrics/map50{suffix}":
+            return column
+    return None
+
+
+def _map50_from_result(result: Any, yolo_seg: bool) -> float | None:
+    """Extract task-specific AP50 from an Ultralytics metric result."""
+    if result is None:
+        return None
+
+    metric_branch = getattr(result, "seg" if yolo_seg else "box", None)
+    if metric_branch is not None and hasattr(metric_branch, "map50"):
+        try:
+            return float(metric_branch.map50)
+        except (TypeError, ValueError):
+            pass
+
+    dictionaries = []
+    for attribute in ("results_dict", "metrics", "results"):
+        value = getattr(result, attribute, None)
+        if isinstance(value, dict):
+            dictionaries.append(value)
+    if isinstance(result, dict):
+        dictionaries.append(result)
+
+    expected = f"metrics/map50({'m' if yolo_seg else 'b'})"
+    for metrics in dictionaries:
+        for key, value in metrics.items():
+            if str(key).strip().lower() == expected:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+    return None
 
 
 def _discover_num_classes_from_coco(train_dir: Path) -> int:
@@ -334,10 +386,15 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     # coerce to at least 1 epoch when a positive value is provided.
     epochs = max(1, int(max_iter)) if max_iter and max_iter > 0 else 50
 
+    device = resolve_yolo_device()
+
     # train
     # Log a compact header into the mini-log so users see major run parameters
     test_logger = logging.getLogger("pvrt.test")
-    test_logger.info(f"UI:INFO:train: YOLO starting: data={yaml_path} epochs={epochs} batch={ims_per_batch} lr0={base_lr} device=0 family={family} size={size}")
+    test_logger.info(
+        f"UI:INFO:train: YOLO starting: data={yaml_path} epochs={epochs} "
+        f"batch={ims_per_batch} lr0={base_lr} device={device} family={family} size={size}"
+    )
     # Start a small background poller that tails ultralytics' results.csv and
     # emits per-epoch summaries into the mini-log (pvrt.test). This gives the
     # frontend near-real-time epoch updates without modifying ultralytics internals.
@@ -356,12 +413,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                     for i in range(last_rows["n"], n):
                         row = rdr[i]
                         epoch = row.get("epoch") or row.get("Epoch") or str(i + 1)
-                        map_col = None
-                        for k in row.keys():
-                            lk = str(k).lower()
-                            if "map" in lk and ("0.5" in lk or "50" in lk or "map50" in lk):
-                                map_col = k
-                                break
+                        map_col = _map50_column(list(row.keys()), yolo_seg)
                         loss_col = None
                         for k in row.keys():
                             if "loss" in str(k).lower():
@@ -369,7 +421,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                                 break
                         parts = [f"epoch={epoch}"]
                         if map_col and row.get(map_col) is not None:
-                            parts.append(f"map50={row.get(map_col)}")
+                            parts.append(f"{_metric_name(yolo_seg)}_map50={row.get(map_col)}")
                         if loss_col and row.get(loss_col) is not None:
                             parts.append(f"loss={row.get(loss_col)}")
                         tlog.info("UI:INFO:train: YOLO " + " ".join(parts))
@@ -386,7 +438,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
             epochs=epochs,
             batch=ims_per_batch or 8,
             workers=4,
-            device=0,
+            device=device,
             optimizer="AdamW",
             lr0=base_lr or 0.001,
             # Use basic per-image augmentations (HSV, flip, scale, etc.) but disable
@@ -440,41 +492,6 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         if isinstance(obj, (list, tuple)) and obj:
             return obj[0]
         return obj
-
-    def _get_map50_from_result(r):
-        # try common attributes/dicts
-        cand_metrics = None
-        if hasattr(r, "metrics") and isinstance(r.metrics, dict):
-            cand_metrics = r.metrics
-        elif isinstance(r, dict):
-            cand_metrics = r
-        elif hasattr(r, "results") and isinstance(r.results, dict):
-            cand_metrics = r.results
-
-        if isinstance(cand_metrics, dict):
-            for k, v in cand_metrics.items():
-                lk = str(k).lower()
-                if "map" in lk and ("0.5" in lk or "50" in lk):
-                    try:
-                        return float(v)
-                    except (TypeError, ValueError):
-                        continue
-            for v in cand_metrics.values():
-                if isinstance(v, dict):
-                    for k2, v2 in v.items():
-                        lk2 = str(k2).lower()
-                        if "map" in lk2 and ("0.5" in lk2 or "50" in lk2):
-                            try:
-                                return float(v2)
-                            except (TypeError, ValueError):
-                                continue
-        for attr in ("map50", "mAP_0.5", "mAP50", "map_0.5"):
-            if hasattr(r, attr):
-                try:
-                    return float(getattr(r, attr))
-                except (TypeError, ValueError):
-                    continue
-        return None
 
     def _get_loss_history(r, save_dir: Path):
         # try common locations for loss history in the results object
@@ -554,16 +571,19 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
     save_dir = Path(results.files[0]).parent if hasattr(results, "files") and results.files else run_dir
 
     # Best / final mapping
+    task_metric_key = _metric_key(yolo_seg)
     best_entry = {
         "iter": None,
-        "val_bbox_AP50": None,
+        "val_AP50": None,
+        task_metric_key: None,
         "total_loss_med20": None,
         "total_loss_raw": None,
         "path": str((run_dir / "model_best.pt").name) if (run_dir / "model_best.pt").exists() else (str(found_best.name) if found_best else ""),
     }
     final_entry = {
         "iter": None,
-        "val_bbox_AP50": None,
+        "val_AP50": None,
+        task_metric_key: None,
         "total_loss_med20": None,
         "total_loss_raw": None,
         "path": str((run_dir / "model_final.pt").name) if (run_dir / "model_final.pt").exists() else (str(found_final.name) if found_final else ""),
@@ -571,13 +591,15 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
 
     try:
         # map mAP from results object
-        map50 = _get_map50_from_result(r0)
+        map50 = _map50_from_result(r0, yolo_seg)
         if map50 is not None:
             # assume this is the final/validation mAP; place in final and best if appropriate
-            final_entry["val_bbox_AP50"] = map50
+            final_entry["val_AP50"] = map50
+            final_entry[task_metric_key] = map50
             # optimistically set best to same if best.pt present
             if (run_dir / "model_best.pt").exists():
-                best_entry["val_bbox_AP50"] = map50
+                best_entry["val_AP50"] = map50
+                best_entry[task_metric_key] = map50
 
         # attempt to extract loss history and compute stats
         losses = _get_loss_history(r0, save_dir)
@@ -597,11 +619,7 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
         with open(csv_cand, newline='') as fh:
             rdr = csv.DictReader(fh)
             rows = list(rdr)
-            map_col = None
-            for col in rdr.fieldnames or []:
-                if col and 'map' in col.lower() and ('0.5' in col.lower() or '50' in col.lower()):
-                    map_col = col
-                    break
+            map_col = _map50_column(rdr.fieldnames, yolo_seg)
             epoch_col = None
             for col in rdr.fieldnames or []:
                 if col and col.lower() in {'epoch', 'ep', 'e'}:
@@ -617,9 +635,11 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                         final_entry['iter'] = None
                 if map_col and map_col in last:
                     try:
-                        final_entry['val_bbox_AP50'] = float(last[map_col])
+                        value = float(last[map_col])
+                        final_entry['val_AP50'] = value
+                        final_entry[task_metric_key] = value
                     except (TypeError, ValueError):
-                        final_entry['val_bbox_AP50'] = final_entry.get('val_bbox_AP50')
+                        pass
 
                 if map_col:
                     best_idx = None
@@ -638,7 +658,8 @@ def run_train(train_dir: Path, val_dir: Path, out_dir: Path, use_thermal: bool, 
                     if best_idx is not None:
                         best_entry['iter'] = best_idx
                     if best_val is not None:
-                        best_entry['val_bbox_AP50'] = float(best_val)
+                        best_entry['val_AP50'] = float(best_val)
+                        best_entry[task_metric_key] = float(best_val)
 
     return {
         "best_weights": str(run_dir / "model_best.pt") if (run_dir / "model_best.pt").exists() else (str(found_best) if found_best else ""),
