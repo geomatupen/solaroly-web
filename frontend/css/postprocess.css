@@ -1172,6 +1172,10 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+.postprocessStepBody .postprocessAnalysisCompletionSummary {
+  min-height: 0;
+  margin: 16px 0 0;
+}
 
 .postprocessVisualReviewHeader {
   display: flex;
@@ -1179,17 +1183,23 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   justify-content: space-between;
   gap: 16px;
 }
+.postprocessAutomaticSelectionConfig[hidden] { display: none; }
 
-.postprocessVisualReviewHeader h4 { margin: 0 0 4px; }
+.postprocessVisualReviewHeader h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
 .postprocessReviewMode {
   max-width: 260px;
-  margin-top: 14px;
+  margin: 0 0 20px;
 }
 .postprocessReviewMode label {
   display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--muted);
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text, #e6edf3);
 }
 .postprocessReviewMode select { width: 100%; }
 .postprocessVisualThreshold { width: 156px; flex: 0 0 156px; }
@@ -1450,6 +1460,11 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 }
 .postprocessComparisonWorkspaceHeader[hidden] { display: none; }
 .postprocessComparisonWorkspaceHeader > div { min-width: 0; }
+.postprocessReviewManualButton.secondary {
+  margin-bottom: 20px;
+  border-color: color-mix(in srgb, var(--accent) 72%, white 28%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
 .postprocessComparisonFilter {
   position: relative;
   display: block;

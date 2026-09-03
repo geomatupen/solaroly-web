@@ -286,6 +286,8 @@
     const pairs = comparisonPairs(workflow);
     const config = scoringConfig();
     const manualMode = byId("ppDeduplicationMode").value === "manual";
+    byId("ppAutomaticSelectionConfig").hidden = manualMode;
+    byId("ppViewVisualComparisons").hidden = !manualMode || !workflow?.visual_review;
     const manualState = manualReviewState(workflow);
     const valid = manualMode
       ? manualState.accepted > 0 && manualState.conflicts.length === 0
@@ -925,11 +927,19 @@
       || workflow?.visual_review
     );
     const workflowRunning = workflow?.status === "queued" || workflow?.status === "running";
-    viewButton.hidden = !hasSavedReview;
+    const completionSummary = byId("ppVisualAnalysisCompletionSummary");
+    const candidateCount = Number(stats?.spatial_candidate_pairs ?? savedTotal);
+    const comparedCount = Number(stats?.visually_compared_pairs || 0);
+    const missingCount = Number(stats?.missing_image_pairs || 0);
+    completionSummary.hidden = !hasSavedReview || workflowRunning;
+    completionSummary.textContent = hasSavedReview && !workflowRunning
+      ? `Analysis complete: ${candidateCount.toLocaleString()} candidate pairs · ${comparedCount.toLocaleString()} visually compared${missingCount ? ` · ${missingCount.toLocaleString()} without usable imagery` : ""}.`
+      : "";
+    viewButton.hidden = !hasSavedReview || byId("ppDeduplicationMode").value !== "manual";
     viewButton.disabled = !hasSavedReview || workflowRunning;
     viewButton.textContent = savedTotal > 0
-      ? `Review image comparisons (${savedTotal.toLocaleString()})`
-      : "Review saved image comparisons";
+      ? `Review manually (${savedTotal.toLocaleString()})`
+      : "Review manually";
     applyButton.hidden = !workflow?.visual_review;
     if (!workflow?.visual_review) {
       review.hidden = true;
@@ -970,9 +980,6 @@
       manualDuplicateDecisions.clear();
     }
     review.hidden = false;
-    const candidateCount = Number(stats?.spatial_candidate_pairs ?? workflow.visual_review.total_pairs ?? 0);
-    const comparedCount = Number(stats?.visually_compared_pairs || 0);
-    const missingCount = Number(stats?.missing_image_pairs || 0);
     byId("ppVisualReviewSummary").textContent = stats
       ? `${candidateCount.toLocaleString()} candidate pairs from images within ${Number(stats.neighbor_image_radius_m || 0).toLocaleString()} m · anomaly shift up to ${Number(stats.maximum_location_shift_m || 0).toLocaleString()} m · ${comparedCount.toLocaleString()} visually compared${missingCount ? ` · ${missingCount.toLocaleString()} kept because imagery was unavailable` : ""}`
       : `${candidateCount.toLocaleString()} saved comparison pair${candidateCount === 1 ? "" : "s"} restored from this job.`;
@@ -1070,7 +1077,7 @@
     }
     viewButton.hidden = false;
     viewButton.disabled = false;
-    viewButton.textContent = `Review image comparisons (${totalPairs.toLocaleString()})`;
+    viewButton.textContent = `Review manually (${totalPairs.toLocaleString()})`;
     const loadMore = byId("ppVisualComparisonsLoadMore");
     loadMore.hidden = pairs.length >= totalPairs;
     loadMore.disabled = false;
@@ -1531,7 +1538,6 @@
     loadedComparisonWorkflowId = context.workflowId || "";
     activeComparisonIndex = null;
     manualDuplicateDecisions.clear();
-    openComparisonsWorkspaceLoading();
     try {
       const payload = await workspace.requestJson(
         `/api/results/${encodeURIComponent(resultId)}/postprocess/anomalies/deduplicate`,

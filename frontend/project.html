@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260901a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260902d" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260903g" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -598,22 +598,9 @@
                 <div class="postprocessStepActions">
                   <button id="ppDeduplicate" type="button" disabled>Analyze visual duplicates</button>
                   <button id="ppConfigureRepresentativeWeights" class="secondary" type="button">Configure weights</button>
-                  <button id="ppViewVisualComparisons" class="secondary" type="button" hidden>Review image comparisons</button>
                 </div>
+                <p id="ppVisualAnalysisCompletionSummary" class="muted tiny postprocessAnalysisCompletionSummary" hidden></p>
                 <section id="ppVisualReview" class="postprocessVisualReview" hidden aria-live="polite">
-                  <div class="postprocessVisualReviewHeader">
-                    <div>
-                      <h4>Visual duplicate review</h4>
-                      <p id="ppVisualReviewSummary" class="muted tiny"></p>
-                    </div>
-                    <div class="postprocessVisualThreshold">
-                      <label for="ppVisualSimilarity">Deduplicate at or above</label>
-                      <div class="postprocessPercentInput">
-                        <input id="ppVisualSimilarity" type="number" value="80" min="0" max="100" step="1" />
-                        <span>%</span>
-                      </div>
-                    </div>
-                  </div>
                   <div class="postprocessReviewMode">
                     <label for="ppDeduplicationMode">Deduplication method</label>
                     <select id="ppDeduplicationMode">
@@ -621,7 +608,23 @@
                       <option value="manual">Manual image review</option>
                     </select>
                   </div>
-                  <p id="ppScoringValidation" class="muted tiny"></p>
+                  <button id="ppViewVisualComparisons" class="secondary postprocessReviewManualButton" type="button" hidden>Review manually</button>
+                  <div id="ppAutomaticSelectionConfig" class="postprocessAutomaticSelectionConfig">
+                    <div class="postprocessVisualReviewHeader">
+                      <div>
+                        <h4>Visual duplicate review</h4>
+                        <p id="ppVisualReviewSummary" class="muted tiny"></p>
+                      </div>
+                      <div class="postprocessVisualThreshold">
+                        <label for="ppVisualSimilarity">Deduplicate at or above</label>
+                        <div class="postprocessPercentInput">
+                          <input id="ppVisualSimilarity" type="number" value="80" min="0" max="100" step="1" />
+                          <span>%</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p id="ppScoringValidation" class="muted tiny"></p>
+                  </div>
                   <p id="ppVisualThresholdEffect" class="muted tiny"></p>
                   <p id="ppManualApplyStatus" class="statusLine warn" hidden></p>
                   <p id="ppVisualThresholdWarning" class="statusLine warn" hidden></p>
@@ -1603,7 +1606,7 @@
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260903b"></script>
   <script src="js/postprocess_segmentation.js?v=20260903d"></script>
-  <script src="js/postprocess_anomaly.js?v=20260903d"></script>
+  <script src="js/postprocess_anomaly.js?v=20260903i"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {
