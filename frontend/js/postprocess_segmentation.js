@@ -92,6 +92,7 @@
             max_lateral_distance_factor: Number(byId("ppRowLateral").value),
             max_along_gap_factor: Number(byId("ppRowGap").value),
             max_inner_row_gap_factor: Number(byId("ppInnerRowGap").value),
+            min_row_overlap_percent: Number(byId("ppRowOverlap").value),
           }),
         },
       );

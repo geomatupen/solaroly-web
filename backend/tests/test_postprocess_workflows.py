@@ -310,6 +310,9 @@ class PostprocessWorkflowTests(unittest.TestCase):
             identified = [item for item in hierarchy if item["properties"].get("panel_id")]
             rows = [item for item in hierarchy if item["properties"].get("postprocess_stage") == "panel_rows"]
             self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["geometry"]["type"], "Polygon")
+            self.assertEqual(len(rows[0]["geometry"]["coordinates"]), 1)
+            self.assertEqual(len(rows[0]["geometry"]["coordinates"][0]), 5)
             self.assertEqual(len(json.loads(rows_path.read_text(encoding="utf-8"))["features"]), 1)
             self.assertEqual(len(json.loads(panels_path.read_text(encoding="utf-8"))["features"]), 6)
             self.assertEqual(len(identified), 6)
@@ -371,6 +374,54 @@ class PostprocessWorkflowTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["properties"]["row_id"], "1000")
             self.assertFalse((root / "panel_hierarchy.geojson").exists())
+
+    def test_merges_candidate_row_contained_inside_outer_row(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            regularized_path = root / "regularized.geojson"
+            rows_path = root / "solar_rows.geojson"
+            panels = [
+                _feature(box(500000 + column * 1.15, 5500000, 500001 + column * 1.15, 5500001.8), class_name="panel")
+                for column in range(3)
+            ]
+            panels.append(_feature(
+                rotate(box(500001.3, 5500000.7, 500001.7, 5500001.1), 45),
+                class_name="panel",
+            ))
+            _write(regularized_path, panels)
+
+            stats = build_panel_hierarchy(
+                regularized_path,
+                None,
+                rows_output_path=rows_path,
+                panels_output_path=regularized_path,
+            )
+
+            rows = json.loads(rows_path.read_text(encoding="utf-8"))["features"]
+            identified = json.loads(regularized_path.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(stats["row_count"], 1)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(rows[0]["geometry"]["coordinates"]), 1)
+            self.assertEqual({item["properties"]["row_id"] for item in identified}, {"1000"})
+
+    def test_absorbs_candidate_rows_above_overlap_threshold(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "regularized.geojson"
+            _write(source, [
+                _feature(box(500000, 5500000, 500001, 5500001.8), class_name="first"),
+                _feature(box(500000.75, 5500000, 500001.75, 5500001.8), class_name="second"),
+            ])
+
+            default_stats = build_panel_hierarchy(source, root / "default.geojson")
+            strict_stats = build_panel_hierarchy(
+                source,
+                root / "strict.geojson",
+                min_row_overlap_percent=30.0,
+            )
+
+            self.assertEqual(default_stats["row_count"], 1)
+            self.assertEqual(strict_stats["row_count"], 2)
 
     def test_deduplicates_then_associates_anomalies(self):
         with tempfile.TemporaryDirectory() as temporary:

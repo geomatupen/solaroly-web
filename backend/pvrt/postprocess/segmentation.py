@@ -127,6 +127,7 @@ def build_panel_hierarchy(
     max_lateral_distance_factor: float = 1.5,
     max_along_gap_factor: float = 1.5,
     max_inner_row_gap_factor: float = 0.8,
+    min_row_overlap_percent: float = 20.0,
     callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Group panel rectangles into rows and assign stable row/panel identifiers."""
@@ -209,8 +210,27 @@ def build_panel_hierarchy(
     arrays: dict[int, list[int]] = {}
     for index in range(len(inner_rows)):
         arrays.setdefault(array_groups.find(index), []).append(index)
+    array_indices = list(arrays.values())
+    array_geometries = [
+        unary_union([inner_row_geometries[index] for index in indices])
+        .convex_hull
+        .minimum_rotated_rectangle
+        for indices in array_indices
+    ]
+    containment_groups = _Groups(len(array_indices))
+    for first_index, first_geometry in enumerate(array_geometries):
+        for second_index in range(first_index + 1, len(array_geometries)):
+            second_geometry = array_geometries[second_index]
+            smaller_area = min(first_geometry.area, second_geometry.area)
+            overlap_area = first_geometry.intersection(second_geometry).area
+            overlap_percent = 100.0 * overlap_area / smaller_area if smaller_area > 0 else 0.0
+            if overlap_area > 0 and overlap_percent >= min_row_overlap_percent:
+                containment_groups.union(first_index, second_index)
+    merged_arrays: dict[int, list[int]] = {}
+    for index, inner_row_indices in enumerate(array_indices):
+        merged_arrays.setdefault(containment_groups.find(index), []).extend(inner_row_indices)
     ordered_arrays = _map_reading_order(
-        list(arrays.values()), inner_row_geometries
+        list(merged_arrays.values()), inner_row_geometries
     )
     row_features: list[dict[str, Any]] = []
     panel_features: list[dict[str, Any]] = []
@@ -220,11 +240,11 @@ def build_panel_hierarchy(
         row_id = str(array_number)
         array_panels = [panel for index in inner_row_indices for panel in inner_rows[index]]
         orientation = _average_orientation(array_panels)
-        # Keep row footprints faithful to panel extents; rotated rectangles can
-        # introduce artificial overlap between neighboring rows.
-        row_geometry = unary_union([panel.geometry for panel in array_panels]).buffer(0)
-        if row_geometry.is_empty:
-            row_geometry = unary_union([panel.geometry for panel in array_panels]).convex_hull.minimum_rotated_rectangle
+        row_geometry = (
+            unary_union([panel.geometry for panel in array_panels])
+            .convex_hull
+            .minimum_rotated_rectangle
+        )
         minx, miny, maxx, maxy = row_geometry.bounds
         array_is_horizontal = (maxx - minx) >= (maxy - miny)
         ordered_inner_rows = sorted(

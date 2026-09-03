@@ -62,6 +62,7 @@ class HierarchyRequest(BaseModel):
     max_lateral_distance_factor: float = Field(default=1.5, ge=0.25, le=10.0)
     max_along_gap_factor: float = Field(default=1.5, ge=0.25, le=20.0)
     max_inner_row_gap_factor: float = Field(default=0.8, ge=0.0, le=10.0)
+    min_row_overlap_percent: float = Field(default=20.0, ge=0.0, le=100.0)
 
 
 class DeduplicateAnomaliesRequest(BaseModel):
@@ -810,6 +811,7 @@ def create_postprocess_router(
                     max_lateral_distance_factor=request.max_lateral_distance_factor,
                     max_along_gap_factor=request.max_along_gap_factor,
                     max_inner_row_gap_factor=request.max_inner_row_gap_factor,
+                    min_row_overlap_percent=request.min_row_overlap_percent,
                     callback=progress_callback(workflow_dir, "hierarchy"),
                 )
                 latest = read_status(workflow_dir)

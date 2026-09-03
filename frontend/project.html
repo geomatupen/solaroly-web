@@ -529,6 +529,10 @@
                   <label for="ppInnerRowGap">Merge inner-row gap factor</label>
                   <input id="ppInnerRowGap" type="number" value="0.8" min="0" max="10" step="0.1" />
                 </div>
+                <div>
+                  <label for="ppRowOverlap">Minimum row overlap to absorb (%)</label>
+                  <input id="ppRowOverlap" type="number" value="20" min="0" max="100" step="1" />
+                </div>
               </div>
               <button id="ppBuildHierarchy" type="button" disabled>Build rows and assign IDs</button>
             </div>
@@ -1562,8 +1566,8 @@
   <script src="js/project-tab-router.js?v=20260902a"></script>
   <script src="js/main.js?v=20260902b"></script>
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
-  <script src="js/postprocess.js?v=20260902d"></script>
-  <script src="js/postprocess_segmentation.js?v=20260903a"></script>
+  <script src="js/postprocess.js?v=20260903a"></script>
+  <script src="js/postprocess_segmentation.js?v=20260903b"></script>
   <script src="js/postprocess_anomaly.js?v=20260902a"></script>
   <script>
     // Display active project name in header

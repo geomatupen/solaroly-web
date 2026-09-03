@@ -306,6 +306,7 @@
           ["Lateral distance factor", detailValue(hierarchy.max_lateral_distance_factor)],
           ["Along-row gap factor", detailValue(hierarchy.max_along_gap_factor)],
           ["Merge inner-row gap factor", detailValue(hierarchy.max_inner_row_gap_factor)],
+          ["Minimum row overlap to absorb", `${detailValue(hierarchy.min_row_overlap_percent)}%`],
           ["Panels assigned IDs", detailValue(status.hierarchy_stats.panel_count)],
           ["ID ordering", "Map reading order: top-to-bottom, then left-to-right"],
         ]);
@@ -318,6 +319,7 @@
         ["Lateral distance factor", detailValue(parameters.max_lateral_distance_factor)],
         ["Along-row gap factor", detailValue(parameters.max_along_gap_factor)],
         ["Merge inner-row gap factor", detailValue(parameters.max_inner_row_gap_factor)],
+        ["Minimum row overlap to absorb", `${detailValue(parameters.min_row_overlap_percent)}%`],
         ["ID ordering", "Map reading order: top-to-bottom, then left-to-right"],
       ]);
       appendGenerationSection(container, "Result summary", [
