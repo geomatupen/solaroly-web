@@ -1172,6 +1172,16 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+.postprocessSubstepHeading {
+  margin: 16px 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text, #e6edf3);
+}
+.postprocessSubstepHeading span {
+  margin-right: 6px;
+  color: var(--accent);
+}
 .postprocessStepBody .postprocessAnalysisCompletionSummary {
   min-height: 0;
   margin: 16px 0 0;
@@ -1197,8 +1207,8 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessReviewMode label {
   display: block;
   margin-bottom: 8px;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text, #e6edf3);
 }
 .postprocessReviewMode select { width: 100%; }
