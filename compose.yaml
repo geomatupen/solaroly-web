@@ -1,0 +1,17 @@
+services:
+  solaroly:
+    build:
+      context: .
+    image: solaroly-web:local
+    ports:
+      - "8001:8001"
+    environment:
+      PVRT_ENABLE_DETECTRON: "1"
+      PVRT_ENABLE_YOLO: "1"
+      PVRT_ENABLE_THERMAL: "1"
+    volumes:
+      - solaroly-projects:/app/backend/projects
+    restart: unless-stopped
+
+volumes:
+  solaroly-projects:
