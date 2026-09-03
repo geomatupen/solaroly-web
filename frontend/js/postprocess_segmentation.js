@@ -41,7 +41,7 @@
         workflow.id,
       );
     });
-    if ([...select.options].some(option => option.value === previous)) select.value = previous;
+    if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
     else if (select.options.length > 1) select.selectedIndex = 1;
     select.disabled = workflows.length === 0;
     const selectedWorkflowId = select.selectedOptions[0]?.dataset.workflowId;
@@ -67,7 +67,7 @@
         workflow.id,
       );
     });
-    if ([...assignmentSelect.options].some(option => option.value === previousAssignment)) {
+    if (previousAssignment && [...assignmentSelect.options].some(option => option.value === previousAssignment)) {
       assignmentSelect.value = previousAssignment;
     } else if (assignmentSelect.options.length > 1) {
       assignmentSelect.selectedIndex = 1;
