@@ -220,7 +220,11 @@ def build_panel_hierarchy(
         row_id = str(array_number)
         array_panels = [panel for index in inner_row_indices for panel in inner_rows[index]]
         orientation = _average_orientation(array_panels)
-        row_geometry = unary_union([panel.geometry for panel in array_panels]).convex_hull.minimum_rotated_rectangle
+        # Keep row footprints faithful to panel extents; rotated rectangles can
+        # introduce artificial overlap between neighboring rows.
+        row_geometry = unary_union([panel.geometry for panel in array_panels]).buffer(0)
+        if row_geometry.is_empty:
+            row_geometry = unary_union([panel.geometry for panel in array_panels]).convex_hull.minimum_rotated_rectangle
         minx, miny, maxx, maxy = row_geometry.bounds
         array_is_horizontal = (maxx - minx) >= (maxy - miny)
         ordered_inner_rows = sorted(

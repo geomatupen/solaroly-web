@@ -12,8 +12,12 @@
     select.appendChild(option);
   }
 
-  function hierarchySource(workflow) {
-    return workflow.outputs?.regularized?.path || "";
+  function hierarchySource(workflow, geojsonFiles = []) {
+    const path = workflow.outputs?.regularized?.path || "";
+    if (!path) return "";
+    const catalogEntry = geojsonFiles.find(file => file.path === path);
+    if (catalogEntry) return catalogEntry.stage === "regularized" ? path : "";
+    return path.split("/").pop() === "regularized.geojson" ? path : "";
   }
 
   function refresh(context = api()?.getContext()) {
@@ -21,16 +25,19 @@
     const select = byId("ppHierarchySource");
     const previous = select.value;
     const workflows = context.workflows.filter(workflow =>
-      workflow.workflow_kind !== "anomaly" && hierarchySource(workflow)
+      workflow.workflow_kind !== "anomaly" && hierarchySource(workflow, context.geojsonFiles)
     );
     select.replaceChildren();
     addOption(select, "", "Select a regularized output…");
     workflows.forEach((workflow, index) => {
-      const suffix = index === 0 ? " · Latest" : "";
+      const created = workflow.created_at
+        ? new Date(workflow.created_at).toLocaleString()
+        : workflow.id;
+      const latest = index === 0 ? " · Latest" : "";
       addOption(
         select,
-        hierarchySource(workflow),
-        `${workflow.display_name || workflow.id}${suffix}`,
+        hierarchySource(workflow, context.geojsonFiles),
+        `Regularized · ${created}${latest}`,
         workflow.id,
       );
     });

@@ -58,10 +58,10 @@
     source: { label: "Source", color: "#38bdf8", weight: 1, fillOpacity: 0.08 },
     combined: { label: "Combined", color: "#f59e0b", weight: 2, fillOpacity: 0.13 },
     regularized: { label: "Regularized", color: "#22c55e", weight: 2, fillOpacity: 0.16 },
-    solar_rows: { label: "Rows", color: "#ef4444", weight: 3, fillOpacity: 0.05 },
+    solar_rows: { label: "Rows (editable)", color: "#ef4444", weight: 3, fillOpacity: 0.05 },
     panel_reference: { label: "Panel reference", color: "#14b8a6", weight: 2, fillOpacity: 0.08 },
     segmentation_regularized_reference: { label: "Final regularized panels", color: "#22c55e", weight: 2, fillOpacity: 0.10 },
-    segmentation_rows_reference: { label: "Final rows", color: "#ef4444", weight: 3, fillOpacity: 0.035 },
+    segmentation_rows_reference: { label: "Final rows (read-only)", color: "#ef4444", weight: 3, fillOpacity: 0.035 },
     overlap_deduplicated: { label: "Overlap-filtered anomalies", color: "#fb923c", weight: 2, fillOpacity: 0.16 },
     deduplicated: { label: "Visually deduplicated anomalies", color: "#a855f7", weight: 2, fillOpacity: 0.24 },
     associated: { label: "Final anomalies", color: "#eab308", weight: 2, fillOpacity: 0.25 },
@@ -2753,7 +2753,7 @@
         ? new Date(workflow.created_at).toLocaleString()
         : workflow.id;
       const latest = index === 0 ? " · Latest" : "";
-      addOption(select, workflow.id, `${workflowDisplayName(workflow)}${latest} · ${created}`);
+      addOption(select, workflow.id, `Combined · ${created}${latest}`);
     });
     const selected = combined.find(workflow => workflow.id === preferredId)
       || combined[0];
