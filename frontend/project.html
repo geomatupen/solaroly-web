@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260901a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260903l" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260903m" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -580,61 +580,73 @@
               <div class="postprocessStepBody">
                 <h3>Find shifted duplicates across images <span class="postprocessOptionalLabel">Optional</span></h3>
                 <p class="muted tiny">Use weighted image, shape, size, orientation, and location evidence to create a separate Visually deduplicated anomalies layer for duplicates whose mapped positions shifted. Skip this step if overlap removal is sufficient.</p>
-                <h4 id="ppAnalyzeDuplicatesSubstep" class="postprocessSubstepHeading"><span>2.1</span> Analyze duplicates</h4>
-                <div class="postprocessFields">
-                  <div>
-                    <label for="ppAnomalyOutputName">Output name</label>
-                    <input id="ppAnomalyOutputName" type="text" value="anomaly_postprocess" maxlength="80" />
+                <section id="ppAnalyzeDuplicatesSection" class="postprocessSubstep">
+                  <div class="postprocessSubstepTitleRow">
+                    <h4 id="ppAnalyzeDuplicatesSubstep" class="postprocessSubstepHeading"><span>2.1</span> Analyze duplicates</h4>
+                    <button class="secondary tiny postprocessSubstepCollapse" type="button" aria-label="Minimize Analyze duplicates" aria-expanded="true">−</button>
                   </div>
-                  <div>
-                    <label for="ppAnomalyDistance">Maximum location shift (m)</label>
-                    <input id="ppAnomalyDistance" type="number" value="5" min="0.1" max="100" step="0.5" />
-                  </div>
-                  <div>
-                    <label for="ppAnomalyNeighborRadius">Neighbor image radius (m)</label>
-                    <input id="ppAnomalyNeighborRadius" type="number" value="25" min="0.5" max="10000" step="1" />
-                    <small id="ppAnomalyNeighborEstimate" class="muted postprocessNeighborEstimate">Enter a radius to estimate neighboring images.</small>
-                  </div>
-                </div>
-                <div class="postprocessStepActions">
-                  <button id="ppDeduplicate" type="button" disabled>Analyze visual duplicates</button>
-                  <button id="ppConfigureRepresentativeWeights" class="secondary" type="button">Configure weights</button>
-                </div>
-                <p id="ppVisualAnalysisCompletionSummary" class="muted tiny postprocessAnalysisCompletionSummary" hidden></p>
-                <section id="ppVisualReview" class="postprocessVisualReview" hidden aria-live="polite">
-                  <h4 id="ppDeduplicateSubstep" class="postprocessSubstepHeading"><span>2.2</span> Deduplicate</h4>
-                  <div class="postprocessReviewMode">
-                    <label for="ppDeduplicationMode">Deduplication method</label>
-                    <select id="ppDeduplicationMode">
-                      <option value="threshold">Automatic threshold</option>
-                      <option value="manual">Manual image review</option>
-                    </select>
-                  </div>
-                  <button id="ppViewVisualComparisons" class="secondary postprocessReviewManualButton" type="button" hidden>Review manually</button>
-                  <div id="ppAutomaticSelectionConfig" class="postprocessAutomaticSelectionConfig">
-                    <div class="postprocessVisualReviewHeader">
+                  <div class="postprocessSubstepContent">
+                    <div class="postprocessFields">
                       <div>
-                        <h4>Visual duplicate review</h4>
-                        <p id="ppVisualReviewSummary" class="muted tiny"></p>
+                        <label for="ppAnomalyOutputName">Output name</label>
+                        <input id="ppAnomalyOutputName" type="text" value="anomaly_postprocess" maxlength="80" />
                       </div>
-                      <div class="postprocessVisualThreshold">
-                        <label for="ppVisualSimilarity">Deduplicate at or above</label>
-                        <div class="postprocessPercentInput">
-                          <input id="ppVisualSimilarity" type="number" value="80" min="0" max="100" step="1" />
-                          <span>%</span>
-                        </div>
+                      <div>
+                        <label for="ppAnomalyDistance">Maximum location shift (m)</label>
+                        <input id="ppAnomalyDistance" type="number" value="5" min="0.1" max="100" step="0.5" />
+                      </div>
+                      <div>
+                        <label for="ppAnomalyNeighborRadius">Neighbor image radius (m)</label>
+                        <input id="ppAnomalyNeighborRadius" type="number" value="25" min="0.5" max="10000" step="1" />
+                        <small id="ppAnomalyNeighborEstimate" class="muted postprocessNeighborEstimate">Enter a radius to estimate neighboring images.</small>
                       </div>
                     </div>
-                    <p id="ppScoringValidation" class="muted tiny"></p>
+                    <div class="postprocessStepActions">
+                      <button id="ppDeduplicate" type="button" disabled>Analyze visual duplicates</button>
+                      <button id="ppConfigureRepresentativeWeights" class="secondary" type="button">Configure weights</button>
+                    </div>
+                    <p id="ppVisualAnalysisCompletionSummary" class="muted tiny postprocessAnalysisCompletionSummary" hidden></p>
                   </div>
-                  <p id="ppVisualThresholdEffect" class="muted tiny"></p>
-                  <p id="ppManualApplyStatus" class="statusLine warn" hidden></p>
-                  <p id="ppVisualThresholdWarning" class="statusLine warn" hidden></p>
                 </section>
-                <div class="postprocessStepActions postprocessDeduplicationDecisionActions">
-                  <button id="ppApplyVisualDeduplication" type="button" hidden>Apply visual deduplication</button>
-                  <button id="ppSkipVisualDeduplication" class="secondary" type="button" disabled>Skip visual analysis</button>
-                </div>
+                <section id="ppVisualReview" class="postprocessVisualReview postprocessSubstep" hidden aria-live="polite">
+                  <div class="postprocessSubstepTitleRow">
+                    <h4 id="ppDeduplicateSubstep" class="postprocessSubstepHeading"><span>2.2</span> Deduplicate</h4>
+                    <button class="secondary tiny postprocessSubstepCollapse" type="button" aria-label="Minimize Deduplicate" aria-expanded="true">−</button>
+                  </div>
+                  <div class="postprocessSubstepContent">
+                    <div class="postprocessReviewMode">
+                      <label for="ppDeduplicationMode">Deduplication method</label>
+                      <select id="ppDeduplicationMode">
+                        <option value="threshold">Automatic threshold</option>
+                        <option value="manual">Manual image review</option>
+                      </select>
+                    </div>
+                    <button id="ppViewVisualComparisons" class="secondary postprocessReviewManualButton" type="button" hidden>Review manually</button>
+                    <div id="ppAutomaticSelectionConfig" class="postprocessAutomaticSelectionConfig">
+                      <div class="postprocessVisualReviewHeader">
+                        <div>
+                          <h4>Visual duplicate review</h4>
+                          <p id="ppVisualReviewSummary" class="muted tiny"></p>
+                        </div>
+                        <div class="postprocessVisualThreshold">
+                          <label for="ppVisualSimilarity">Deduplicate at or above</label>
+                          <div class="postprocessPercentInput">
+                            <input id="ppVisualSimilarity" type="number" value="80" min="0" max="100" step="1" />
+                            <span>%</span>
+                          </div>
+                        </div>
+                      </div>
+                      <p id="ppScoringValidation" class="muted tiny"></p>
+                    </div>
+                    <p id="ppVisualThresholdEffect" class="muted tiny"></p>
+                    <p id="ppManualApplyStatus" class="statusLine warn" hidden></p>
+                    <p id="ppVisualThresholdWarning" class="statusLine warn" hidden></p>
+                    <div class="postprocessStepActions postprocessDeduplicationDecisionActions">
+                      <button id="ppApplyVisualDeduplication" type="button" hidden>Apply visual deduplication</button>
+                      <button id="ppSkipVisualDeduplication" class="secondary" type="button" disabled>Skip visual analysis</button>
+                    </div>
+                  </div>
+                </section>
               </div>
             </article>
             <article id="ppAdjustAnomaliesStep" class="postprocessStep" hidden>
@@ -1608,7 +1620,7 @@
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260903c"></script>
   <script src="js/postprocess_segmentation.js?v=20260903d"></script>
-  <script src="js/postprocess_anomaly.js?v=20260903l"></script>
+  <script src="js/postprocess_anomaly.js?v=20260903m"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

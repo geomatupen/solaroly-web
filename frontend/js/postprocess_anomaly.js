@@ -53,6 +53,18 @@
     toggle.setAttribute("aria-expanded", String(!collapsed));
   }
 
+  function setAnomalySubstepCollapsed(substep, collapsed) {
+    if (!substep) return;
+    substep.classList.toggle("collapsed", collapsed);
+    const toggle = substep.querySelector(".postprocessSubstepCollapse");
+    if (!toggle) return;
+    const label = substep.querySelector(".postprocessSubstepHeading")?.textContent.trim() || "substep";
+    toggle.textContent = collapsed ? "+" : "−";
+    toggle.title = collapsed ? `Expand ${label}` : `Minimize ${label}`;
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+
   function setAnomalyStepCompleted(step, completed) {
     if (!step) return;
     step.classList.toggle("completed", completed);
@@ -1812,6 +1824,12 @@
     });
     byId("ppSegmentationTab")?.addEventListener("click", () => switchMode("segmentation"));
     byId("ppAnomalyTab")?.addEventListener("click", () => switchMode("anomaly"));
+    document.querySelectorAll("#ppDeduplicateStep .postprocessSubstepCollapse").forEach(toggle => {
+      toggle.addEventListener("click", () => {
+        const substep = toggle.closest(".postprocessSubstep");
+        setAnomalySubstepCollapsed(substep, !substep?.classList.contains("collapsed"));
+      });
+    });
     byId("ppAnomalyNeighborRadius")?.addEventListener("input", () => {
       lastNeighborStatsKey = "";
       scheduleNeighborStats(true);

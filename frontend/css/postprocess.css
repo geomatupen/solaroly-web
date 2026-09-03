@@ -1189,6 +1189,16 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   color: var(--accent);
 }
 .postprocessSubstepHeading.completed span { color: #22c55e; }
+.postprocessSubstepTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0 12px;
+}
+.postprocessSubstepTitleRow .postprocessSubstepHeading { margin: 0; }
+.postprocessSubstepCollapse { min-width: 32px; padding: 3px 8px; }
+.postprocessSubstep.collapsed .postprocessSubstepContent { display: none; }
 .postprocessStepBody .postprocessAnalysisCompletionSummary {
   min-height: 0;
   margin: 16px 0 0;
