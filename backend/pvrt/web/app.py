@@ -1034,12 +1034,20 @@ def _build_anomalies_geojson_from_tiles(
 def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> Path:
     import rasterio
     from PIL import Image
+    from rasterio.enums import Resampling
     thumbs_dir.mkdir(parents=True, exist_ok=True)
     out = thumbs_dir / (tif_path.stem + ".png")
     try:
         with rasterio.open(tif_path) as ds:
             bsel = [b for b in (1,2,3) if b <= ds.count] or [1]
-            arr = ds.read(bsel)
+            scale = min(1.0, max_px / max(ds.height, ds.width))
+            out_height = max(1, int(ds.height * scale))
+            out_width = max(1, int(ds.width * scale))
+            arr = ds.read(
+                bsel,
+                out_shape=(len(bsel), out_height, out_width),
+                resampling=Resampling.bilinear,
+            )
             arr = arr.astype("float32").transpose(1,2,0)
             # normalize each band 2–98%
             for c in range(arr.shape[2]):
@@ -1049,11 +1057,7 @@ def _save_tif_thumbnail(tif_path: Path, thumbs_dir: Path, max_px: int = 640) -> 
                 arr[..., c] = np.clip((a - lo) * (255/(hi-lo)), 0, 255)
             if arr.shape[2] == 1:
                 arr = np.repeat(arr, 3, axis=2)
-            h, w = arr.shape[:2]
-            scale = min(1.0, max_px / max(h, w))
             im = Image.fromarray(arr.astype("uint8"))
-            if scale < 1.0:
-                im = im.resize((int(w*scale), int(h*scale)), Image.BILINEAR)
             im.save(out, format="PNG", optimize=True)
     except COMMON_EXCEPTIONS:
         from PIL import Image
