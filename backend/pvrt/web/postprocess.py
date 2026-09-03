@@ -1566,6 +1566,15 @@ def create_postprocess_router(
             "panel_id_field": request.id_field,
         })
         outputs = dict(current.get("outputs") or {})
+        had_associated_output = bool(outputs.get("associated"))
+        if had_associated_output:
+            clear_panel_anomaly_assignments(workflow_dir, current)
+            outputs = remove_stage_outputs(
+                result_dir,
+                workflow_dir,
+                current,
+                {"associated"},
+            )
         outputs["uploaded_panels"] = {
             "path": output_path.relative_to(result_dir).as_posix(),
         }
@@ -1580,6 +1589,8 @@ def create_postprocess_router(
                 "feature_count": len(cleaned_features),
                 "updated_at": datetime.now().isoformat(),
             },
+            association_stats=None if had_associated_output else current.get("association_stats"),
+            association_parameters=None if had_associated_output else current.get("association_parameters"),
             outputs=outputs,
         )
         return read_status(workflow_dir)

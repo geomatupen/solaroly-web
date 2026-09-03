@@ -76,6 +76,28 @@ class PostprocessApiTests(unittest.TestCase):
             self.assertEqual(duplicate.exception.status_code, 400)
             self.assertIn("duplicated", duplicate.exception.detail)
 
+            associated = workflow_dir / "associated.geojson"
+            associated.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+            current = json.loads((workflow_dir / "status.json").read_text(encoding="utf-8"))
+            current["outputs"]["associated"] = {"path": "postprocess/anomalies/associated.geojson"}
+            current["association_stats"] = {"assigned": 2}
+            current["association_parameters"] = {"panel_path": current["outputs"]["uploaded_panels"]["path"]}
+            (workflow_dir / "status.json").write_text(json.dumps(current), encoding="utf-8")
+            replaced = asyncio.run(route.endpoint(
+                "test-result",
+                "anomalies",
+                UploadPanelReferenceRequest(geojson={
+                    "type": "FeatureCollection",
+                    "features": [
+                        {"type": "Feature", "geometry": polygon, "properties": {"asset_code": "P-3"}},
+                    ],
+                }, id_field="asset_code"),
+            ))
+            self.assertFalse(associated.exists())
+            self.assertNotIn("associated", replaced["outputs"])
+            self.assertIsNone(replaced["association_stats"])
+            self.assertIsNone(replaced["association_parameters"])
+
     def test_overlap_filter_has_its_own_replaceable_output_stage(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

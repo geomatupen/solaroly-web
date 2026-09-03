@@ -1480,7 +1480,7 @@
     const workflow = context.workflows.find(item =>
       item.id === context.workflowId && item.workflow_kind === "anomaly"
     );
-    if (workflow?.overlap_deduplicate_stats) {
+    if (workflow?.outputs?.overlap_deduplicated || workflow?.overlap_deduplicate_stats) {
       const hasDownstreamOutputs = Boolean(
         workflow?.deduplicate_stats || workflow?.outputs?.associated
       );
@@ -1527,6 +1527,19 @@
     if (!resultId || !source) {
       workspace.setMessage("The configured anomaly result or GeoJSON source is unavailable. Open Edit config and verify the anomaly source.", "err");
       return;
+    }
+    const hasSavedComparisons = Boolean(
+      workflow?.visual_review_available
+      || workflow?.visual_review_path
+      || workflow?.visual_review
+      || workflow?.visual_analysis_stats
+    );
+    if (hasSavedComparisons) {
+      const confirmed = await workspace.confirmReplacement(
+        "Replace image comparisons?",
+        "The saved image comparisons, cached crops, and manual review decisions will be deleted and replaced. Existing Deduplicated and Final anomalies layers remain unchanged until the new selection is applied.",
+      );
+      if (!confirmed) return;
     }
     button.disabled = true;
     button.textContent = "Starting visual analysis…";
@@ -1588,7 +1601,7 @@
     if (deduplicationMode === "threshold" && !scoringIsValid(config)) return;
     const manualState = manualReviewState(workflow);
     if (deduplicationMode === "manual" && (!manualState.accepted || manualState.conflicts.length)) return;
-    const hasVisualOutput = Boolean(workflow?.outputs?.deduplicated && workflow?.deduplicate_stats);
+    const hasVisualOutput = Boolean(workflow?.outputs?.deduplicated);
     if (hasVisualOutput) {
       const alsoRemovesAssociation = Boolean(workflow?.outputs?.associated);
       const confirmed = await workspace.confirmReplacement(
@@ -1723,6 +1736,14 @@
     const context = workspace?.getContext();
     const idField = byId("ppPanelUploadIdField")?.value;
     if (!pendingPanelUpload || !context?.resultId || !context.workflowId || !idField) return;
+    const workflow = context.workflows.find(item => item.id === context.workflowId);
+    if (workflow?.outputs?.uploaded_panels) {
+      const confirmed = await workspace.confirmReplacement(
+        "Replace uploaded panel layer?",
+        `The existing uploaded identified panels will be deleted and replaced.${workflow?.outputs?.associated ? " The Final anomalies assignment derived from them will also be removed and must be generated again." : ""}`,
+      );
+      if (!confirmed) return;
+    }
     const button = byId("ppUploadPanelReference");
     button.disabled = true;
     workspace.setMessage("Validating identified panel polygons…");
@@ -1735,7 +1756,6 @@
           body: JSON.stringify({ geojson: pendingPanelUpload.geojson, id_field: idField }),
         },
       );
-      const workflow = context.workflows.find(item => item.id === context.workflowId);
       if (workflow) Object.assign(workflow, status);
       pendingPanelUpload = null;
       byId("ppPanelUploadIdFieldWrap").hidden = true;
