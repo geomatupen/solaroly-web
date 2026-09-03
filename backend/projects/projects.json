@@ -17,6 +17,15 @@
       "created_at": "2026-03-01T11:06:22.916864",
       "modified_at": "2026-03-01T21:47:47.097119",
       "thumbnail_path": null
+    },
+    "9971b3f5": {
+      "id": "9971b3f5",
+      "name": "Test",
+      "description": "This is test",
+      "root_path": "/mnt/e/SolarolyProjects/Test",
+      "created_at": "2026-09-03T07:40:45.582736",
+      "modified_at": "2026-09-03T07:40:45.582754",
+      "thumbnail_path": null
     }
   }
 }

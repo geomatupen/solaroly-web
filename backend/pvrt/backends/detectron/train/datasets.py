@@ -55,9 +55,18 @@ def _purge_dataset_name(name: str) -> None:
         # Older/newer versions may expose a private registry mapping
         DatasetCatalog._REGISTERED.pop(name, None)  # type: ignore[attr-defined]
 
-    # MetadataCatalog: try to remove from known private map if present
-    if hasattr(MetadataCatalog, "_NAME_TO_META"):
+    # MetadataCatalog must also be cleared. Otherwise Detectron keeps the
+    # previous split's json_file metadata and rejects a subsequent dataset
+    # with an assertion such as "old/path.json != new/path.json".
+    if hasattr(MetadataCatalog, "remove"):
+        try:
+            MetadataCatalog.remove(name)  # type: ignore[attr-defined]
+        except KeyError:
+            pass
+    elif hasattr(MetadataCatalog, "_NAME_TO_META"):
         MetadataCatalog._NAME_TO_META.pop(name, None)  # type: ignore[attr-defined]
+    elif hasattr(MetadataCatalog, "data"):
+        MetadataCatalog.data.pop(name, None)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------
@@ -77,19 +86,18 @@ def register_split_coco(name: str, split_dir: str | Path) -> None:
     # 1) Find annotations
     anno = _find_coco_json(split_dir)
 
-    # 1b) Defensive: some COCO JSON files omit optional top-level fields like
-    # 'info' which pycocotools expects when loading results. Create a small
-    # fixed copy with a minimal 'info' section if needed so evaluation does
-    # not fail. The fixed copy is written next to the original to keep the
-    # operation idempotent.
+    # 1b) Some COCO exports omit the optional top-level 'info' field that
+    # pycocotools expects while loading evaluation results. Normalize the
+    # selected annotation file in place so detection and segmentation both
+    # continue to use the original filename (normally
+    # _annotations.coco.json); do not create a second *_pvrt_fixed.json file.
     with open(anno, 'r', encoding='utf-8') as f:
         data = json.load(f)
     if isinstance(data, dict) and 'info' not in data:
-        fixed = dict(data)
-        fixed['info'] = {'description': 'pvrt dataset (info added)'}
-        fixed_path = Path(anno).with_name(Path(anno).stem + "_pvrt_fixed.json")
-        fixed_path.write_text(json.dumps(fixed), encoding='utf-8')
-        anno = fixed_path
+        data['info'] = {'description': 'pvrt dataset (info added)'}
+        temporary = anno.with_name(f".{anno.name}.pvrt.tmp")
+        temporary.write_text(json.dumps(data), encoding='utf-8')
+        temporary.replace(anno)
 
     # 2) Purge any prior registration for this name (idempotent re-run)
     _purge_dataset_name(name)

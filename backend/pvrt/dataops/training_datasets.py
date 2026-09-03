@@ -722,6 +722,32 @@ def ensure_legacy_dataset(project_train_dir: Path) -> None:
         return
     registry = load_registry(project_train_dir)
     resolved = str(legacy_root.resolve())
+
+    # Project creation initializes empty train/ and valid/ directories. Those
+    # placeholders are not a dataset and must not appear as a second,
+    # automatically-created "Project training data" entry in the UI.
+    has_training_files = any(
+        path.is_file() and not _ignored_file(path.relative_to(legacy_root))
+        for split in (
+            legacy_root / "train",
+            _split(legacy_root, "valid", "val", "validation"),
+        )
+        if split is not None
+        for path in split.rglob("*")
+    )
+    if not has_training_files:
+        stale_ids = [
+            dataset_id
+            for dataset_id, entry in registry.items()
+            if entry.get("source") == "legacy_project_data"
+            and str(entry.get("storage_path", "")) == resolved
+        ]
+        if stale_ids:
+            for dataset_id in stale_ids:
+                registry.pop(dataset_id, None)
+            save_registry(project_train_dir, registry)
+        return
+
     for dataset_id, entry in registry.items():
         if str(entry.get("storage_path", "")) != resolved:
             continue
