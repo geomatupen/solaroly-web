@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link rel="stylesheet" href="css/styles.css?v=20260901a" />
-  <link rel="stylesheet" href="css/postprocess.css?v=20260903k" />
+  <link rel="stylesheet" href="css/postprocess.css?v=20260903l" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -580,7 +580,7 @@
               <div class="postprocessStepBody">
                 <h3>Find shifted duplicates across images <span class="postprocessOptionalLabel">Optional</span></h3>
                 <p class="muted tiny">Use weighted image, shape, size, orientation, and location evidence to create a separate Visually deduplicated anomalies layer for duplicates whose mapped positions shifted. Skip this step if overlap removal is sufficient.</p>
-                <h4 class="postprocessSubstepHeading"><span>2.1</span> Analyze duplicates</h4>
+                <h4 id="ppAnalyzeDuplicatesSubstep" class="postprocessSubstepHeading"><span>2.1</span> Analyze duplicates</h4>
                 <div class="postprocessFields">
                   <div>
                     <label for="ppAnomalyOutputName">Output name</label>
@@ -602,7 +602,7 @@
                 </div>
                 <p id="ppVisualAnalysisCompletionSummary" class="muted tiny postprocessAnalysisCompletionSummary" hidden></p>
                 <section id="ppVisualReview" class="postprocessVisualReview" hidden aria-live="polite">
-                  <h4 class="postprocessSubstepHeading"><span>2.2</span> Deduplicate</h4>
+                  <h4 id="ppDeduplicateSubstep" class="postprocessSubstepHeading"><span>2.2</span> Deduplicate</h4>
                   <div class="postprocessReviewMode">
                     <label for="ppDeduplicationMode">Deduplication method</label>
                     <select id="ppDeduplicationMode">
@@ -1608,7 +1608,7 @@
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260903c"></script>
   <script src="js/postprocess_segmentation.js?v=20260903d"></script>
-  <script src="js/postprocess_anomaly.js?v=20260903k"></script>
+  <script src="js/postprocess_anomaly.js?v=20260903l"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

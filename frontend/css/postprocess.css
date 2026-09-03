@@ -1188,6 +1188,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
   margin-right: 6px;
   color: var(--accent);
 }
+.postprocessSubstepHeading.completed span { color: #22c55e; }
 .postprocessStepBody .postprocessAnalysisCompletionSummary {
   min-height: 0;
   margin: 16px 0 0;

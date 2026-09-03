@@ -938,6 +938,8 @@
       || workflow?.visual_review
     );
     const workflowRunning = workflow?.status === "queued" || workflow?.status === "running";
+    byId("ppAnalyzeDuplicatesSubstep")?.classList.toggle("completed", hasSavedReview);
+    byId("ppDeduplicateSubstep")?.classList.toggle("completed", Boolean(workflow?.outputs?.deduplicated));
     const completionSummary = byId("ppVisualAnalysisCompletionSummary");
     const candidateCount = Number(stats?.spatial_candidate_pairs ?? savedTotal);
     const comparedCount = Number(stats?.visually_compared_pairs || 0);
