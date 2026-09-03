@@ -1693,6 +1693,53 @@
     return "ppPanelsPane";
   }
 
+  function polygonContainsLatLng(layer, latlng) {
+    const geometry = layer?.toGeoJSON?.()?.geometry;
+    if (!geometry || !latlng) return false;
+    const point = [Number(latlng.lng), Number(latlng.lat)];
+    const inRing = ring => {
+      let inside = false;
+      for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+        const currentPoint = ring[index];
+        const previousPoint = ring[previous];
+        const intersects = ((currentPoint[1] > point[1]) !== (previousPoint[1] > point[1]))
+          && point[0] < (previousPoint[0] - currentPoint[0]) * (point[1] - currentPoint[1])
+            / (previousPoint[1] - currentPoint[1]) + currentPoint[0];
+        if (intersects) inside = !inside;
+      }
+      return inside;
+    };
+    const inPolygon = polygon => polygon?.length && inRing(polygon[0])
+      && !polygon.slice(1).some(inRing);
+    if (geometry.type === "Polygon") return inPolygon(geometry.coordinates);
+    if (geometry.type === "MultiPolygon") return geometry.coordinates.some(inPolygon);
+    return false;
+  }
+
+  function selectOverlappingPolygon(group, clickedLayer, latlng) {
+    const candidates = [];
+    group.eachLayer(layer => {
+      const bounds = layer.getBounds?.();
+      if (bounds?.isValid() && !bounds.contains(latlng)) return;
+      if (polygonContainsLatLng(layer, latlng)) candidates.push(layer);
+    });
+    if (candidates.length <= 1) return clickedLayer;
+    const ordered = [clickedLayer, ...candidates.filter(layer => layer !== clickedLayer)];
+    const previous = state.overlapPick;
+    const samePoint = previous
+      && Math.abs(previous.lat - latlng.lat) < 1e-7
+      && Math.abs(previous.lng - latlng.lng) < 1e-7
+      && previous.layers.length === ordered.length
+      && previous.layers.every(layer => ordered.includes(layer));
+    const index = samePoint ? (previous.index + 1) % ordered.length : 0;
+    state.overlapPick = { lat: latlng.lat, lng: latlng.lng, layers: ordered, index };
+    if (ordered.length > 1) {
+      byId("ppEditStatus").textContent = `Overlapping polygon ${index + 1} of ${ordered.length} selected. Click the same location to cycle. `
+        + (state.editing?.mode === "delete" ? "Delete mode is active." : "");
+    }
+    return ordered[index];
+  }
+
   function createPreviewGeoJsonLayer(stage, geojson, label = null) {
     const style = { ...(PREVIEW_STYLES[stage] || PREVIEW_STYLES.source) };
     if (label) style.label = label;
@@ -1931,6 +1978,7 @@
     editing.deleteHandlers = [];
     editing.mode = null;
     editing.selectedLayer = null;
+    state.overlapPick = null;
     editing.item.layer.eachLayer(layer => {
       try { layer.pm?.disable(); } catch (_) {}
       try { layer.pm?.disableLayerDrag?.(); } catch (_) {}
@@ -1996,6 +2044,7 @@
       historyIndex: 0,
       historyTimer: null,
     };
+    state.overlapPick = null;
     lockProcessingControls(true);
     byId("ppEditPanel").hidden = false;
     byId("ppEditLayerName").textContent = item.label;
@@ -2021,8 +2070,9 @@
         supported = true;
         const handler = event => {
           if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+          const selectedLayer = selectOverlappingPolygon(state.editing.item.layer, layer, event.latlng);
           state.editing.item.layer.eachLayer(other => {
-            if (other !== layer) {
+            if (other !== selectedLayer) {
               try { other.pm?.disable(); } catch (_) {}
               other.off("pm:edit", scheduleEditHistory);
               other.off("pm:markerdragend", recordEditState);
@@ -2031,14 +2081,14 @@
             }
           });
           applyEditingEmphasis();
-          state.editing.selectedLayer = layer;
-          layer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.42 });
-          layer.on("pm:edit", scheduleEditHistory);
-          layer.on("pm:markerdragend", recordEditState);
-          layer.on("pm:vertexadded", scheduleEditHistory);
-          layer.on("pm:vertexremoved", scheduleEditHistory);
-          layer.pm.enable({ allowSelfIntersection: false, snappable: true });
-          const markerCount = layer.pm?._markers?.length || 0;
+          state.editing.selectedLayer = selectedLayer;
+          selectedLayer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.42 });
+          selectedLayer.on("pm:edit", scheduleEditHistory);
+          selectedLayer.on("pm:markerdragend", recordEditState);
+          selectedLayer.on("pm:vertexadded", scheduleEditHistory);
+          selectedLayer.on("pm:vertexremoved", scheduleEditHistory);
+          selectedLayer.pm.enable({ allowSelfIntersection: false, snappable: true });
+          const markerCount = selectedLayer.pm?._markers?.length || 0;
           byId("ppEditStatus").textContent = markerCount
             ? `Polygon selected · ${markerCount} vertex handles. Drag a handle to edit.`
             : "Polygon selected, but vertex handles could not be created.";
@@ -2062,7 +2112,8 @@
     group.eachLayer(layer => {
       const handler = event => {
         if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
-        group.removeLayer(layer);
+        const selectedLayer = selectOverlappingPolygon(group, layer, event.latlng);
+        group.removeLayer(selectedLayer);
         state.editing.item.count = group.getLayers().length;
         recordEditState("Polygon deleted. You can undo or redo this change.");
         renderPreviewLayers();
@@ -2087,14 +2138,15 @@
       supported = true;
       const handler = event => {
         if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+        const selectedLayer = selectOverlappingPolygon(state.editing.item.layer, layer, event.latlng);
         state.editing.item.layer.eachLayer(other => {
-          if (other === layer) return;
+          if (other === selectedLayer) return;
           try { other.pm?.disableLayerDrag?.(); } catch (_) {}
           other.off("pm:dragend", recordEditState);
         });
-        state.editing.selectedLayer = layer;
-        layer.pm.enableLayerDrag();
-        layer.on("pm:dragend", recordEditState);
+        state.editing.selectedLayer = selectedLayer;
+        selectedLayer.pm.enableLayerDrag();
+        selectedLayer.on("pm:dragend", recordEditState);
         byId("ppEditStatus").textContent = "Polygon selected. Drag it to a corrected position; the move is recorded when released.";
       };
       layer.on("click", handler);
@@ -2119,14 +2171,15 @@
       supported = true;
       const handler = event => {
         if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+        const selectedLayer = selectOverlappingPolygon(state.editing.item.layer, layer, event.latlng);
         state.editing.item.layer.eachLayer(other => {
-          if (other === layer) return;
+          if (other === selectedLayer) return;
           try { other.pm?.disableRotate?.(); } catch (_) {}
           other.off("pm:rotateend", recordEditState);
         });
-        state.editing.selectedLayer = layer;
-        layer.pm.enableRotate();
-        layer.on("pm:rotateend", recordEditState);
+        state.editing.selectedLayer = selectedLayer;
+        selectedLayer.pm.enableRotate();
+        selectedLayer.on("pm:rotateend", recordEditState);
         byId("ppEditStatus").textContent = "Polygon selected. Drag a rotation handle; the rotation is recorded when released.";
       };
       layer.on("click", handler);
@@ -2170,13 +2223,14 @@
     state.editing.item.layer.eachLayer(layer => {
       const handler = event => {
         if (event.originalEvent) window.L.DomEvent.stopPropagation(event.originalEvent);
+        const selectedLayer = selectOverlappingPolygon(state.editing.item.layer, layer, event.latlng);
         const selected = state.editing.mergeSelection;
-        if (selected.has(layer)) {
-          selected.delete(layer);
-          layer.setStyle?.(state.editing.item.baseStyle);
+        if (selected.has(selectedLayer)) {
+          selected.delete(selectedLayer);
+          selectedLayer.setStyle?.(state.editing.item.baseStyle);
         } else {
-          selected.add(layer);
-          layer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.48 });
+          selected.add(selectedLayer);
+          selectedLayer.setStyle?.({ color: "#ffffff", weight: state.editing.item.baseStyle.weight + 2, fillOpacity: 0.48 });
         }
         setIconButtonLabel("ppMergePolygons", selected.size >= 2 ? `Merge selected (${selected.size})` : "Merge polygons");
         byId("ppEditStatus").textContent = selected.size >= 2
