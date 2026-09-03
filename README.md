@@ -209,6 +209,18 @@ backend/projects/
 └── <project_id>/
     ├── train/
     │   ├── data/
+    │   │   ├── train/
+    │   │   │   ├── _annotations.coco.json
+    │   │   │   ├── image_001.jpg
+    │   │   │   ├── image_001.txt
+    │   │   │   ├── image_002.jpg
+    │   │   │   └── image_002.txt
+    │   │   └── valid/
+    │   │       ├── _annotations.coco.json
+    │   │       ├── image_101.jpg
+    │   │       ├── image_101.txt
+    │   │       ├── image_102.jpg
+    │   │       └── image_102.txt
     │   └── outputs/
     ├── test/
     │   ├── data/
@@ -217,6 +229,24 @@ backend/projects/
     ├── overlays/
     └── logs/
 ```
+
+The tree above shows the optional **combined** layout. You only need the format
+for the training backend you intend to use:
+
+- **Detectron2 only:** keep the images and one COCO annotation JSON in each
+  `train/` and `valid/` (or `val/`) split. YOLO `.txt` files are not required.
+  `_annotations.coco.json` is recommended; `annotations.json`, `train.json`,
+  `valid.json` and `val.json` are also recognized when they contain valid COCO
+  `images`, `annotations` and `categories` collections. Each JSON `file_name`
+  must match its uploaded image path exactly.
+- **YOLO only:** upload a standard YOLO dataset with `data.yaml`,
+  `images/train/`, `images/valid/`, `labels/train/` and `labels/valid/`. COCO
+  JSON files are not required. Every annotated image uses a same-stem `.txt`
+  label; an image without one is treated as a background image.
+- **Detectron2 and YOLO:** use the combined tree above. Keep the COCO JSON and
+  place a same-stem YOLO `.txt` beside each annotated image, such as
+  `image_001.jpg` with `image_001.txt`. The COCO categories provide the shared
+  class definitions used to validate the YOLO sidecars.
 
 Project folders contain source imagery and generated artifacts and are not part
 of the application source. Back up project roots before upgrades. Do not commit
