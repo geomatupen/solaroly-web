@@ -21,7 +21,9 @@ from ..postprocess import (
     analyze_visual_duplicates,
     apply_visual_deduplication,
     associate_anomalies,
+    assign_panel_ids,
     build_panel_hierarchy,
+    clear_panel_ids,
     combine_tile_fragments,
     deduplicate_anomalies,
     find_review_image,
@@ -711,7 +713,7 @@ def create_postprocess_router(
         manual_edits = {
             stage: details
             for stage, details in (status.get("manual_edits") or {}).items()
-            if stage not in {"regularized", "solar_rows"}
+            if stage != "solar_rows"
         }
         update_status(
             workflow_dir,
@@ -793,8 +795,9 @@ def create_postprocess_router(
             status="queued",
             stage="hierarchy",
             progress=0,
-            message="Queued row generation and ID assignment.",
+            message="Queued row generation.",
             hierarchy_parameters=request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+            assignment_stats=None,
             outputs=outputs,
             manual_edits=manual_edits,
         )
@@ -812,8 +815,10 @@ def create_postprocess_router(
                     max_along_gap_factor=request.max_along_gap_factor,
                     max_inner_row_gap_factor=request.max_inner_row_gap_factor,
                     min_row_overlap_percent=request.min_row_overlap_percent,
+                    assign_ids=False,
                     callback=progress_callback(workflow_dir, "hierarchy"),
                 )
+                clear_panel_ids(input_path)
                 latest = read_status(workflow_dir)
                 current_outputs = dict(latest.get("outputs") or {})
                 current_outputs["regularized"] = {
@@ -827,18 +832,75 @@ def create_postprocess_router(
                     status="complete",
                     stage="hierarchy",
                     progress=100,
-                    message="Panel rows and IDs are ready.",
+                    message="Rows are ready for editing.",
                     hierarchy_stats=stats,
                     outputs=current_outputs,
                 )
-                log.info("UI:OK:postprocess: Rows and panel IDs ready for %s", result_dir.name)
+                log.info("UI:OK:postprocess: Rows ready for %s", result_dir.name)
             except Exception as exc:
                 append_log(workflow_dir, f"ERROR: {exc}")
                 update_status(workflow_dir, status="failed", stage="hierarchy", message=str(exc), error=str(exc))
-                log.exception("Row generation and ID assignment failed for %s", result_dir.name)
+                log.exception("Row generation failed for %s", result_dir.name)
 
         _EXECUTOR.submit(run)
         return {"ok": True, "id": workflow_id, "status": "queued", "stage": "hierarchy"}
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/assign-ids")
+    async def assign_ids(result_id: str, workflow_id: str) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        status = read_status(workflow_dir)
+        if status.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="This workflow is already running.")
+        outputs = status.get("outputs") or {}
+        panel_value = str((outputs.get("regularized") or {}).get("path") or "")
+        row_value = str((outputs.get("solar_rows") or {}).get("path") or "")
+        if not panel_value or not row_value:
+            raise HTTPException(status_code=409, detail="Build and edit Rows before assigning IDs.")
+        panels_path = resolve_input(result_dir, panel_value)
+        rows_path = resolve_input(result_dir, row_value)
+        try:
+            panels_path.relative_to(workflow_dir)
+            rows_path.relative_to(workflow_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Select outputs from this segmentation workflow.") from exc
+        parameters = status.get("hierarchy_parameters") or {}
+        update_status(
+            workflow_dir,
+            status="queued",
+            stage="assign_ids",
+            progress=0,
+            message="Queued row and panel ID assignment.",
+            outputs=outputs,
+        )
+
+        def run() -> None:
+            try:
+                stats = assign_panel_ids(
+                    panels_path,
+                    rows_path,
+                    max_orientation_difference_deg=float(parameters.get("max_orientation_difference_deg", 15.0)),
+                    max_lateral_distance_factor=float(parameters.get("max_lateral_distance_factor", 1.5)),
+                    max_along_gap_factor=float(parameters.get("max_along_gap_factor", 1.5)),
+                    callback=progress_callback(workflow_dir, "assign_ids"),
+                )
+                update_status(
+                    workflow_dir,
+                    status="complete",
+                    stage="assign_ids",
+                    progress=100,
+                    message="Row and panel IDs are ready.",
+                    assignment_stats=stats,
+                    outputs=outputs,
+                )
+                log.info("UI:OK:postprocess: Row and panel IDs ready for %s", result_dir.name)
+            except Exception as exc:
+                append_log(workflow_dir, f"ERROR: {exc}")
+                update_status(workflow_dir, status="failed", stage="assign_ids", message=str(exc), error=str(exc))
+                log.exception("Row and panel ID assignment failed for %s", result_dir.name)
+
+        _EXECUTOR.submit(run)
+        return {"ok": True, "id": workflow_id, "status": "queued", "stage": "assign_ids"}
 
     @router.post("/{result_id}/postprocess/anomalies/overlap-deduplicate")
     async def overlap_deduplicate(
@@ -1565,6 +1627,9 @@ def create_postprocess_router(
                 raise HTTPException(status_code=400, detail=f"Feature {index} is not a polygon.")
             cleaned = dict(feature)
             properties = dict(cleaned.get("properties") or {})
+            if stage == "solar_rows":
+                for key in {"row_id", "inner_row", "panel_number", "panel_id", "row_panel_count", "inner_row_panel_count", "source_panel_index"}:
+                    properties.pop(key, None)
             properties["manually_edited"] = True
             cleaned["properties"] = properties
             cleaned_features.append(cleaned)
@@ -1583,6 +1648,11 @@ def create_postprocess_router(
             "feature_count": len(cleaned_features),
             "updated_at": datetime.now().isoformat(),
         }
+        if stage == "solar_rows":
+            regularized = (current.get("outputs") or {}).get("regularized") or {}
+            regularized_path = str(regularized.get("path") or "")
+            if regularized_path:
+                clear_panel_ids((result_dir / regularized_path).resolve())
         update_status(
             workflow_dir,
             status="complete",
@@ -1590,6 +1660,7 @@ def create_postprocess_router(
             progress=100,
             message=f"{stage.replace('_', ' ').title()} GeoJSON updated.",
             manual_edits=manual_edits,
+            assignment_stats=None if stage == "solar_rows" else current.get("assignment_stats"),
         )
         return read_status(workflow_dir)
 

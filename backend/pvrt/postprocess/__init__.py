@@ -1,7 +1,7 @@
 """GeoJSON post-processing for saved inference results."""
 
 from .geojson import analyze_geojson, combine_tile_fragments, regularize_polygons
-from .segmentation import build_panel_hierarchy
+from .segmentation import assign_panel_ids, build_panel_hierarchy, clear_panel_ids
 from .anomaly import (
     analyze_visual_duplicates,
     apply_visual_deduplication,
@@ -16,7 +16,9 @@ __all__ = [
     "associate_anomalies",
     "analyze_visual_duplicates",
     "apply_visual_deduplication",
+    "assign_panel_ids",
     "build_panel_hierarchy",
+    "clear_panel_ids",
     "combine_tile_fragments",
     "deduplicate_anomalies",
     "find_review_image",

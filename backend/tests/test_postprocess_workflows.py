@@ -12,6 +12,7 @@ from shapely.ops import transform as transform_geometry
 from pvrt.postprocess import (
     analyze_visual_duplicates,
     apply_visual_deduplication,
+    assign_panel_ids,
     associate_anomalies,
     build_panel_hierarchy,
     deduplicate_anomalies,
@@ -374,6 +375,46 @@ class PostprocessWorkflowTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["properties"]["row_id"], "1000")
             self.assertFalse((root / "panel_hierarchy.geojson").exists())
+
+    def test_builds_editable_rows_before_assigning_ids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            regularized_path = root / "regularized.geojson"
+            rows_path = root / "solar_rows.geojson"
+            original_panels = [
+                _feature(box(500000 + column * 1.15, 5500000, 500001 + column * 1.15, 5500001.8), class_name="panel")
+                for column in range(3)
+            ]
+            _write(regularized_path, original_panels)
+
+            build_stats = build_panel_hierarchy(
+                regularized_path,
+                None,
+                rows_output_path=rows_path,
+                assign_ids=False,
+            )
+
+            built_rows = json.loads(rows_path.read_text(encoding="utf-8"))["features"]
+            unchanged_panels = json.loads(regularized_path.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(build_stats["row_count"], 1)
+            self.assertNotIn("row_id", built_rows[0]["properties"])
+            self.assertEqual(unchanged_panels, json.loads(json.dumps(original_panels)))
+
+            edited_geometry = built_rows[0]["geometry"]
+            built_rows[0]["properties"]["manually_edited"] = True
+            _write(rows_path, built_rows)
+            assignment_stats = assign_panel_ids(regularized_path, rows_path)
+
+            assigned_rows = json.loads(rows_path.read_text(encoding="utf-8"))["features"]
+            assigned_panels = json.loads(regularized_path.read_text(encoding="utf-8"))["features"]
+            self.assertEqual(assignment_stats["assigned_panel_count"], 3)
+            self.assertEqual(assigned_rows[0]["geometry"], edited_geometry)
+            self.assertEqual(assigned_rows[0]["properties"]["row_id"], "1000")
+            self.assertTrue(assigned_rows[0]["properties"]["manually_edited"])
+            self.assertEqual(
+                {item["properties"]["panel_id"] for item in assigned_panels},
+                {"1000-A1", "1000-A2", "1000-A3"},
+            )
 
     def test_merges_candidate_row_contained_inside_outer_row(self):
         with tempfile.TemporaryDirectory() as temporary:

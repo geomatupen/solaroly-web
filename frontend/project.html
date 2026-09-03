@@ -506,8 +506,8 @@
           <article id="ppHierarchyStep" class="postprocessStep" hidden>
             <div class="postprocessStepNumber">3</div>
             <div class="postprocessStepBody">
-              <h3>Build rows and assign IDs</h3>
-              <p class="muted tiny">Group neighbouring regularized panels, create one Rows layer, and assign row and panel IDs such as 1000-A1 directly to the appropriate layers.</p>
+              <h3>Build rows</h3>
+              <p class="muted tiny">Group neighbouring regularized panels into an editable Rows layer. Review and edit the row polygons before assigning IDs.</p>
               <div class="postprocessFields">
                 <div>
                   <label for="ppHierarchySource">Regularized output</label>
@@ -534,7 +534,22 @@
                   <input id="ppRowOverlap" type="number" value="20" min="0" max="100" step="1" />
                 </div>
               </div>
-              <button id="ppBuildHierarchy" type="button" disabled>Build rows and assign IDs</button>
+              <button id="ppBuildHierarchy" type="button" disabled>Build rows</button>
+            </div>
+          </article>
+
+          <article id="ppAssignIdsStep" class="postprocessStep" hidden>
+            <div class="postprocessStepNumber">4</div>
+            <div class="postprocessStepBody">
+              <h3>Assign IDs</h3>
+              <p class="muted tiny">Use the edited Rows layer to assign row IDs to Rows and panel IDs such as 1000-A1 to Regularized panels.</p>
+              <div class="postprocessFields">
+                <div>
+                  <label for="ppAssignmentSource">Edited Rows output</label>
+                  <select id="ppAssignmentSource" disabled><option value="">Build rows first…</option></select>
+                </div>
+              </div>
+              <button id="ppAssignIds" type="button" disabled>Assign row and panel IDs</button>
             </div>
           </article>
         </div>
@@ -1567,7 +1582,7 @@
   <script src="js/main.js?v=20260902b"></script>
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260903a"></script>
-  <script src="js/postprocess_segmentation.js?v=20260903b"></script>
+  <script src="js/postprocess_segmentation.js?v=20260903c"></script>
   <script src="js/postprocess_anomaly.js?v=20260902a"></script>
   <script>
     // Display active project name in header

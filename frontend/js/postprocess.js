@@ -307,7 +307,9 @@
           ["Along-row gap factor", detailValue(hierarchy.max_along_gap_factor)],
           ["Merge inner-row gap factor", detailValue(hierarchy.max_inner_row_gap_factor)],
           ["Minimum row overlap to absorb", `${detailValue(hierarchy.min_row_overlap_percent)}%`],
-          ["Panels assigned IDs", detailValue(status.hierarchy_stats.panel_count)],
+          ["Panels used to build rows", detailValue(status.hierarchy_stats.panel_count)],
+          ["Panels assigned IDs", detailValue(status.assignment_stats?.assigned_panel_count)],
+          ["Panels outside edited rows", detailValue(status.assignment_stats?.unassigned_panel_count)],
           ["ID ordering", "Map reading order: top-to-bottom, then left-to-right"],
         ]);
       }
@@ -328,6 +330,8 @@
         ["Rows", detailValue(stats.row_count)],
         ["Inner rows", detailValue(stats.inner_row_count)],
         ["Singleton rows", detailValue(stats.singleton_rows)],
+        ["Panels assigned IDs", detailValue(status.assignment_stats?.assigned_panel_count)],
+        ["Panels outside edited rows", detailValue(status.assignment_stats?.unassigned_panel_count)],
       ]);
     }
   }
@@ -478,17 +482,18 @@
     const outputs = status?.outputs || {};
     const hasCombined = Boolean(outputs.combined);
     const hasRegularized = Boolean(outputs.regularized);
-    const hasHierarchy = Boolean(outputs.solar_rows);
-    const canShow = state.scanComplete || hasCombined || hasRegularized || hasHierarchy;
+    const hasRows = Boolean(outputs.solar_rows);
+    const hasAssignments = Boolean(status?.assignment_stats);
+    const canShow = state.scanComplete || hasCombined || hasRegularized || hasRows;
     if (!canShow) return;
-    const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep")];
+    const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep"), byId("ppAssignIdsStep")];
     steps.forEach(step => { step.hidden = false; });
-    const available = [state.scanComplete || hasCombined, hasCombined, hasRegularized];
+    const available = [state.scanComplete || hasCombined, hasCombined, hasRegularized, hasRows];
     steps.forEach((step, index) => {
       step.classList.toggle("locked", !available[index]);
       step.setAttribute("aria-disabled", String(!available[index]));
     });
-    const phase = hasHierarchy ? 0 : hasRegularized ? 3 : hasCombined ? 2 : 1;
+    const phase = hasAssignments ? 0 : hasRows ? 4 : hasRegularized ? 3 : hasCombined ? 2 : 1;
     if (phase === state.segmentationStepPhase) return;
     state.segmentationStepPhase = phase;
     steps.forEach((step, index) => setStepCollapsed(step, phase === 0 || index + 1 !== phase));
@@ -658,7 +663,7 @@
       byId("ppDeduplicate").disabled = true;
       return;
     }
-    const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep")];
+    const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep"), byId("ppAssignIdsStep")];
     steps.forEach((step, index) => {
       step.hidden = false;
       step.classList.add("locked");
@@ -678,6 +683,7 @@
     byId("ppCombineStep").hidden = true;
     byId("ppRegularizeStep").hidden = true;
     byId("ppHierarchyStep").hidden = true;
+    byId("ppAssignIdsStep").hidden = true;
     byId("ppOverlapDeduplicateStep").hidden = true;
     byId("ppDeduplicateStep").hidden = true;
     byId("ppAdjustAnomaliesStep").hidden = true;

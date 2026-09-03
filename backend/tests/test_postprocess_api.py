@@ -353,6 +353,62 @@ class PostprocessApiTests(unittest.TestCase):
             self.assertEqual(payload["manual_edits"]["combined"]["feature_count"], 1)
             self.assertFalse((workflow_dir / "combined_edited.geojson").exists())
 
+    def test_row_edits_clear_previous_assignment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            result_dir = sessions / "test-result"
+            workflow_dir = result_dir / "postprocess" / "solar-panels"
+            workflow_dir.mkdir(parents=True)
+            overlays.mkdir()
+            regularized_path = workflow_dir / "regularized.geojson"
+            rows_path = workflow_dir / "solar_rows.geojson"
+            feature = {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
+                "properties": {"row_id": "1000", "panel_id": "1000-A1"},
+            }
+            regularized_path.write_text(json.dumps({"type": "FeatureCollection", "features": [feature]}), encoding="utf-8")
+            rows_path.write_text(json.dumps({"type": "FeatureCollection", "features": [feature]}), encoding="utf-8")
+            (workflow_dir / "status.json").write_text(json.dumps({
+                "id": "solar-panels",
+                "status": "complete",
+                "assignment_stats": {"assigned_panel_count": 1},
+                "outputs": {
+                    "regularized": {"path": "postprocess/solar-panels/regularized.geojson"},
+                    "solar_rows": {"path": "postprocess/solar-panels/solar_rows.geojson"},
+                },
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}/{stage}/edits"
+                and "POST" in item.methods
+            )
+            edited = {
+                "type": "FeatureCollection",
+                "features": [{
+                    **feature,
+                    "properties": {"row_id": "1000", "panel_count": 1},
+                }],
+            }
+
+            payload = asyncio.run(route.endpoint(
+                "test-result", "solar-panels", "solar_rows", EditLayerRequest(geojson=edited),
+            ))
+
+            saved_row = json.loads(rows_path.read_text(encoding="utf-8"))["features"][0]
+            saved_panel = json.loads(regularized_path.read_text(encoding="utf-8"))["features"][0]
+            self.assertNotIn("row_id", saved_row["properties"])
+            self.assertNotIn("row_id", saved_panel["properties"])
+            self.assertNotIn("panel_id", saved_panel["properties"])
+            self.assertIsNone(payload["assignment_stats"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from dataclasses import dataclass
@@ -117,40 +118,19 @@ def _map_reading_order(
     return ordered
 
 
-def build_panel_hierarchy(
-    input_path: Path,
-    output_path: Path | None,
-    *,
-    rows_output_path: Path | None = None,
-    panels_output_path: Path | None = None,
-    max_orientation_difference_deg: float = 15.0,
-    max_lateral_distance_factor: float = 1.5,
-    max_along_gap_factor: float = 1.5,
-    max_inner_row_gap_factor: float = 0.8,
-    min_row_overlap_percent: float = 20.0,
+def _group_inner_rows(
+    panels: list[Panel],
+    max_orientation_difference_deg: float,
+    max_lateral_distance_factor: float,
+    max_along_gap_factor: float,
     callback: ProgressCallback | None = None,
-) -> dict[str, Any]:
-    """Group panel rectangles into rows and assign stable row/panel identifiers."""
-    _notify(callback, 2, "Reading regularized panel polygons…")
-    payload, records, invalid = load_polygon_features(input_path)
-    metric_crs = infer_metric_crs(record[1] for record in records)
-    to_metric = transformer("EPSG:4326", metric_crs)
-    to_wgs84 = transformer(metric_crs, "EPSG:4326")
-    panels: list[Panel] = []
-    for source_index, geometry, properties in records:
-        projected = project_geometry(geometry, "EPSG:4326", metric_crs)
-        short, long, angle = _rectangle_measurements(projected)
-        centre = projected.centroid
-        panels.append(Panel(source_index, projected, properties, centre.x, centre.y, short, long, angle, class_key(properties)))
+) -> tuple[list[list[Panel]], float, float]:
     median_short = statistics.median(panel.short_m for panel in panels)
     median_long = statistics.median(panel.long_m for panel in panels)
     groups = _Groups(len(panels))
-    # A physical panel row normally progresses across the panels' short axis:
-    # portrait panels sit side-by-side while their long axes remain aligned.
     maximum_search = median_short * (max_along_gap_factor + 1.0)
     centre_points = [Point(panel.centre_x, panel.centre_y) for panel in panels]
     centre_tree = STRtree(centre_points)
-    _notify(callback, 18, "Finding neighbouring panels with compatible orientation…")
     for first_index, first in enumerate(panels):
         angle = math.radians((first.angle_deg + 90.0) % 180.0)
         along_x, along_y = math.cos(angle), math.sin(angle)
@@ -173,13 +153,48 @@ def build_panel_hierarchy(
             along_limit = ((first.short_m + second.short_m) / 2.0) * max_along_gap_factor
             if lateral <= lateral_limit and along <= along_limit:
                 groups.union(first_index, second_index)
-        if first_index % 250 == 0:
+        if callback and first_index % 250 == 0:
             _notify(callback, 18 + int(35 * first_index / max(1, len(panels))), "Grouping adjacent panels into rows…")
-
     components: dict[int, list[Panel]] = {}
     for index, panel in enumerate(panels):
         components.setdefault(groups.find(index), []).append(panel)
-    inner_rows = list(components.values())
+    return list(components.values()), median_short, median_long
+
+
+def build_panel_hierarchy(
+    input_path: Path,
+    output_path: Path | None,
+    *,
+    rows_output_path: Path | None = None,
+    panels_output_path: Path | None = None,
+    max_orientation_difference_deg: float = 15.0,
+    max_lateral_distance_factor: float = 1.5,
+    max_along_gap_factor: float = 1.5,
+    max_inner_row_gap_factor: float = 0.8,
+    min_row_overlap_percent: float = 20.0,
+    assign_ids: bool = True,
+    callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Group panel rectangles into rows and assign stable row/panel identifiers."""
+    _notify(callback, 2, "Reading regularized panel polygons…")
+    payload, records, invalid = load_polygon_features(input_path)
+    metric_crs = infer_metric_crs(record[1] for record in records)
+    to_metric = transformer("EPSG:4326", metric_crs)
+    to_wgs84 = transformer(metric_crs, "EPSG:4326")
+    panels: list[Panel] = []
+    for source_index, geometry, properties in records:
+        projected = project_geometry(geometry, "EPSG:4326", metric_crs)
+        short, long, angle = _rectangle_measurements(projected)
+        centre = projected.centroid
+        panels.append(Panel(source_index, projected, properties, centre.x, centre.y, short, long, angle, class_key(properties)))
+    _notify(callback, 18, "Finding neighbouring panels with compatible orientation…")
+    inner_rows, median_short, median_long = _group_inner_rows(
+        panels,
+        max_orientation_difference_deg,
+        max_lateral_distance_factor,
+        max_along_gap_factor,
+        callback,
+    )
     inner_row_geometries = [
         unary_union([panel.geometry for panel in component]).convex_hull.minimum_rotated_rectangle
         for component in inner_rows
@@ -263,15 +278,18 @@ def build_panel_hierarchy(
         )
         row_properties = {
             "postprocess_stage": "panel_rows",
-            "row_id": row_id,
             "panel_count": len(array_panels),
             "inner_row_count": len(ordered_inner_rows),
             "orientation_deg": round(orientation, 4),
             "area_m2": float(row_geometry.area),
         }
+        if assign_ids:
+            row_properties["row_id"] = row_id
         row_features.append(feature(row_geometry, row_properties, to_wgs84))
+        inner_row_total += len(ordered_inner_rows)
+        if not assign_ids:
+            continue
         for inner_row_index, component in enumerate(ordered_inner_rows):
-            inner_row_total += 1
             inner_row_label = _letter_label(inner_row_index)
             component_geometry = unary_union([panel.geometry for panel in component]).bounds
             component_is_horizontal = (
@@ -306,11 +324,11 @@ def build_panel_hierarchy(
         write_feature_collection(rows_output_path, row_features, **metadata)
     if panels_output_path is not None:
         write_feature_collection(panels_output_path, panel_features, **metadata)
-    _notify(callback, 100, "Panel hierarchy is ready.")
+    _notify(callback, 100, "Panel hierarchy is ready." if assign_ids else "Rows are ready for editing.")
     return {
         "input_features": len(payload["features"]),
         "invalid_input_features": invalid,
-        "panel_count": len(panel_features),
+        "panel_count": len(panel_features) if assign_ids else len(panels),
         "row_count": len(row_features),
         "output_features": len(hierarchy_features),
         "inner_row_count": inner_row_total,
@@ -319,4 +337,170 @@ def build_panel_hierarchy(
         "output_path": str(output_path) if output_path else None,
         "rows_output_path": str(rows_output_path) if rows_output_path else None,
         "panels_output_path": str(panels_output_path) if panels_output_path else None,
+    }
+
+
+_PANEL_ID_KEYS = {
+    "row_id", "inner_row", "panel_number", "panel_id", "row_panel_count",
+    "inner_row_panel_count", "source_panel_index",
+}
+
+
+def clear_panel_ids(path: Path) -> None:
+    """Remove hierarchy identifiers from a GeoJSON layer in place."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    features = payload.get("features")
+    if payload.get("type") != "FeatureCollection" or not isinstance(features, list):
+        raise ValueError("The selected file is not a GeoJSON FeatureCollection.")
+    cleaned_features = []
+    for original in features:
+        cleaned = dict(original)
+        cleaned["properties"] = {
+            key: value for key, value in (original.get("properties") or {}).items()
+            if key not in _PANEL_ID_KEYS
+        }
+        cleaned_features.append(cleaned)
+    metadata = {key: value for key, value in payload.items() if key not in {"type", "features"}}
+    write_feature_collection(path, cleaned_features, **metadata)
+
+
+def assign_panel_ids(
+    panels_path: Path,
+    rows_path: Path,
+    *,
+    max_orientation_difference_deg: float = 15.0,
+    max_lateral_distance_factor: float = 1.5,
+    max_along_gap_factor: float = 1.5,
+    callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Assign IDs to panels and edited rows without changing row geometry."""
+    panel_payload, panel_records, invalid_panels = load_polygon_features(panels_path)
+    row_payload, row_records, invalid_rows = load_polygon_features(rows_path)
+    metric_crs = infer_metric_crs(record[1] for record in panel_records)
+    panels: list[Panel] = []
+    for source_index, geometry, properties in panel_records:
+        projected = project_geometry(geometry, "EPSG:4326", metric_crs)
+        short, long, angle = _rectangle_measurements(projected)
+        centre = projected.centroid
+        panels.append(Panel(source_index, projected, properties, centre.x, centre.y, short, long, angle, class_key(properties)))
+    projected_rows = [
+        (source_index, project_geometry(geometry, "EPSG:4326", metric_crs), properties)
+        for source_index, geometry, properties in row_records
+    ]
+    ordered_indices = [
+        indices[0]
+        for indices in _map_reading_order(
+            [[index] for index in range(len(projected_rows))],
+            [record[1] for record in projected_rows],
+        )
+    ]
+    panels_by_row: dict[int, list[Panel]] = {index: [] for index in range(len(projected_rows))}
+    _notify(callback, 20, "Matching regularized panels to edited rows…")
+    for panel_index, panel in enumerate(panels):
+        best_row_index = None
+        best_overlap = 0.0
+        for row_index, (_, row_geometry, _) in enumerate(projected_rows):
+            overlap = panel.geometry.intersection(row_geometry).area
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_row_index = row_index
+        if best_row_index is not None and best_overlap > 0:
+            panels_by_row[best_row_index].append(panel)
+        if panel_index % 250 == 0:
+            _notify(callback, 20 + int(35 * panel_index / max(1, len(panels))), "Matching regularized panels to edited rows…")
+
+    panel_updates: dict[int, dict[str, Any]] = {}
+    row_updates: dict[int, dict[str, Any]] = {}
+    inner_row_total = 0
+    assigned_panel_count = 0
+    _notify(callback, 58, "Assigning row and panel identifiers…")
+    for row_number, row_index in enumerate(ordered_indices, start=1000):
+        source_index, row_geometry, row_properties = projected_rows[row_index]
+        row_id = str(row_number)
+        row_panels = panels_by_row[row_index]
+        inner_rows = []
+        if row_panels:
+            inner_rows, _, _ = _group_inner_rows(
+                row_panels,
+                max_orientation_difference_deg,
+                max_lateral_distance_factor,
+                max_along_gap_factor,
+            )
+        minx, miny, maxx, maxy = row_geometry.bounds
+        row_is_horizontal = (maxx - minx) >= (maxy - miny)
+        inner_rows.sort(
+            key=(
+                (lambda component: (-statistics.mean(panel.centre_y for panel in component), statistics.mean(panel.centre_x for panel in component)))
+                if row_is_horizontal
+                else (lambda component: (statistics.mean(panel.centre_x for panel in component), -statistics.mean(panel.centre_y for panel in component)))
+            )
+        )
+        updated_row_properties = {key: value for key, value in row_properties.items() if key not in _PANEL_ID_KEYS}
+        updated_row_properties.update({
+            "postprocess_stage": "panel_rows",
+            "row_id": row_id,
+            "panel_count": len(row_panels),
+            "inner_row_count": len(inner_rows),
+            "area_m2": float(row_geometry.area),
+        })
+        updated_row = dict(row_payload["features"][source_index])
+        updated_row["properties"] = updated_row_properties
+        row_updates[source_index] = updated_row
+        inner_row_total += len(inner_rows)
+        assigned_panel_count += len(row_panels)
+        for inner_row_index, component in enumerate(inner_rows):
+            inner_row_label = _letter_label(inner_row_index)
+            component_bounds = unary_union([panel.geometry for panel in component]).bounds
+            component_is_horizontal = component_bounds[2] - component_bounds[0] >= component_bounds[3] - component_bounds[1]
+            component.sort(
+                key=(
+                    (lambda panel: (panel.centre_x, -panel.centre_y))
+                    if component_is_horizontal
+                    else (lambda panel: (-panel.centre_y, panel.centre_x))
+                )
+            )
+            for panel_number, panel in enumerate(component, start=1):
+                properties = {key: value for key, value in panel.properties.items() if key not in _PANEL_ID_KEYS}
+                properties.update({
+                    "postprocess_stage": "identified_panels",
+                    "row_id": row_id,
+                    "inner_row": inner_row_label,
+                    "panel_number": panel_number,
+                    "panel_id": f"{row_id}-{inner_row_label}{panel_number}",
+                    "row_panel_count": len(row_panels),
+                    "inner_row_panel_count": len(component),
+                    "source_panel_index": panel.source_index,
+                })
+                updated_panel = dict(panel_payload["features"][panel.source_index])
+                updated_panel["properties"] = properties
+                panel_updates[panel.source_index] = updated_panel
+
+    def updated_features(payload: dict[str, Any], updates: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        for index, original in enumerate(payload["features"]):
+            if index in updates:
+                result.append(updates[index])
+                continue
+            cleaned = dict(original)
+            cleaned["properties"] = {
+                key: value for key, value in (original.get("properties") or {}).items()
+                if key not in _PANEL_ID_KEYS
+            }
+            result.append(cleaned)
+        return result
+
+    panel_metadata = {key: value for key, value in panel_payload.items() if key not in {"type", "features"}}
+    row_metadata = {key: value for key, value in row_payload.items() if key not in {"type", "features"}}
+    write_feature_collection(panels_path, updated_features(panel_payload, panel_updates), **panel_metadata)
+    write_feature_collection(rows_path, updated_features(row_payload, row_updates), **row_metadata)
+    _notify(callback, 100, "Row and panel IDs are ready.")
+    return {
+        "panel_count": len(panels),
+        "assigned_panel_count": assigned_panel_count,
+        "unassigned_panel_count": len(panels) - assigned_panel_count,
+        "invalid_panel_count": invalid_panels,
+        "row_count": len(projected_rows),
+        "invalid_row_count": invalid_rows,
+        "inner_row_count": inner_row_total,
+        "metric_crs": metric_crs.to_string(),
     }

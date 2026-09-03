@@ -48,6 +48,35 @@
     const selectedWorkflow = workflows.find(workflow => workflow.id === selectedWorkflowId);
     byId("ppBuildHierarchy").disabled = !select.value
       || ["queued", "running"].includes(selectedWorkflow?.status);
+    const assignmentSelect = byId("ppAssignmentSource");
+    const previousAssignment = assignmentSelect.value;
+    const rowWorkflows = context.workflows.filter(workflow =>
+      workflow.workflow_kind !== "anomaly" && workflow.outputs?.solar_rows?.path
+    );
+    assignmentSelect.replaceChildren();
+    addOption(assignmentSelect, "", "Select an edited Rows output…");
+    rowWorkflows.forEach((workflow, index) => {
+      const created = workflow.created_at
+        ? new Date(workflow.created_at).toLocaleString()
+        : workflow.id;
+      const latest = index === 0 ? " · Latest" : "";
+      addOption(
+        assignmentSelect,
+        workflow.outputs.solar_rows.path,
+        `Rows · ${created}${latest}`,
+        workflow.id,
+      );
+    });
+    if ([...assignmentSelect.options].some(option => option.value === previousAssignment)) {
+      assignmentSelect.value = previousAssignment;
+    } else if (assignmentSelect.options.length > 1) {
+      assignmentSelect.selectedIndex = 1;
+    }
+    assignmentSelect.disabled = rowWorkflows.length === 0;
+    const assignmentWorkflowId = assignmentSelect.selectedOptions[0]?.dataset.workflowId;
+    const assignmentWorkflow = rowWorkflows.find(workflow => workflow.id === assignmentWorkflowId);
+    byId("ppAssignIds").disabled = !assignmentSelect.value
+      || ["queued", "running"].includes(assignmentWorkflow?.status);
   }
 
   async function buildHierarchy() {
@@ -71,14 +100,14 @@
     const hasExistingHierarchy = Boolean(workflow?.outputs?.solar_rows);
     if (hasExistingHierarchy) {
       const confirmed = await workspace.confirmReplacement(
-        "Replace rows and assigned IDs?",
-        "The existing Rows GeoJSON will be replaced, and panel/row IDs in the selected Regularized GeoJSON will be assigned again. Manual changes in those files may be lost.",
+        "Replace rows?",
+        "The existing Rows GeoJSON and its manual edits will be replaced. Existing row and panel IDs will be cleared until Step 4 is run again.",
       );
       if (!confirmed) return;
     }
     const inputPath = select.value;
     byId("ppBuildHierarchy").disabled = true;
-    workspace.setMessage("Starting row generation and ID assignment…");
+    workspace.setMessage("Starting row generation…");
     try {
       workspace.selectWorkflow(workflowId);
       const payload = await workspace.requestJson(
@@ -103,10 +132,37 @@
     }
   }
 
+  async function assignIds() {
+    const workspace = api();
+    const context = workspace.getContext();
+    const select = byId("ppAssignmentSource");
+    const workflowId = select.selectedOptions[0]?.dataset.workflowId;
+    if (!context.resultId || !workflowId || !select.value) return;
+    byId("ppAssignIds").disabled = true;
+    workspace.setMessage("Assigning IDs from the edited Rows layer…");
+    try {
+      workspace.selectWorkflow(workflowId);
+      const payload = await workspace.requestJson(
+        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(workflowId)}/assign-ids`,
+        { method: "POST" },
+      );
+      await workspace.runWorkflow(payload);
+    } catch (error) {
+      workspace.setMessage(error.message, "err");
+      byId("ppAssignIds").disabled = false;
+    }
+  }
+
   function init() {
     byId("ppBuildHierarchy")?.addEventListener("click", buildHierarchy);
+    byId("ppAssignIds")?.addEventListener("click", assignIds);
     byId("ppHierarchySource")?.addEventListener("change", event => {
       byId("ppBuildHierarchy").disabled = !event.target.value;
+      const workflowId = event.target.selectedOptions[0]?.dataset.workflowId;
+      if (workflowId) api()?.selectWorkflow(workflowId);
+    });
+    byId("ppAssignmentSource")?.addEventListener("change", event => {
+      byId("ppAssignIds").disabled = !event.target.value;
       const workflowId = event.target.selectedOptions[0]?.dataset.workflowId;
       if (workflowId) api()?.selectWorkflow(workflowId);
     });
