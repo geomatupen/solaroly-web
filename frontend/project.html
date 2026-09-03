@@ -643,9 +643,29 @@
             <article id="ppAssociateStep" class="postprocessStep" hidden>
               <div class="postprocessStepNumber">4</div>
               <div class="postprocessStepBody">
-                <h3>Assign anomalies to panels and rows</h3>
+                <h3>Assign anomalies to panels and optional rows</h3>
                 <button id="ppAssociationInfo" type="button" class="infoBtn postprocessStepTitleAction" aria-label="How anomaly assignment works" aria-haspopup="dialog" aria-controls="ppAssociationInfoModal">i</button>
                 <p class="muted tiny">Assign IDs without moving anomaly, panel, or row geometry. Reliable overlaps are matched first; only remaining anomalies use the outside-panel distance.</p>
+                <p id="ppPanelSourceWarning" class="alert warn" hidden></p>
+                <div class="postprocessFields">
+                  <div>
+                    <label for="ppAssociationPanelSource">Identified panel layer</label>
+                    <select id="ppAssociationPanelSource" disabled><option value="">No identified panels available…</option></select>
+                  </div>
+                  <div>
+                    <label>Alternative panel source</label>
+                    <button id="ppChoosePanelUpload" class="secondary" type="button">Upload panel GeoJSON</button>
+                    <input id="ppPanelUploadFile" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
+                  </div>
+                  <div id="ppPanelUploadIdFieldWrap" hidden>
+                    <label for="ppPanelUploadIdField">Unique panel ID field</label>
+                    <select id="ppPanelUploadIdField"><option value="">Select an ID field…</option></select>
+                  </div>
+                  <div id="ppPanelUploadActionWrap" hidden>
+                    <label>Selected upload</label>
+                    <button id="ppUploadPanelReference" type="button" disabled>Validate and use panels</button>
+                  </div>
+                </div>
                 <div class="postprocessFields postprocessFieldsCompact">
                   <div>
                     <label for="ppAssociationOverlap">Minimum overlap with panel (%)</label>
@@ -656,7 +676,7 @@
                     <input id="ppAssociationDistance" type="number" value="1.50" min="0" max="100" step="0.05" />
                   </div>
                 </div>
-                <button id="ppAssociate" type="button" disabled>Assign panel and row IDs</button>
+                <button id="ppAssociate" type="button" disabled>Assign panel IDs</button>
               </div>
             </article>
           </div>
@@ -1583,7 +1603,7 @@
   <script src="js/postprocess-layer-move.js?v=20260902e"></script>
   <script src="js/postprocess.js?v=20260903b"></script>
   <script src="js/postprocess_segmentation.js?v=20260903d"></script>
-  <script src="js/postprocess_anomaly.js?v=20260902a"></script>
+  <script src="js/postprocess_anomaly.js?v=20260903d"></script>
   <script>
     // Display active project name in header
     async function initProjectHeader() {

@@ -30,6 +30,7 @@ from ..postprocess import (
     image_neighbor_statistics,
     regularize_polygons,
 )
+from ..postprocess.common import polygonal_geometry
 
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="geojson-postprocess")
@@ -122,6 +123,11 @@ class AssociateAnomaliesRequest(BaseModel):
     panel_workflow_id: str | None = None
     minimum_overlap: float = Field(default=0.20, ge=0.0, le=1.0)
     maximum_distance_m: float = Field(default=1.50, ge=0.0, le=100.0)
+
+
+class UploadPanelReferenceRequest(BaseModel):
+    geojson: dict[str, Any]
+    id_field: str = Field(min_length=1, max_length=120)
 
 
 class RenameWorkflowRequest(BaseModel):
@@ -1421,6 +1427,25 @@ def create_postprocess_router(
         panel_result_dir = resolve_result(request.panel_result_id or result_id)
         panel_path = resolve_input(panel_result_dir, request.panel_path)
         row_path = resolve_input(panel_result_dir, request.row_path) if request.row_path else None
+        try:
+            panel_payload = json.loads(panel_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="The selected panel layer could not be read.") from exc
+        panel_features = panel_payload.get("features") if isinstance(panel_payload, dict) else None
+        if panel_payload.get("type") != "FeatureCollection" or not isinstance(panel_features, list) or not panel_features:
+            raise HTTPException(status_code=400, detail="The selected panel layer does not contain panel polygons.")
+        panel_ids = [
+            str((feature.get("properties") or {}).get("panel_id") or "").strip()
+            for feature in panel_features
+            if isinstance(feature, dict)
+        ]
+        if len(panel_ids) != len(panel_features) or any(not panel_id for panel_id in panel_ids):
+            raise HTTPException(
+                status_code=400,
+                detail="The selected panel layer has missing panel IDs. Complete Segmentation Step 4 or upload panels with a unique ID field.",
+            )
+        if len(set(panel_ids)) != len(panel_ids):
+            raise HTTPException(status_code=400, detail="The selected panel layer contains duplicate panel IDs.")
         panel_workflow_dir = (
             resolve_workflow(panel_result_dir, request.panel_workflow_id)
             if request.panel_workflow_id
@@ -1492,6 +1517,72 @@ def create_postprocess_router(
 
         _EXECUTOR.submit(run)
         return {"ok": True, "id": workflow_id, "status": "queued", "stage": "associate"}
+
+    @router.post("/{result_id}/postprocess/{workflow_id}/panel-reference")
+    async def upload_panel_reference(
+        result_id: str,
+        workflow_id: str,
+        request: UploadPanelReferenceRequest,
+    ) -> dict[str, Any]:
+        result_dir = resolve_result(result_id)
+        workflow_dir = resolve_workflow(result_dir, workflow_id)
+        current = read_status(workflow_dir)
+        if current.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="Wait for the current workflow operation to finish.")
+        features = request.geojson.get("features") if isinstance(request.geojson, dict) else None
+        if request.geojson.get("type") != "FeatureCollection" or not isinstance(features, list):
+            raise HTTPException(status_code=400, detail="Panel upload must be a GeoJSON FeatureCollection.")
+        if not features:
+            raise HTTPException(status_code=400, detail="Panel upload does not contain any features.")
+        if len(features) > 500_000:
+            raise HTTPException(status_code=400, detail="Panel upload contains too many features.")
+        cleaned_features = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(features):
+            if not isinstance(item, dict) or item.get("type") != "Feature":
+                raise HTTPException(status_code=400, detail=f"Feature {index + 1} is invalid.")
+            geometry = polygonal_geometry(item)
+            if geometry is None or geometry.is_empty or geometry.area <= 0:
+                raise HTTPException(status_code=400, detail=f"Feature {index + 1} is not a panel polygon.")
+            properties = dict(item.get("properties") or {})
+            raw_id = properties.get(request.id_field)
+            panel_id = str(raw_id).strip() if raw_id is not None else ""
+            if not panel_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Feature {index + 1} has no value in ID field '{request.id_field}'.",
+                )
+            if panel_id in seen_ids:
+                raise HTTPException(status_code=400, detail=f"Panel ID '{panel_id}' is duplicated.")
+            seen_ids.add(panel_id)
+            properties["panel_id"] = panel_id
+            cleaned = dict(item)
+            cleaned["properties"] = properties
+            cleaned_features.append(cleaned)
+        output_path = workflow_dir / "uploaded_panels.geojson"
+        _atomic_json(output_path, {
+            "type": "FeatureCollection",
+            "features": cleaned_features,
+            "panel_id_field": request.id_field,
+        })
+        outputs = dict(current.get("outputs") or {})
+        outputs["uploaded_panels"] = {
+            "path": output_path.relative_to(result_dir).as_posix(),
+        }
+        update_status(
+            workflow_dir,
+            status="complete",
+            stage="panel_reference",
+            progress=100,
+            message=f"Uploaded {len(cleaned_features)} identified panel polygons.",
+            uploaded_panel_reference={
+                "id_field": request.id_field,
+                "feature_count": len(cleaned_features),
+                "updated_at": datetime.now().isoformat(),
+            },
+            outputs=outputs,
+        )
+        return read_status(workflow_dir)
 
     @router.get("/{result_id}/postprocess/{workflow_id}")
     async def workflow_status(result_id: str, workflow_id: str) -> dict[str, Any]:

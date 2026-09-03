@@ -8,6 +8,7 @@
   let panelLayersLoaded = false;
   let panelLayersJobKey = "";
   let loadedPanelReferenceKey = "";
+  let pendingPanelUpload = null;
   let loadedScoringWorkflowId = "";
   let neighborStatsTimer = null;
   let neighborStatsToken = 0;
@@ -1236,13 +1237,13 @@
           source.workspace_result_id,
           binding.workflow_id,
         );
-        const panels = status.outputs?.regularized || status.outputs?.solar_panels;
+        const panels = status.assignment_stats ? status.outputs?.regularized : null;
         const rows = status.outputs?.solar_rows;
         panelLayers = panels?.url ? [{
           result_id: source.workspace_result_id,
           workflow_id: status.id,
           workflow_name: status.display_name || status.id,
-          stage: status.outputs?.regularized ? "regularized" : "solar_panels",
+          stage: "regularized",
           path: panels.path,
           url: panels.url,
           mtime: panels.mtime,
@@ -1261,11 +1262,37 @@
     refresh(api()?.getContext());
   }
 
+  function availablePanelLayers(context = api()?.getContext()) {
+    const available = [...panelLayers];
+    const anomalyWorkflow = context?.workflows.find(item =>
+      item.id === context.workflowId && item.workflow_kind === "anomaly"
+    );
+    const uploaded = anomalyWorkflow?.outputs?.uploaded_panels;
+    if (uploaded?.path && uploaded?.url) {
+      available.push({
+        result_id: context.resultId,
+        workflow_id: "",
+        workflow_name: "Uploaded panel reference",
+        stage: "uploaded_panels",
+        path: uploaded.path,
+        url: uploaded.url,
+        mtime: uploaded.mtime,
+        rows_path: "",
+        rows_url: null,
+        rows_mtime: null,
+      });
+    }
+    return available;
+  }
+
+  function panelLayerKey(layer) {
+    return `${layer.result_id}::${layer.workflow_id || "uploaded"}::${layer.path}`;
+  }
+
   function currentPanelLayer(context = api()?.getContext()) {
-    const available = context?.segmentationResultId
-      ? panelLayers.filter(layer => layer.result_id === context.segmentationResultId)
-      : panelLayers;
-    return available[0] || null;
+    const available = availablePanelLayers(context);
+    const selected = byId("ppAssociationPanelSource")?.value;
+    return available.find(layer => panelLayerKey(layer) === selected) || available[0] || null;
   }
 
   async function showSegmentationReferences(layer, context = api()?.getContext()) {
@@ -1277,7 +1304,7 @@
         "segmentation_regularized_reference",
         layer.url,
         null,
-        "Final regularized panels (read-only)",
+        layer.stage === "uploaded_panels" ? "Uploaded identified panels" : "Final regularized panels (read-only)",
         true,
         layer.mtime,
       );
@@ -1296,7 +1323,9 @@
         if (!rows) throw new Error("The row layer request was interrupted.");
       }
       loadedPanelReferenceKey = referenceKey;
-      byId("ppPanelReferenceStatus").textContent = layer.rows_url
+      byId("ppPanelReferenceStatus").textContent = layer.stage === "uploaded_panels"
+        ? "Using uploaded identified panels. Rows are optional and are not available for this source."
+        : layer.rows_url
         ? "Using this job’s final regularized panels and rows as read-only references."
         : "Using this job’s final regularized panels. Final rows will appear after panel and row IDs are assigned in Segmentation.";
     } catch (error) {
@@ -1364,13 +1393,40 @@
       : "Analyze visual duplicates";
     byId("ppSkipVisualDeduplication").disabled = !hasOverlapDeduplicated || workflowRunning;
 
+    const panelSourceSelect = byId("ppAssociationPanelSource");
+    const previousPanelSource = panelSourceSelect.value;
+    const panelChoices = availablePanelLayers(context);
+    panelSourceSelect.replaceChildren();
+    addOption(panelSourceSelect, "", "Select identified panels…");
+    for (const layer of panelChoices) {
+      addOption(
+        panelSourceSelect,
+        panelLayerKey(layer),
+        layer.stage === "uploaded_panels"
+          ? `Uploaded panels · ${context.workflows.find(item => item.id === context.workflowId)?.uploaded_panel_reference?.feature_count || "ready"}`
+          : `Regularized panels${layer.rows_path ? " + Rows" : ""}`,
+      );
+    }
+    if (previousPanelSource && panelChoices.some(layer => panelLayerKey(layer) === previousPanelSource)) {
+      panelSourceSelect.value = previousPanelSource;
+    } else if (panelChoices.length) {
+      panelSourceSelect.value = panelLayerKey(panelChoices[0]);
+    }
+    panelSourceSelect.disabled = panelChoices.length === 0;
     const panelLayer = currentPanelLayer(context);
+    const panelWarning = byId("ppPanelSourceWarning");
+    panelWarning.hidden = Boolean(panelLayer);
+    panelWarning.textContent = panelLayer
+      ? ""
+      : "No identified panel polygons are available. Complete all Segmentation steps to assign panel IDs, or upload a panel GeoJSON and select its unique ID field below.";
     byId("ppPanelReferenceStatus").textContent = panelLayer
-      ? panelLayer.rows_url
+      ? panelLayer.stage === "uploaded_panels"
+        ? "Using uploaded identified panels. Rows are optional."
+        : panelLayer.rows_url
         ? "Using this job’s final regularized panels and rows as read-only references."
         : "Using this job’s final regularized panels. Final rows will appear after panel and row IDs are assigned in Segmentation."
       : panelLayersLoaded
-        ? "Final regularized panels are unavailable. Complete segmentation for this job first."
+        ? "Identified panels are unavailable. Complete Segmentation or upload a panel GeoJSON in Step 4."
         : "Loading this job’s final regularized panels…";
     if (context.mode === "anomaly" && panelLayer?.url) void showSegmentationReferences(panelLayer, context);
 
@@ -1382,8 +1438,8 @@
     byId("ppAssociateStep").setAttribute("aria-disabled", String(!hasDeduplicated));
     byId("ppAssociate").disabled = !hasDeduplicated || !panelLayer;
     byId("ppAssociate").textContent = workflow?.outputs?.associated
-      ? "Reassign panel and row IDs"
-      : "Assign panel and row IDs";
+      ? panelLayer?.rows_path ? "Reassign panel and row IDs" : "Reassign panel IDs"
+      : panelLayer?.rows_path ? "Assign panel and row IDs" : "Assign panel IDs";
     const phase = workflow?.outputs?.associated
       ? 0
       : workflow?.deduplicate_stats ? 3
@@ -1609,6 +1665,87 @@
     }
   }
 
+  async function preparePanelUpload(file) {
+    pendingPanelUpload = null;
+    const fieldSelect = byId("ppPanelUploadIdField");
+    const fieldWrap = byId("ppPanelUploadIdFieldWrap");
+    const actionWrap = byId("ppPanelUploadActionWrap");
+    const uploadButton = byId("ppUploadPanelReference");
+    fieldSelect.replaceChildren();
+    addOption(fieldSelect, "", "Select an ID field…");
+    fieldWrap.hidden = true;
+    actionWrap.hidden = true;
+    uploadButton.disabled = true;
+    if (!file) return;
+    try {
+      const geojson = JSON.parse(await file.text());
+      const features = geojson?.type === "FeatureCollection" && Array.isArray(geojson.features)
+        ? geojson.features
+        : null;
+      if (!features?.length) throw new Error("The selected file is not a populated GeoJSON FeatureCollection.");
+      const fields = new Set();
+      for (const feature of features) {
+        for (const [key, value] of Object.entries(feature?.properties || {})) {
+          if (value == null || typeof value === "object") continue;
+          fields.add(key);
+        }
+      }
+      const uniqueFields = [...fields].filter(field => {
+        const values = features.map(feature => {
+          const value = feature?.properties?.[field];
+          return value == null ? "" : String(value).trim();
+        });
+        return values.every(Boolean) && new Set(values).size === values.length;
+      }).sort((first, second) => first.localeCompare(second));
+      if (!uniqueFields.length) {
+        throw new Error("No property field contains a non-empty unique ID for every panel polygon.");
+      }
+      for (const field of uniqueFields) addOption(fieldSelect, field, field);
+      fieldSelect.value = uniqueFields.includes("panel_id") ? "panel_id" : uniqueFields[0];
+      pendingPanelUpload = { file, geojson };
+      fieldWrap.hidden = false;
+      actionWrap.hidden = false;
+      uploadButton.disabled = false;
+      uploadButton.textContent = `Validate and use ${features.length.toLocaleString()} panels`;
+    } catch (error) {
+      api()?.setMessage(error.message, "err");
+    }
+  }
+
+  async function uploadPanelReference() {
+    const workspace = api();
+    const context = workspace?.getContext();
+    const idField = byId("ppPanelUploadIdField")?.value;
+    if (!pendingPanelUpload || !context?.resultId || !context.workflowId || !idField) return;
+    const button = byId("ppUploadPanelReference");
+    button.disabled = true;
+    workspace.setMessage("Validating identified panel polygons…");
+    try {
+      const status = await workspace.requestJson(
+        `/api/results/${encodeURIComponent(context.resultId)}/postprocess/${encodeURIComponent(context.workflowId)}/panel-reference`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ geojson: pendingPanelUpload.geojson, id_field: idField }),
+        },
+      );
+      const workflow = context.workflows.find(item => item.id === context.workflowId);
+      if (workflow) Object.assign(workflow, status);
+      pendingPanelUpload = null;
+      byId("ppPanelUploadIdFieldWrap").hidden = true;
+      byId("ppPanelUploadActionWrap").hidden = true;
+      byId("ppPanelUploadFile").value = "";
+      loadedPanelReferenceKey = "";
+      refresh(workspace.getContext());
+      const selected = currentPanelLayer(workspace.getContext());
+      if (selected) await showSegmentationReferences(selected, workspace.getContext());
+      workspace.setMessage(`Uploaded ${status.uploaded_panel_reference.feature_count.toLocaleString()} identified panels.`, "ok");
+    } catch (error) {
+      workspace.setMessage(error.message, "err");
+      button.disabled = false;
+    }
+  }
+
   function init() {
     const associationInfoModal = byId("ppAssociationInfoModal");
     const closeAssociationInfo = () => {
@@ -1713,6 +1850,19 @@
       }
     });
     byId("ppAssociate")?.addEventListener("click", associate);
+    byId("ppChoosePanelUpload")?.addEventListener("click", () => byId("ppPanelUploadFile")?.click());
+    byId("ppPanelUploadFile")?.addEventListener("change", event => void preparePanelUpload(event.target.files?.[0]));
+    byId("ppPanelUploadIdField")?.addEventListener("change", event => {
+      byId("ppUploadPanelReference").disabled = !pendingPanelUpload || !event.target.value;
+    });
+    byId("ppUploadPanelReference")?.addEventListener("click", uploadPanelReference);
+    byId("ppAssociationPanelSource")?.addEventListener("change", () => {
+      loadedPanelReferenceKey = "";
+      const context = api()?.getContext();
+      const selected = currentPanelLayer(context);
+      refresh(context);
+      if (selected) void showSegmentationReferences(selected, context);
+    });
     document.addEventListener("postprocess:data", event => {
       const context = event.detail;
       const binding = context?.job?.workflows?.segmentation;

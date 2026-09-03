@@ -11,10 +11,71 @@ from pvrt.web.postprocess import create_postprocess_router
 from pvrt.web.postprocess import EditLayerRequest
 from pvrt.web.postprocess import EditSourceRequest
 from pvrt.web.postprocess import OverlapDeduplicateAnomaliesRequest
+from pvrt.web.postprocess import UploadPanelReferenceRequest
 from pvrt.web.postprocess import VisualReviewDecisionRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_panel_reference_upload_requires_unique_selected_ids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            workflow_dir = sessions / "test-result" / "postprocess" / "anomalies"
+            workflow_dir.mkdir(parents=True)
+            overlays.mkdir()
+            (workflow_dir / "status.json").write_text(json.dumps({
+                "id": "anomalies",
+                "status": "complete",
+                "workflow_kind": "anomaly",
+                "outputs": {},
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}/panel-reference"
+                and "POST" in item.methods
+            )
+            polygon = {
+                "type": "Polygon",
+                "coordinates": [[[8.0, 49.0], [8.00001, 49.0], [8.00001, 49.00001], [8.0, 49.0]]],
+            }
+            uploaded = asyncio.run(route.endpoint(
+                "test-result",
+                "anomalies",
+                UploadPanelReferenceRequest(geojson={
+                    "type": "FeatureCollection",
+                    "features": [
+                        {"type": "Feature", "geometry": polygon, "properties": {"asset_code": "P-1"}},
+                        {"type": "Feature", "geometry": polygon, "properties": {"asset_code": "P-2"}},
+                    ],
+                }, id_field="asset_code"),
+            ))
+            output = workflow_dir / "uploaded_panels.geojson"
+            saved = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual([item["properties"]["panel_id"] for item in saved["features"]], ["P-1", "P-2"])
+            self.assertEqual(uploaded["uploaded_panel_reference"]["feature_count"], 2)
+            self.assertEqual(uploaded["outputs"]["uploaded_panels"]["url"], "/media/uploaded_panels.geojson")
+
+            with self.assertRaises(HTTPException) as duplicate:
+                asyncio.run(route.endpoint(
+                    "test-result",
+                    "anomalies",
+                    UploadPanelReferenceRequest(geojson={
+                        "type": "FeatureCollection",
+                        "features": [
+                            {"type": "Feature", "geometry": polygon, "properties": {"asset_code": "P-1"}},
+                            {"type": "Feature", "geometry": polygon, "properties": {"asset_code": "P-1"}},
+                        ],
+                    }, id_field="asset_code"),
+                ))
+            self.assertEqual(duplicate.exception.status_code, 400)
+            self.assertIn("duplicated", duplicate.exception.detail)
+
     def test_overlap_filter_has_its_own_replaceable_output_stage(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
