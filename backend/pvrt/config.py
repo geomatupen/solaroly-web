@@ -1,27 +1,26 @@
-"""Keep track of core resources such as the DIRP SDK path.
+"""Resolve the user-installed DJI DIRP SDK library.
 
-Example: set ``DIRP_SDK_PATH=/opt/dirp/libdirp.so`` if the auto-detected
-location is wrong; other modules import ``DIRP_LIB`` from here.
+DJI's proprietary runtime is intentionally not distributed with SolarOly.
+Set ``DIRP_SDK_PATH=/opt/dji-tsdk/utility/bin/linux/release_x64/libdirp.so``
+when DJI radiometric decoding is enabled.
 """
 
 from __future__ import annotations
-import os, platform
+
+import os
+import platform
 from pathlib import Path
 
-# Project root (…/projects/solaroly)
-PROJECT_ROOT = Path(__file__).resolve().parents[2].parent
+# No repository-relative fallback is used: users must obtain DJI's SDK under
+# DJI's terms and explicitly select its native library.
+DIRP_LIB: Path | None = (
+    Path(os.environ["DIRP_SDK_PATH"]).expanduser()
+    if os.getenv("DIRP_SDK_PATH")
+    else None
+)
 
-# Default guesses for libdirp location (adjust if tree differs)
-DEFAULTS = {
-    "Linux":  PROJECT_ROOT / "third_party/utility/bin/linux/release_x64/libdirp.so",
-    "Windows":PROJECT_ROOT / "third_party/utility/bin/win/release_x64/dirp.dll",
-    "Darwin": PROJECT_ROOT / "third_party/utility/bin/macos/release_x64/libdirp.dylib",
-}
-
-# Override via environment variable, for example:
-#   export PVRT_DIRP_LIB=/abs/path/to/libdirp.so
-DIRP_LIB = Path(os.getenv("DIRP_SDK_PATH", str(DEFAULTS.get(platform.system(), ""))))
 
 def describe_dirp():
     sys = platform.system()
-    return f"system={sys}, DIRP_LIB={DIRP_LIB} (exists={DIRP_LIB.exists()})"
+    exists = bool(DIRP_LIB and DIRP_LIB.exists())
+    return f"system={sys}, DIRP_LIB={DIRP_LIB or 'not configured'} (exists={exists})"

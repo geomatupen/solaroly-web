@@ -10,7 +10,8 @@ replace the license text shipped by each dependency.
 SolarOly includes an integration with [Ultralytics YOLO](https://github.com/ultralytics/ultralytics).
 Ultralytics software and models are offered under the GNU Affero General Public
 License v3.0, with a separate enterprise license available from Ultralytics.
-The Docker image pins Ultralytics 8.3.220.
+SolarOly's requirements pin Ultralytics 8.3.220. Model checkpoints may have
+additional terms depending on their source and training dataset.
 
 ## LightGlue
 
@@ -48,11 +49,13 @@ Recommended citation:
 
 ## DJI Thermal SDK
 
-SolarOly vendors selected DJI Thermal SDK runtime files for radiometric DJI
-imagery. Copyright belongs to DJI. Some files are MIT-licensed and other SDK
-portions are governed by DJI's SDK End User License Agreement. The original
-notices and terms are retained in [`third_party/License.txt`](third_party/License.txt),
-with vendor documentation in [`third_party/Readme.md`](third_party/Readme.md).
+SolarOly can use a separately installed
+[DJI Thermal SDK](https://www.dji.com/downloads/softwares/dji-thermal-sdk) for
+radiometric DJI imagery, but does not distribute DJI's native SDK libraries.
+Copyright in the SDK belongs to DJI and its licensors. Users must obtain it
+from DJI and comply with the license included in that download and DJI's
+[SDK EULA](https://developer.dji.com/policies/eula/). The independently
+installed Python `dji-thermal-sdk` wrapper is Apache-2.0 licensed.
 
 ## Web mapping
 

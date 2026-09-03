@@ -26,156 +26,158 @@ alignment, approximate mosaics, and panel/anomaly post-processing.
 
 ## Requirements
 
-### Docker installation
-
-- Docker Engine 24+ or Docker Desktop
-- Docker Compose v2
-- An x86-64 host when DJI thermal decoding is enabled
-- Internet access during the first build for Python packages and pinned source
-  archives
-- Internet access the first time LightGlue weights are used, unless its
-  checkpoint is already cached
-
-The supplied image is CPU-based for portability. Inference and especially
-training are considerably faster with a CUDA-capable GPU, but a CUDA Docker
-image is not currently supplied. Use a local CUDA environment or derive a GPU
-image from an NVIDIA/PyTorch development image and keep the documented package
-versions consistent.
-
-### Local installation
-
-- Linux or WSL2 recommended
+- Linux or WSL2 (recommended)
 - Python 3.11
-- Git and a C/C++ build toolchain
-- CUDA-compatible drivers only when using CUDA
-- DJI's compatible native library only when decoding DJI radiometric JPEGs
+- Git, a C/C++ build toolchain, and Ninja
+- An NVIDIA CUDA-capable GPU for the supported high-performance installation
+- A compatible [NVIDIA driver](https://www.nvidia.com/download/index.aspx)
+- [CUDA Toolkit 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive),
+  including `nvcc`, to build Detectron2 against the pinned CUDA 12.1 PyTorch
+  runtime
+- Internet access while installing pinned packages and when LightGlue first
+  downloads its pretrained matcher checkpoint
+
+SolarOly supports native installation. GPU and native-library combinations are
+easier to diagnose and keep consistent in a local Python environment. A
+CPU-only installation is documented below for development and limited testing,
+but training and production inference are not recommended on CPU.
 
 Storage requirements depend on imagery and generated model artifacts. Keep
 project data on a disk with enough capacity for uploads, prepared images,
 overlays, model checkpoints and post-processing snapshots.
 
-## Quick start with Docker
+### License-sensitive optional prerequisite
 
-Clone the repository and start the application:
+If you need radiometric DJI R-JPEG decoding, download the native runtime from
+DJI's official [Thermal SDK download page](https://www.dji.com/downloads/softwares/dji-thermal-sdk)
+before installing SolarOly. The SDK is not open source and is not included in
+this repository. Review its packaged license and DJI's
+[SDK EULA](https://developer.dji.com/policies/eula/) yourself. The setup under
+[DJI Thermal SDK](#dji-thermal-sdk) explains how to point SolarOly at your
+local copy.
+
+No trained detection or segmentation weights are included. A model is not
+required to install or open SolarOly, but training or inference requires a
+compatible user-created or separately licensed checkpoint.
+
+## Native installation
+
+Install Python 3.11, Git, a C/C++ compiler and Ninja using your operating
+system's package manager. For NVIDIA acceleration, install a driver and CUDA
+12.1 first, then confirm both the GPU and compiler are visible:
+
+```bash
+nvidia-smi
+nvcc --version
+```
+
+Clone SolarOly and create an isolated environment:
 
 ```bash
 git clone https://github.com/geomatupen/solaroly-web.git
 cd solaroly-web
-docker compose up --build
-```
-
-Open <http://localhost:8001>. Check the backend directly with:
-
-```bash
-curl http://localhost:8001/api/health
-```
-
-A healthy response contains `"ok": true`. Stop the application with:
-
-```bash
-docker compose down
-```
-
-The Compose configuration stores the complete `backend/projects` directory in
-the named `solaroly-projects` volume, including the project registry and
-default project folders. `docker compose down` preserves it;
-`docker compose down --volumes` permanently removes it.
-
-To use projects at another host location, add a bind mount to
-`compose.yaml`, for example:
-
-```yaml
-services:
-  solaroly:
-    volumes:
-      - solaroly-projects:/app/backend/projects
-      - /absolute/host/project-data:/project-data
-```
-
-Create or register those projects using the corresponding container path, such
-as `/project-data/site-a`. A container cannot access an unmounted host path.
-
-The Docker image includes the pinned Detectron2, Ultralytics and LightGlue
-integrations. Model weights are not bundled and may be mounted or selected from
-a persistent project folder.
-
-### Docker feature flags
-
-All integrations are enabled by default in `compose.yaml`. Disable an unused
-UI/backend integration without rebuilding:
-
-```yaml
-environment:
-  PVRT_ENABLE_DETECTRON: "1"
-  PVRT_ENABLE_YOLO: "1"
-  PVRT_ENABLE_THERMAL: "1"
-```
-
-A disabled flag hides and guards that integration, but does not remove its
-package from the image.
-
-### Docker limitations
-
-- The included DJI runtime is Linux x86-64. Disable thermal support on an
-  unsupported architecture.
-- The development server has no built-in authentication or TLS. Do not expose
-  port 8001 directly to the public internet. Put it behind an authenticated
-  HTTPS reverse proxy for shared or remote deployments.
-- The default image is CPU-only.
-- OpenStreetMap tiles and CDN-hosted map libraries require browser network
-  access.
-
-## Local installation
-
-Create a virtual environment and install PyTorch first. For CPU:
-
-```bash
 python3.11 -m venv venv
 source venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install torch==2.5.1 torchvision==0.20.1 \
-  --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel ninja
 ```
 
-For CUDA 12.1, replace the PyTorch command with:
+Install the pinned CUDA build of PyTorch before the remaining requirements.
+Detectron2 is then compiled against that exact PyTorch/CUDA environment:
 
 ```bash
 python -m pip install torch==2.5.1 torchvision==0.20.1 \
   --index-url https://download.pytorch.org/whl/cu121
+python -m pip install --no-build-isolation -r requirements.txt
 ```
 
-Then install `requirements.txt`. Do not install a second PyTorch build over
-the selected runtime.
+The pinned combinations are intentional. Consult the official
+[PyTorch previous-version matrix](https://pytorch.org/get-started/previous-versions/) and
+[Detectron2 installation guide](https://detectron2.readthedocs.io/en/latest/tutorials/install.html)
+before changing PyTorch, torchvision, CUDA or the compiler toolchain.
+
+Verify the GPU stack before processing data:
+
+```bash
+python -c "import torch; print(torch.cuda.get_device_name()); assert torch.cuda.is_available()"
+python -m detectron2.utils.collect_env
+```
+
+The Detectron2 report should show compatible values for PyTorch CUDA,
+`CUDA_HOME`, the Detectron2 CUDA compiler and the GPU architecture. If PyTorch
+or CUDA is changed later, reinstall Detectron2 so its compiled extension is not
+left linked to the old runtime.
+
+### CPU-only installation
+
+CPU-only users must install SolarOly manually. Use the same virtual-environment
+steps above, but install the CPU PyTorch build before `requirements.txt`:
+
+```bash
+python -m pip install torch==2.5.1 torchvision==0.20.1 \
+  --index-url https://download.pytorch.org/whl/cpu
+python -m pip install --no-build-isolation -r requirements.txt
+```
+
+This path is useful for setup checks and light post-processing, but model
+training, inference and image alignment can be prohibitively slow. Do not
+install a CUDA PyTorch build over the CPU environment later; recreate the
+virtual environment instead.
+
+### Model weights
+
+SolarOly does not bundle trained Detectron2 or Ultralytics model weights.
+Create your own model in **Train**, or obtain a compatible checkpoint from a
+source whose model and dataset licenses permit your intended use. Store model
+weights in a project training output and select them in the UI. Some upstream
+model tools can download pretrained weights on first use.
 
 Start SolarOly:
 
 ```bash
 export PVRT_ENABLE_DETECTRON=1
 export PVRT_ENABLE_YOLO=1
-export PVRT_ENABLE_THERMAL=1
+export PVRT_ENABLE_THERMAL=0
 uvicorn backend.pvrt.web.app:app --host 127.0.0.1 --port 8001
 ```
 
-Open <http://localhost:8001>.
+Open <http://localhost:8001>. A healthy backend returns `{"ok": true}` from
+<http://localhost:8001/api/health>.
+
+The development server has no authentication or TLS. Do not expose port 8001
+directly to the public internet; use an authenticated HTTPS reverse proxy for
+shared or remote deployments.
+
+The default map uses third-party CDN assets and public OpenStreetMap/Esri tile
+services. These require network access and remain subject to each provider's
+availability and usage terms. For sustained, commercial or offline use,
+configure an appropriate tile provider or self-hosted service; do not bulk
+download from the public OpenStreetMap tile servers.
 
 ## DJI Thermal SDK
 
-SolarOly retains the selected DJI runtime files under
-`third_party/utility/bin/`. On Linux x86-64:
+DJI's native Thermal SDK is proprietary and is **not distributed with
+SolarOly**. It is only required to decode radiometric DJI R-JPEG files. Download
+the appropriate Windows or Linux archive from the official
+[DJI Thermal SDK download page](https://www.dji.com/downloads/softwares/dji-thermal-sdk),
+review and accept DJI's included license and
+[SDK EULA](https://developer.dji.com/policies/eula/), then extract it outside
+the SolarOly repository.
+
+The Python `dji-thermal-sdk` wrapper is installed by `requirements.txt`, but it
+does not replace DJI's native `libdirp` runtime. For a Linux x86-64 SDK unpacked
+at `/opt/dji-tsdk`:
 
 ```bash
-export DIRP_SDK_PATH="$PWD/third_party/utility/bin/linux/release_x64/libdirp.so"
+export DIRP_SDK_PATH="/opt/dji-tsdk/utility/bin/linux/release_x64/libdirp.so"
 export LD_LIBRARY_PATH="$(dirname "$DIRP_SDK_PATH"):${LD_LIBRARY_PATH:-}"
+export PVRT_ENABLE_THERMAL=1
 ```
 
-Set `PVRT_ENABLE_THERMAL=0` if DJI radiometric extraction is not required.
-Ordinary RGB images and externally rendered thermal PNG/JPEG files can still be
-processed, but radiometric measurements are unavailable.
-
-The vendor license and EULA notice are retained in
-[`third_party/License.txt`](third_party/License.txt). Verify that your DJI
-camera and operating system are supported before processing a large dataset.
+Keep every companion library from the selected DJI `release_x64` directory
+together; `libdirp.so` is not a standalone file. Set `PVRT_ENABLE_THERMAL=0`
+when DJI decoding is not required. Ordinary RGB imagery including DJI R-JPEG (if you want to use them as JPEG and dont need decoding), orthophotos and
+already-rendered thermal PNG/JPEG files remain usable without the SDK, but DJI
+radiometric extraction and temperature values are unavailable.
 
 ## Typical workflow
 
@@ -217,25 +219,23 @@ backend/projects/
 ```
 
 Project folders contain source imagery and generated artifacts and are not part
-of the application source. Back up the persistent Docker volume or external
-project roots before upgrades. Do not commit datasets, credentials, customer
-imagery or model weights to the repository.
+of the application source. Back up project roots before upgrades. Do not commit
+datasets, credentials, customer imagery or model weights to the repository.
 
 ## Troubleshooting
 
-- **Docker build context is unexpectedly large:** confirm that
-  `.dockerignore` exists and that datasets are under ignored or external
-  project folders.
-- **Backend is unhealthy:** run `docker compose logs -f solaroly` and request
-  `/api/health`.
+- **Backend does not start:** activate the intended virtual environment, check
+  the traceback, and verify `/api/health` after starting Uvicorn.
+- **CUDA is unavailable:** run `nvidia-smi`, inspect
+  `python -m detectron2.utils.collect_env`, and confirm PyTorch, the CUDA
+  Toolkit and the compiled Detectron2 extension use compatible CUDA versions.
 - **Model weights are missing:** place compatible `.pth` or `.pt` files in a
-  persistent project training output and select them in the UI.
+  project training output and select them in the UI.
 - **LightGlue cannot load:** the first use may need network access to download
   its pretrained SIFT matcher checkpoint.
 - **DJI thermal decoding fails:** verify `DIRP_SDK_PATH`,
-  `LD_LIBRARY_PATH`, host architecture and the vendor runtime files.
-- **An external project is not found in Docker:** mount its host parent and use
-  the mounted container path when registering the project.
+  `LD_LIBRARY_PATH`, host architecture, vendor runtime companion libraries and
+  that `PVRT_ENABLE_THERMAL=1` was set before startup.
 - **Map imagery is blank:** verify browser connectivity to the configured tile
   provider and inspect `images.geojson` and `camera_meta.json`.
 

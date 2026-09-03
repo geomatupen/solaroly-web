@@ -35,7 +35,7 @@ def ensure_dirp_init() -> None:
     if not lib or not lib.exists():
         raise FileNotFoundError(
             f"DJI DIRP library not found. {describe_dirp()} "
-            "Set PVRT_DIRP_LIB to the absolute path of your libdirp (.so/.dll)."
+            "Set DIRP_SDK_PATH to the absolute path of your libdirp (.so/.dll)."
         )
     from dji_thermal_sdk.dji_sdk import dji_init
 

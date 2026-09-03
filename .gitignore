@@ -37,6 +37,10 @@ build/
 .env
 .envrc
 
+# Proprietary SDKs must remain user-installed and outside source control.
+third_party/
+dji-tsdk/
+
 # macOS
 .DS_Store
 

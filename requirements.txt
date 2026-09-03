@@ -65,8 +65,8 @@ tensorboard==2.20.0
 tensorboard-data-server==0.7.2
 termcolor==3.1.0
 tifffile==2024.12.12
-# Install this pair from the CPU or CUDA PyTorch index before installing this
-# file. The Dockerfile does this automatically for its CPU image.
+# Install this pair from the appropriate CPU or CUDA PyTorch index before
+# installing this file. See README.md; do not replace that build afterward.
 torch==2.5.1
 torchvision==0.20.1
 tqdm==4.67.1
