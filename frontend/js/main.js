@@ -1612,6 +1612,13 @@ async function startUpload(){
         setText("#testUploadText", `Uploading… ${pct}%`);
       }
     };
+    xhr.upload.onload = ()=>{
+      // The request body is uploaded, but the server may still be extracting,
+      // copying, and indexing the files before it sends its response.
+      setText("#testUploadText", "Upload received. Preparing test data…");
+      appendMiniLog("#testMiniLog", "[test] Upload received. Server is preparing test data…");
+      appendLog("[test] Upload received. Server is preparing test data…");
+    };
     xhr.onload = ()=> {
       try{
         const js = JSON.parse(xhr.responseText);

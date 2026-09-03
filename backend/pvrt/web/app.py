@@ -3443,19 +3443,30 @@ async def api_test_upload_underscore(
     # Partition the upload
     zip_files  = [f for f in files if (f.filename or "").lower().endswith(".zip")]
     other_files = [f for f in files if f not in zip_files]
+    logger.info(
+        "UI:INFO:test: Upload received by server (%s file(s)); preparing files…",
+        len(files),
+    )
 
     # ----------- handle zips -----------
     for zf in zip_files:
         # extract to a temporary staging dir under data/test/<temp>
         staging = _unique_dataset_dir(_safe_name(Path(zf.filename or "archive.zip").stem) or "zip")
         staging.mkdir(parents=True, exist_ok=True)
+        logger.info("UI:INFO:test: Reading ZIP archive '%s'…", zf.filename or "archive.zip")
         buf = zf.file.read()
         try:
             with zipfile.ZipFile(io.BytesIO(buf)) as z:
+                logger.info(
+                    "UI:INFO:test: Extracting '%s' (%s archive member(s))…",
+                    zf.filename or "archive.zip",
+                    len(z.infolist()),
+                )
                 z.extractall(staging)
         except Exception as e:
             shutil.rmtree(staging, ignore_errors=True)
             raise HTTPException(status_code=400, detail=f"Bad ZIP '{zf.filename}': {e}")
+        logger.info("UI:INFO:test: ZIP extracted. Scanning for GeoTIFFs and images…")
 
         # flatten one folder if needed
         kids = list(staging.iterdir())
@@ -3471,6 +3482,7 @@ async def api_test_upload_underscore(
 
         # 2a) make one dataset per TIF
         for tif in tifs:
+            logger.info("UI:INFO:test: Storing orthomosaic '%s'…", tif.name)
             name = _safe_name(tif.stem) or "tif"
             ds_dir = _unique_dataset_dir(name)
             ds_dir.mkdir(parents=True, exist_ok=True)
@@ -3488,6 +3500,12 @@ async def api_test_upload_underscore(
 
         # clean staging
         shutil.rmtree(staging, ignore_errors=True)
+        logger.info(
+            "UI:OK:test: Finished processing '%s' (%s GeoTIFF(s), %s image(s)).",
+            zf.filename or "archive.zip",
+            len(tifs),
+            len(non_tif_imgs),
+        )
 
     # ----------- handle direct files (non-zip) -----------
     if other_files:
@@ -3497,6 +3515,7 @@ async def api_test_upload_underscore(
 
         # 3a) one dataset per TIF
         for f in direct_tifs:
+            logger.info("UI:INFO:test: Writing orthomosaic '%s' to the test data directory…", f.filename)
             stem = _safe_name(Path(f.filename or "image.tif").stem) or "tif"
             ds_dir = _unique_dataset_dir(stem)
             ds_dir.mkdir(parents=True, exist_ok=True)
@@ -3505,6 +3524,7 @@ async def api_test_upload_underscore(
 
         # 3b) regular images together
         if direct_imgs:
+            logger.info("UI:INFO:test: Writing %s image file(s) to the test data directory…", len(direct_imgs))
             name = _safe_name(base) or "images"
             ds_dir = _unique_dataset_dir(name)
             ds_dir.mkdir(parents=True, exist_ok=True)
@@ -3515,6 +3535,7 @@ async def api_test_upload_underscore(
     if not created:
         return {"ok": False, "created": []}
 
+    logger.info("UI:INFO:test: Upload files stored. Finalizing %s dataset(s)…", len(created))
     logger.info(f"UI:OK:test: Created datasets: {', '.join(created)}")
     return {"ok": True, "created": created}
 
