@@ -53,6 +53,17 @@
     toggle.setAttribute("aria-expanded", String(!collapsed));
   }
 
+  function setAnomalyStepCompleted(step, completed) {
+    if (!step) return;
+    step.classList.toggle("completed", completed);
+    const number = step.querySelector(".postprocessStepNumber");
+    if (!number) return;
+    number.title = completed ? `Step ${number.textContent.trim()} complete` : "";
+    number.setAttribute("aria-label", completed
+      ? `Step ${number.textContent.trim()} complete`
+      : `Step ${number.textContent.trim()}`);
+  }
+
   function comparisonPairs(workflow) {
     return loadedComparisonWorkflowId === workflow?.id && loadedComparisonPairs.length
       ? loadedComparisonPairs
@@ -1447,6 +1458,15 @@
     byId("ppAssociate").textContent = workflow?.outputs?.associated
       ? panelLayer?.rows_path ? "Reassign panel and row IDs" : "Reassign panel IDs"
       : panelLayer?.rows_path ? "Assign panel and row IDs" : "Assign panel IDs";
+    const hasAssociated = Boolean(workflow?.outputs?.associated);
+    const placementStage = workflow?.outputs?.deduplicated ? "deduplicated" : "overlap_deduplicated";
+    const hasSavedPlacement = Boolean(workflow?.manual_edits?.[placementStage]);
+    [
+      [byId("ppOverlapDeduplicateStep"), Boolean(workflow?.outputs?.overlap_deduplicated)],
+      [byId("ppDeduplicateStep"), Boolean(workflow?.outputs?.deduplicated) || hasAssociated],
+      [byId("ppAdjustAnomaliesStep"), hasSavedPlacement || hasAssociated],
+      [byId("ppAssociateStep"), hasAssociated],
+    ].forEach(([step, completed]) => setAnomalyStepCompleted(step, completed));
     const phase = workflow?.outputs?.associated
       ? 0
       : workflow?.deduplicate_stats ? 3

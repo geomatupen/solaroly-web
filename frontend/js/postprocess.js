@@ -478,6 +478,17 @@
     toggle.setAttribute("aria-expanded", String(!collapsed));
   }
 
+  function setStepCompleted(step, completed) {
+    if (!step) return;
+    step.classList.toggle("completed", completed);
+    const number = step.querySelector(".postprocessStepNumber");
+    if (!number) return;
+    number.title = completed ? `Step ${number.textContent.trim()} complete` : "";
+    number.setAttribute("aria-label", completed
+      ? `Step ${number.textContent.trim()} complete`
+      : `Step ${number.textContent.trim()}`);
+  }
+
   function syncSegmentationStepProgress(status = null) {
     const outputs = status?.outputs || {};
     const hasCombined = Boolean(outputs.combined);
@@ -489,9 +500,11 @@
     const steps = [byId("ppCombineStep"), byId("ppRegularizeStep"), byId("ppHierarchyStep"), byId("ppAssignIdsStep")];
     steps.forEach(step => { step.hidden = false; });
     const available = [state.scanComplete || hasCombined, hasCombined, hasRegularized, hasRows];
+    const completed = [hasCombined, hasRegularized, hasRows, hasAssignments];
     steps.forEach((step, index) => {
       step.classList.toggle("locked", !available[index]);
       step.setAttribute("aria-disabled", String(!available[index]));
+      setStepCompleted(step, completed[index]);
     });
     const phase = hasAssignments ? 0 : hasRows ? 4 : hasRegularized ? 3 : hasCombined ? 2 : 1;
     if (phase === state.segmentationStepPhase) return;

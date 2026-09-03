@@ -1082,6 +1082,7 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessStep[hidden] { display: none; }
 
 .postprocessStepNumber {
+  box-sizing: border-box;
   flex: 0 0 28px;
   width: 28px;
   height: 28px;
@@ -1122,6 +1123,11 @@ body.postprocessFullscreenOpen { overflow: hidden; }
 .postprocessStep.collapsed { padding-bottom: 10px; }
 .postprocessStep.locked { opacity: .64; }
 .postprocessStep.locked .postprocessStepNumber { background: #475569; }
+.postprocessStep.completed .postprocessStepNumber {
+  background: var(--accent);
+  border: 2px solid #22c55e;
+  box-shadow: 0 0 0 1px rgb(34 197 94 / 14%);
+}
 
 .postprocessReplacementModalContent { max-width: 520px; }
 .postprocessReplacementModalContent .modalBody p { line-height: 1.5; }
