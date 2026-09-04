@@ -1456,15 +1456,18 @@ def create_postprocess_router(
         panel_features = panel_payload.get("features") if isinstance(panel_payload, dict) else None
         if panel_payload.get("type") != "FeatureCollection" or not isinstance(panel_features, list) or not panel_features:
             raise HTTPException(status_code=400, detail="The selected panel layer does not contain panel polygons.")
-        panel_ids = [
-            str((feature.get("properties") or {}).get("panel_id") or "").strip()
-            for feature in panel_features
-            if isinstance(feature, dict)
-        ]
-        if len(panel_ids) != len(panel_features) or any(not panel_id for panel_id in panel_ids):
+        panel_ids = []
+        for feature in panel_features:
+            if not isinstance(feature, dict):
+                continue
+            raw_id = (feature.get("properties") or {}).get("panel_id")
+            panel_id = str(raw_id).strip() if raw_id is not None else ""
+            if panel_id:
+                panel_ids.append(panel_id)
+        if not panel_ids:
             raise HTTPException(
                 status_code=400,
-                detail="The selected panel layer has missing panel IDs. Complete Segmentation Step 4 or upload panels with a unique ID field.",
+                detail="The selected panel layer does not contain panel IDs. Complete Segmentation Step 4 or upload panels with a unique ID field.",
             )
         if len(set(panel_ids)) != len(panel_ids):
             raise HTTPException(status_code=400, detail="The selected panel layer contains duplicate panel IDs.")

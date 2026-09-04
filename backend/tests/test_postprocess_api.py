@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from pvrt.web.postprocess import create_postprocess_router
+from pvrt.web.postprocess import AssociateAnomaliesRequest
 from pvrt.web.postprocess import EditLayerRequest
 from pvrt.web.postprocess import EditSourceRequest
 from pvrt.web.postprocess import OverlapDeduplicateAnomaliesRequest
@@ -16,6 +17,82 @@ from pvrt.web.postprocess import VisualReviewDecisionRequest
 
 
 class PostprocessApiTests(unittest.TestCase):
+    def test_association_accepts_segmentation_layer_with_unidentified_panels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sessions = root / "sessions"
+            overlays = root / "overlays"
+            result_dir = sessions / "test-result"
+            anomaly_dir = result_dir / "postprocess" / "anomalies"
+            panel_dir = result_dir / "postprocess" / "panels"
+            anomaly_dir.mkdir(parents=True)
+            panel_dir.mkdir(parents=True)
+            overlays.mkdir()
+            polygon = {
+                "type": "Polygon",
+                "coordinates": [[[8.0, 49.0], [8.00001, 49.0], [8.00001, 49.00001], [8.0, 49.00001], [8.0, 49.0]]],
+            }
+            outside_polygon = {
+                "type": "Polygon",
+                "coordinates": [[[8.01, 49.01], [8.01001, 49.01], [8.01001, 49.01001], [8.01, 49.01001], [8.01, 49.01]]],
+            }
+            (anomaly_dir / "deduplicated.geojson").write_text(json.dumps({
+                "type": "FeatureCollection",
+                "features": [{"type": "Feature", "geometry": polygon, "properties": {"anomaly_id": "1"}}],
+            }), encoding="utf-8")
+            (panel_dir / "regularized.geojson").write_text(json.dumps({
+                "type": "FeatureCollection",
+                "features": [
+                    {"type": "Feature", "geometry": polygon, "properties": {"panel_id": "1000-A1", "row_id": "1000"}},
+                    {"type": "Feature", "geometry": outside_polygon, "properties": {}},
+                ],
+            }), encoding="utf-8")
+            (anomaly_dir / "status.json").write_text(json.dumps({
+                "id": "anomalies",
+                "status": "complete",
+                "workflow_kind": "anomaly",
+                "outputs": {"deduplicated": {"path": "postprocess/anomalies/deduplicated.geojson"}},
+            }), encoding="utf-8")
+            (panel_dir / "status.json").write_text(json.dumps({
+                "id": "panels",
+                "status": "complete",
+                "assignment_stats": {"assigned_panel_count": 1, "unassigned_panel_count": 1},
+                "outputs": {"regularized": {"path": "postprocess/panels/regularized.geojson"}},
+            }), encoding="utf-8")
+            router = create_postprocess_router(
+                lambda: sessions,
+                lambda: overlays,
+                lambda path: f"/media/{path.name}",
+            )
+            route = next(
+                item for item in router.routes
+                if item.path == "/api/results/{result_id}/postprocess/{workflow_id}/associate"
+                and "POST" in item.methods
+            )
+            queued = asyncio.run(route.endpoint(
+                "test-result",
+                "anomalies",
+                AssociateAnomaliesRequest(
+                    panel_path="postprocess/panels/regularized.geojson",
+                    panel_result_id="test-result",
+                    panel_workflow_id="panels",
+                ),
+            ))
+            self.assertEqual(queued["status"], "queued")
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                status = json.loads((anomaly_dir / "status.json").read_text(encoding="utf-8"))
+                if status.get("status") in {"complete", "failed"}:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("Anomaly association did not finish in time.")
+            self.assertEqual(status["status"], "complete", status.get("error"))
+            self.assertEqual(status["association_stats"]["assigned"], 1)
+            associated = json.loads((anomaly_dir / "associated.geojson").read_text(encoding="utf-8"))
+            self.assertEqual(associated["features"][0]["properties"]["panel_id"], "1000-A1")
+
     def test_placement_review_done_requires_output_and_persists(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
