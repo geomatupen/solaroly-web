@@ -3376,7 +3376,6 @@
     // Keep activation self-contained. This also works if an older cached copy of
     // the shared tab controller is still present in the browser.
     byId("ppRefresh").addEventListener("click", () => void refreshCurrentJob());
-    byId("ppCreateDemoExport")?.addEventListener("click", () => void createDemoExport());
     byId("ppBackToJobs")?.addEventListener("click", showJobLanding);
     byId("ppEditJobConfig")?.addEventListener("click", () => {
       if (state.currentJob) void openJobConfiguration(state.currentJob);
@@ -4234,8 +4233,6 @@
     byId("ppHeaderDescription").hidden = true;
     byId("ppRefresh").hidden = false;
     byId("ppEditJobConfig").hidden = false;
-    byId("ppCreateDemoExport").hidden = false;
-    byId("ppDemoExportPath").hidden = true;
     resetAnalysis({ showConfiguredStep: true });
     setStepsLoading(true);
     window.requestAnimationFrame(() => state.map?.invalidateSize());
@@ -4245,66 +4242,7 @@
     addOption(resultSelect, configuredResultId, configuredResultId || "Job snapshot unavailable");
     resultSelect.value = configuredResultId;
     resultSelect.disabled = true;
-    void refreshDemoExportStatus();
     await loadGeojsons();
-  }
-
-  async function refreshDemoExportStatus() {
-    const path = byId("ppDemoExportPath");
-    if (!state.currentJobId) {
-      path.hidden = true;
-      path.textContent = "";
-      return null;
-    }
-    try {
-      const status = await requestJson(
-        `/api/postprocess-jobs/${encodeURIComponent(state.currentJobId)}/demo-export`,
-        { cache: "no-store" },
-      );
-      path.textContent = status.exists ? `Export ZIP: ${status.path}` : "";
-      path.hidden = !status.exists;
-      return status;
-    } catch (_) {
-      path.hidden = true;
-      path.textContent = "";
-      return null;
-    }
-  }
-
-  async function createDemoExport() {
-    if (!state.currentJobId) return;
-    const button = byId("ppCreateDemoExport");
-    const status = await refreshDemoExportStatus();
-    let replace = false;
-    if (status?.exists) {
-      const confirmed = await confirmReplacement(
-        "Replace demo export ZIP?",
-        `The existing export at ${status.path} will be deleted and replaced with the latest completed panel, row, anomaly, and image files.`,
-      );
-      if (!confirmed) return;
-      replace = true;
-    }
-    button.disabled = true;
-    button.textContent = "Creating export…";
-    setMessage("Creating demo export ZIP…");
-    try {
-      const result = await requestJson(
-        `/api/postprocess-jobs/${encodeURIComponent(state.currentJobId)}/demo-export`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ confirm_replace: replace }),
-        },
-      );
-      byId("ppDemoExportPath").textContent = `Export ZIP: ${result.path}`;
-      byId("ppDemoExportPath").hidden = false;
-      setMessage(`Demo export ZIP created: ${result.path}`, "ok");
-    } catch (error) {
-      setMessage(error.message, "err");
-    } finally {
-      button.disabled = false;
-      button.textContent = "Create demo export ZIP";
-    }
   }
 
   async function refreshCurrentJob() {
@@ -4334,9 +4272,6 @@
     clearReferenceLayers();
     state.currentJobId = null;
     state.currentJob = null;
-    byId("ppCreateDemoExport").hidden = true;
-    byId("ppDemoExportPath").hidden = true;
-    byId("ppDemoExportPath").textContent = "";
     void loadJobs();
   }
 

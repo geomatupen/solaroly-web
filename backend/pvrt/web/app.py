@@ -54,7 +54,6 @@ except (ImportError, ModuleNotFoundError):
 # --- Backend-agnostic bridge and registry ---
 from ..core.registry import register_backend
 from .bridge import train_entry, predict_entry
-from .demo_export import EXPORT_FILENAME, create_solar_demo_export
 from .postprocess import create_postprocess_router
 from .postprocess_layer_move import create_postprocess_layer_move_router, raster_shift_in_mercator
 from .settings import settings
@@ -4705,43 +4704,6 @@ async def api_postprocess_job_config(job_id: str):
     directory, metadata = _read_postprocess_job(job_id)
     metadata["id"] = directory.name
     return {"ok": True, "job": metadata}
-
-
-@app.get("/api/postprocess-jobs/{job_id}/demo-export")
-async def api_postprocess_job_demo_export_status(job_id: str):
-    directory, _ = _read_postprocess_job(job_id)
-    export_path = directory / EXPORT_FILENAME
-    return {
-        "ok": True,
-        "exists": export_path.is_file(),
-        "path": str(export_path),
-        "size": export_path.stat().st_size if export_path.is_file() else 0,
-    }
-
-
-@app.post("/api/postprocess-jobs/{job_id}/demo-export")
-async def api_create_postprocess_job_demo_export(job_id: str, request: Request):
-    directory, _ = _read_postprocess_job(job_id)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    try:
-        result = await asyncio.to_thread(
-            create_solar_demo_export,
-            directory,
-            get_project_sessions_dir(),
-            replace=bool(payload.get("confirm_replace")),
-        )
-    except FileExistsError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="The demo export already exists. Confirm replacement before creating it again.",
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    logger.info("UI:OK:post: Solar demo export ready at %s", result["path"])
-    return {"ok": True, **result}
 
 
 @app.put("/api/postprocess-jobs/{job_id}/config")
